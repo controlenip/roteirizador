@@ -183,6 +183,48 @@ def atualizar_status_via_df(df_principal, df_status, coluna_alvo):
 # ==========================================
 # 4. MÓDULOS DE PROCESSAMENTO GEOGRÁFICO E REDE
 # ==========================================
+
+def resgatar_coordenadas(df_tarefas):
+    """Função centralizada para resgatar coordenadas nulas usando satélite Nominatim"""
+    erros_coords_mask = df_tarefas['LATITUDE'].isna() | df_tarefas['LONGITUDE'].isna() | (df_tarefas['LATITUDE'] == 0.0) | (df_tarefas['LONGITUDE'] == 0.0)
+    qtd_erros = erros_coords_mask.sum()
+    if qtd_erros > 0:
+        col_end = 'ENDERECO' if 'ENDERECO' in df_tarefas.columns else ('RUA' if 'RUA' in df_tarefas.columns else None)
+        col_mun = 'MUNICIPIO' if 'MUNICIPIO' in df_tarefas.columns else ('CIDADE' if 'CIDADE' in df_tarefas.columns else None)
+        if col_end and col_mun:
+            with st.status(f"🛰️ Resgatando {qtd_erros} obras sem coordenadas via Satélite...", expanded=True) as status:
+                st.write("Conectando ao OpenStreetMap...")
+                my_bar = st.progress(0.0)
+                df_erros = df_tarefas[erros_coords_mask].copy()
+                df_ok = df_tarefas[~erros_coords_mask].copy()
+                lats, lons = [], []
+                for i, row in enumerate(df_erros.itertuples()):
+                    end_val = getattr(row, col_end)
+                    mun_val = getattr(row, col_mun)
+                    cache_key = f"{end_val}_{mun_val}"
+                    if cache_key in st.session_state.cache_coords:
+                        lat, lon = st.session_state.cache_coords[cache_key]
+                    else:
+                        lat, lon = geocode_endereco_nominatim(end_val, mun_val)
+                        st.session_state.cache_coords[cache_key] = (lat, lon)
+                        time.sleep(0.6)
+                    lats.append(lat)
+                    lons.append(lon)
+                    my_bar.progress((i + 1) / qtd_erros)
+                df_erros['LATITUDE'] = lats
+                df_erros['LONGITUDE'] = lons
+                my_bar.empty()
+                ainda_com_erro = df_erros['LATITUDE'].isna() | df_erros['LONGITUDE'].isna() | (df_erros['LATITUDE'] == 0.0)
+                resgatadas = (~ainda_com_erro).sum()
+                if resgatadas > 0:
+                    status.update(label=f"✅ {resgatadas} coordenadas recuperadas e incluídas no roteamento!", state="complete", expanded=False)
+                else:
+                    status.update(label="Falha ao resgatar coordenadas. Verifique a grafia dos endereços.", state="error", expanded=False)
+                df_tarefas = pd.concat([df_ok, df_erros[~ainda_com_erro]])
+    
+    final_mask = df_tarefas['LATITUDE'].isna() | df_tarefas['LONGITUDE'].isna() | (df_tarefas['LATITUDE'] == 0.0) | (df_tarefas['LONGITUDE'] == 0.0)
+    return df_tarefas[~final_mask]
+
 def extrair_lon_lat_kml(kml_text):
     coords = []
     padrao_alvo = re.compile(r'prim[aá]ri|secund[aá]ri|trafo|transformador|_pri|_sec|\bpri\b|\bsec\b|\bmt\b|\bbt\b', re.IGNORECASE)
@@ -1360,11 +1402,12 @@ def view_roteirizador():
                 qtd_eq_princ = df_bases['LEVANTADOR'].nunique() if 'df_bases' in locals() and not df_bases.empty else 0
                 qtd_eq_temp = df_bases_temp['LEVANTADOR'].nunique() if 'df_bases_temp' in locals() and not df_bases_temp.empty else 0
                 qtd_eq_atual_live = qtd_eq_princ + qtd_eq_temp
-                
                 st.session_state.qtd_equipes_ativas = qtd_eq_atual_live
+                
                 dias_multiplier = len(dias_semana_selecionados) if tipo_periodo == 'Semana' else 1
                 cap_por_eq_live = obras_por_dia * dias_multiplier * limite_periodos
                 cap_total_estimada_live = cap_por_eq_live * (qtd_eq_atual_live if qtd_eq_atual_live > 0 else 1)
+                
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
                 if not task_files and not saneamento_files and not generica_files: 
@@ -1674,6 +1717,9 @@ def view_roteirizador():
                 rede_files_m2 = st.file_uploader("2️⃣ Malha Elétrica de Referência (KMZ/KML)", type=["kmz", "kml"], accept_multiple_files=True)
                 vao_medio_postes_m2 = st.slider("📏 Vão entre Postes (Metros) ", min_value=20, max_value=100, value=60, step=1, key="slider_m2")
             
+            # --- SOLUÇÃO APLICADA AQUI: CHECKBOX PARA NÃO APAGAR OBRAS DO ARQUIVO PRONTO ---            
+            ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida. (Deixe desmarcado para roteirizar tudo).")
+
             if pre_file:
                 df_tasks = ler_planilha_cached(pre_file.getvalue()) if not pre_file.name.endswith('.csv') else pd.read_csv(pre_file)
                 st.session_state.colunas_originais = df_tasks.columns.tolist()
@@ -1699,8 +1745,6 @@ def view_roteirizador():
                         
                 for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                     if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                
-                ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida.")
                 
                 if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
                     mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
@@ -1728,8 +1772,11 @@ def view_roteirizador():
                     df_tasks['PRIORIDADE'] = 'Não'
                 else:
                     df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
-                    
-                df_tasks = df_tasks.dropna(subset=['LEVANTADOR'])
+                
+                # --- SANITIZAÇÃO RIGOROSA DA COLUNA LEVANTADOR ---
+                df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
+                lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
+                df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
                 
                 if df_tasks.empty:
                     st.error("🚨 Nenhuma obra restou após os filtros de coordenadas. Verifique sua planilha.")
