@@ -185,7 +185,6 @@ def atualizar_status_via_df(df_principal, df_status, coluna_alvo):
 # ==========================================
 
 def resgatar_coordenadas(df_tarefas):
-    """Função centralizada para resgatar coordenadas nulas usando satélite Nominatim"""
     erros_coords_mask = df_tarefas['LATITUDE'].isna() | df_tarefas['LONGITUDE'].isna() | (df_tarefas['LATITUDE'] == 0.0) | (df_tarefas['LONGITUDE'] == 0.0)
     qtd_erros = erros_coords_mask.sum()
     if qtd_erros > 0:
@@ -329,7 +328,7 @@ def encontrar_rede_mais_proxima(df_tasks, df_rede, vao_medio):
     df_tasks['LONGITUDE_REDE'] = nearest_lons
     return df_tasks
 
-def fundir_super_pontos(df_tasks, raio_metros=5):
+def fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False):
     if df_tasks.empty or 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns: return df_tasks, 0
     df_valid = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
     if df_valid.empty: return df_tasks, 0
@@ -340,14 +339,19 @@ def fundir_super_pontos(df_tasks, raio_metros=5):
     db = DBSCAN(eps=eps_rad, min_samples=1, algorithm='ball_tree', metric='haversine').fit(coords)
     df_valid['CLUSTER_ID'] = db.labels_
     
-    cluster_counts = df_valid['CLUSTER_ID'].value_counts()
+    if agrupar_por_levantador and 'LEVANTADOR' in df_valid.columns:
+        df_valid['CLUSTER_GRP'] = df_valid['CLUSTER_ID'].astype(str) + "_" + df_valid['LEVANTADOR'].astype(str)
+    else:
+        df_valid['CLUSTER_GRP'] = df_valid['CLUSTER_ID'].astype(str)
+    
+    cluster_counts = df_valid['CLUSTER_GRP'].value_counts()
     single_clusters = cluster_counts[cluster_counts == 1].index
     multi_clusters = cluster_counts[cluster_counts > 1].index
     agrupado = []
     
     if len(multi_clusters) > 0:
-        df_multi = df_valid[df_valid['CLUSTER_ID'].isin(multi_clusters)]
-        for c_id, group in df_multi.groupby('CLUSTER_ID'):
+        df_multi = df_valid[df_valid['CLUSTER_GRP'].isin(multi_clusters)]
+        for c_id, group in df_multi.groupby('CLUSTER_GRP'):
             row_base = group.iloc[0].copy()
             qtd = len(group)
             orig_rows = group.to_dict('records')
@@ -359,7 +363,7 @@ def fundir_super_pontos(df_tasks, raio_metros=5):
                 return " | ".join(itens_unicos) if itens_unicos else "-"
             
             for col in group.columns:
-                if col not in ['LATITUDE', 'LONGITUDE', 'CLUSTER_ID', '_ORIGEM_BASE', 'PRIORIDADE']:
+                if col not in ['LATITUDE', 'LONGITUDE', 'CLUSTER_ID', 'CLUSTER_GRP', '_ORIGEM_BASE', 'PRIORIDADE']:
                     row_base[col] = safe_list_join(col)
                 
             row_base['LATITUDE'] = group['LATITUDE'].mean()
@@ -370,13 +374,13 @@ def fundir_super_pontos(df_tasks, raio_metros=5):
             agrupado.append(row_base)
             
     df_final_multi = pd.DataFrame(agrupado)
-    df_single = df_valid[df_valid['CLUSTER_ID'].isin(single_clusters)].copy()
+    df_single = df_valid[df_valid['CLUSTER_GRP'].isin(single_clusters)].copy()
     if not df_single.empty:
         df_single['SUPER_PONTO'] = "NÃO"
         dict_records = df_single.to_dict('records')
         df_single['_ORIGINAL_ROWS'] = [[r] for r in dict_records]
         
-    df_final = pd.concat([df_single, df_final_multi], ignore_index=True).drop(columns=['CLUSTER_ID'], errors='ignore')
+    df_final = pd.concat([df_single, df_final_multi], ignore_index=True).drop(columns=['CLUSTER_ID', 'CLUSTER_GRP'], errors='ignore')
     
     df_nan = df_tasks[df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna()].copy()
     if not df_nan.empty:
@@ -542,7 +546,7 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
             
     df_export = pd.DataFrame(unpacked_rows)
 
-    for col in ['ROTA_GEOMETRIA', 'STATUS LIST', 'INICIO AVARIA', 'STATUS ATUAL (LEVANTAMENTO)', 'DESCRICAO', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE']:
+    for col in ['ROTA_GEOMETRIA', 'STATUS LIST', 'INICIO AVARIA', 'STATUS ATUAL (LEVANTAMENTO)', 'DESCRICAO', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'MUN_LIMPO_CALC']:
         if col in df_export.columns: df_export = df_export.drop(columns=[col], errors='ignore')
 
     if colunas_originais:
@@ -1589,7 +1593,7 @@ def view_roteirizador():
             erros_nome += drop_mask.sum()
             df_tasks = df_tasks[~drop_mask]
 
-            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5)
+            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False)
             if qtd_condensada > 0: st.toast(f"✅ Inteligência condensou {qtd_condensada} obras repetidas no mesmo endereço em 'Super Pontos'.")
 
             st.markdown("#### 📊 Raio-X da Base de Dados Carregada")
@@ -1717,7 +1721,6 @@ def view_roteirizador():
                 rede_files_m2 = st.file_uploader("2️⃣ Malha Elétrica de Referência (KMZ/KML)", type=["kmz", "kml"], accept_multiple_files=True)
                 vao_medio_postes_m2 = st.slider("📏 Vão entre Postes (Metros) ", min_value=20, max_value=100, value=60, step=1, key="slider_m2")
             
-            # --- SOLUÇÃO APLICADA AQUI: CHECKBOX PARA NÃO APAGAR OBRAS DO ARQUIVO PRONTO ---            
             ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida. (Deixe desmarcado para roteirizar tudo).")
 
             if pre_file:
@@ -1765,18 +1768,18 @@ def view_roteirizador():
                 
                 if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
                 
-                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5)
+                df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
+                lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
+                df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
+
+                # --- MUDANÇA AQUI: PASSANDO TRUE PARA NÃO MISTURAR LEVANTADORES ---
+                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=True)
                 if qtd_condensada > 0: st.toast(f"✅ {qtd_condensada} obras repetidas no mesmo endereço viraram 'Super Pontos'.")
                 
                 if 'PRIORIDADE' not in df_tasks.columns:
                     df_tasks['PRIORIDADE'] = 'Não'
                 else:
                     df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
-                
-                # --- SANITIZAÇÃO RIGOROSA DA COLUNA LEVANTADOR ---
-                df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
-                lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
-                df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
                 
                 if df_tasks.empty:
                     st.error("🚨 Nenhuma obra restou após os filtros de coordenadas. Verifique sua planilha.")
@@ -1829,7 +1832,7 @@ def view_roteirizador():
                 colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
                 st.info("⚡ **Deduplicação Ativa:** Obras num raio de 5 metros foram transformadas em Super Pontos para otimização.")
 
-            if st.button("🚀 Iniciar Motor de Roteirização (OR-Tools)", type="primary", use_container_width=True):
+            if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
                 if tipo_periodo == "Semana" and not dias_semana_selecionados:
                     st.error("Selecione os dias da semana na barra lateral antes de continuar.")
                     return
@@ -1867,6 +1870,7 @@ def view_roteirizador():
                         'tipo_periodo': tipo_periodo, 
                         'limite_periodos': limite_periodos,
                         'roteirizar_tudo': roteirizar_tudo_mode2 if modo_operacao.startswith("2️⃣") else False,
+                        'is_lista_continua': True if modo_operacao.startswith("2️⃣") else False,
                         'dias_selecionados': dias_semana_selecionados,
                         'url_osrm_base': url_osrm_base
                     },
@@ -1890,13 +1894,16 @@ def view_roteirizador():
             return [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]], (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
 
     if status_exec in ["RUNNING"]:
-        st.markdown("## 🚀 Execução do Motor de Inteligência (OR-Tools VRP)")
+        state = st.session_state.vrp_state
+        cfg = state['config']
+        is_lista_continua = cfg.get('is_lista_continua', False)
+        
+        titulo_motor = "🚀 Execução do Motor Leve Vetorial (Lista Contínua)" if is_lista_continua else "🚀 Execução do Motor de Inteligência (OR-Tools VRP)"
+        st.markdown(f"## {titulo_motor}")
         st.markdown("Calculando Matrizes Vetoriais e Otimizando Rotas...")
         
         if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
             
-        state = st.session_state.vrp_state
-        cfg = state['config']
         b_names = state['b_names']
         total_equipes = len(b_names)
         
@@ -1914,7 +1921,9 @@ def view_roteirizador():
                 start_iter = time.time()
                 progresso = b_idx / total_equipes if total_equipes > 0 else 1.0
                 progress_bar.progress(progresso)
-                status_text.info(f"🧠 IA Analisando nós e traçando rotas para **{b_name}**... ({b_idx + 1}/{total_equipes})")
+                
+                texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
+                status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
                 
                 with timer_placeholder.container():
                     if b_idx > 0:
@@ -1942,72 +1951,99 @@ def view_roteirizador():
                         """, unsafe_allow_html=True)
 
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
-                if pd.isna(base_ref.get('LATITUDE')):
-                    continue
+                if pd.isna(base_ref.get('LATITUDE')): continue
                     
                 base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
                 obras_equipe = unvisited[unvisited['BASE_ATRIBUIDA'] == b_name].to_dict('records')
                 
                 if obras_equipe:
-                    coords_dict = {}
-                    for o in obras_equipe:
-                        k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
-                        if k not in coords_dict:
-                            coords_dict[k] = []
-                        coords_dict[k].append(o)
-                        
-                    macro_obras = []
-                    for k, lista in coords_dict.items():
-                        tem_prio = any(x.get('PRIORIDADE') == 'Sim' for x in lista)
-                        rep = lista[0].copy()
-                        rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
-                        
-                        mun_raw = rep.get('MUNICIPIO', rep.get('CIDADE', 'DESCONHECIDO'))
-                        if pd.notna(mun_raw) and str(mun_raw).strip() != '':
-                            rep['MUN_LIMPO'] = normalizar_municipios(pd.Series([mun_raw])).iloc[0]
-                        else:
-                            rep['MUN_LIMPO'] = 'DESCONHECIDO'
-                            
-                        rep['_sub_obras'] = lista
-                        macro_obras.append(rep)
-
-                    macros_by_mun = {}
-                    for m in macro_obras:
-                        mun = m['MUN_LIMPO']
-                        if mun not in macros_by_mun: macros_by_mun[mun] = []
-                        macros_by_mun[mun].append(m)
-
-                    mun_stats = []
-                    for mun, m_list in macros_by_mun.items():
-                        prio_count = sum(1 for x in m_list if x['PRIORIDADE'] == 'Sim')
-                        total_count = len(m_list)
-                        mun_stats.append({
-                            'mun': mun,
-                            'prio_count': prio_count,
-                            'total_count': total_count
-                        })
-
-                    mun_stats.sort(key=lambda x: (x['prio_count'] > 0, x['prio_count'], x['total_count']), reverse=True)
-
-                    ordered_macros = []
-                    for stat in mun_stats:
-                        mun = stat['mun']
-                        m_list = macros_by_mun[mun]
-                        
-                        prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
-                        comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
-                        
-                        if prio_macros:
-                            ordered_macros.extend(resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base']))
-                        if comum_macros:
-                            ordered_macros.extend(resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base']))
-                        
                     ordered_tasks = []
-                    for macro in ordered_macros:
-                        subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
-                        for s in subs:
-                            s['MUN_LIMPO_CALC'] = macro['MUN_LIMPO']
-                        ordered_tasks.extend(subs)
+                    
+                    if is_lista_continua:
+                        # --- MOTOR LEVE E RÁPIDO (BYPASS OR-TOOLS) ---
+                        mun_groups = {}
+                        for o in obras_equipe:
+                            mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
+                            mun_limpo = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) else 'DESCONHECIDO'
+                            o['MUN_LIMPO_CALC'] = mun_limpo
+                            if mun_limpo not in mun_groups: mun_groups[mun_limpo] = []
+                            mun_groups[mun_limpo].append(o)
+                            
+                        for mun, obs in mun_groups.items():
+                            prio_sim = [o for o in obs if str(o.get('PRIORIDADE')).upper() == 'SIM']
+                            prio_nao = [o for o in obs if str(o.get('PRIORIDADE')).upper() != 'SIM']
+                            
+                            def greedy_sort(pts, start_lat, start_lon):
+                                if not pts: return []
+                                sorted_pts = []
+                                curr_lat, curr_lon = start_lat, start_lon
+                                unvisited_pts = list(pts)
+                                while unvisited_pts:
+                                    best_idx = 0
+                                    best_d = float('inf')
+                                    for i, p in enumerate(unvisited_pts):
+                                        d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
+                                        if d < best_d:
+                                            best_d = d; best_idx = i
+                                    nxt = unvisited_pts.pop(best_idx)
+                                    sorted_pts.append(nxt)
+                                    curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                return sorted_pts
+
+                            sub_sim = greedy_sort(prio_sim, base_lat, base_lon)
+                            ordered_tasks.extend(sub_sim)
+                            
+                            if ordered_tasks:
+                                last = ordered_tasks[-1]
+                                ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE']))
+                            else:
+                                ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon))
+
+                    else:
+                        # --- MOTOR PESADO (OR-TOOLS TSP) ---
+                        coords_dict = {}
+                        for o in obras_equipe:
+                            k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
+                            if k not in coords_dict: coords_dict[k] = []
+                            coords_dict[k].append(o)
+                            
+                        macro_obras = []
+                        for k, lista in coords_dict.items():
+                            tem_prio = any(x.get('PRIORIDADE') == 'Sim' for x in lista)
+                            rep = lista[0].copy()
+                            rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
+                            mun_raw = rep.get('MUNICIPIO', rep.get('CIDADE', 'DESCONHECIDO'))
+                            rep['MUN_LIMPO'] = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) and str(mun_raw).strip() != '' else 'DESCONHECIDO'
+                            rep['_sub_obras'] = lista
+                            macro_obras.append(rep)
+
+                        macros_by_mun = {}
+                        for m in macro_obras:
+                            mun = m['MUN_LIMPO']
+                            if mun not in macros_by_mun: macros_by_mun[mun] = []
+                            macros_by_mun[mun].append(m)
+
+                        mun_stats = []
+                        for mun, m_list in macros_by_mun.items():
+                            prio_count = sum(1 for x in m_list if x['PRIORIDADE'] == 'Sim')
+                            mun_stats.append({'mun': mun, 'prio_count': prio_count, 'total_count': len(m_list)})
+
+                        mun_stats.sort(key=lambda x: (x['prio_count'] > 0, x['prio_count'], x['total_count']), reverse=True)
+
+                        ordered_macros = []
+                        for stat in mun_stats:
+                            mun = stat['mun']
+                            m_list = macros_by_mun[mun]
+                            prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
+                            comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
+                            
+                            if prio_macros: ordered_macros.extend(resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base']))
+                            if comum_macros: ordered_macros.extend(resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base']))
+                            
+                        for macro in ordered_macros:
+                            subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
+                            for s in subs: s['MUN_LIMPO_CALC'] = macro['MUN_LIMPO']
+                            ordered_tasks.extend(subs)
                     
                     rotas_flat = []
                     dia_absoluto = 1
@@ -2024,10 +2060,7 @@ def view_roteirizador():
                         return {
                             'lat': base_lat, 'lon': base_lon,
                             'time': data_base_inicio + pd.Timedelta(days=dia_abs - 1),
-                            'obras_hoje': 0,
-                            'prio_hoje': 0, 
-                            'km_hoje': 0.0,
-                            'lunch': False
+                            'obras_hoje': 0, 'prio_hoje': 0, 'km_hoje': 0.0, 'lunch': False
                         }
                         
                     estado = iniciar_dia(dia_absoluto)
@@ -2051,7 +2084,6 @@ def view_roteirizador():
                         if chegada_prevista.hour >= 12 and not estado['lunch']:
                             lunch_start = max(estado['time'], data_base_almoco + pd.Timedelta(days=dia_absoluto - 1))
                             lunch_end = lunch_start + pd.Timedelta(hours=1)
-                            
                             rotas_flat.append({
                                 'obra': None, 'is_lunch': True, 'is_retorno': False,
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
@@ -2067,12 +2099,9 @@ def view_roteirizador():
                         fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
                         
                         virar_dia = False
-                        
                         prio_acumulada = estado.get('prio_hoje', 0) + qtd_prio_atual
                         limite_diario_atual = cfg['obras_por_dia']
-                        
-                        if prio_acumulada > 3:
-                            limite_diario_atual += 10 
+                        if prio_acumulada > 3: limite_diario_atual += 10 
                         
                         if obras_no_periodo_macro >= limite_diario_atual:
                             virar_dia = True
@@ -2083,7 +2112,6 @@ def view_roteirizador():
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
                             viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
                             ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
-                            
                             rotas_flat.append({
                                 'obra': None, 'is_lunch': False, 'is_retorno': True,
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
@@ -2110,11 +2138,9 @@ def view_roteirizador():
                             
                             viagem_km = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
                             if viagem_km < 0.05 and estado['obras_hoje'] > 0:
-                                viagem_min = 0.0
-                                exec_min = 30.0 
+                                viagem_min = 0.0; exec_min = 30.0 
                             else:
-                                viagem_min = (viagem_km / cfg['velocidade_media_kmh']) * 60
-                                exec_min = cfg['tempo_medio_obra'] * 60
+                                viagem_min = (viagem_km / cfg['velocidade_media_kmh']) * 60; exec_min = cfg['tempo_medio_obra'] * 60
                             
                             chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                             fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
@@ -2134,7 +2160,6 @@ def view_roteirizador():
                         estado['prio_hoje'] = prio_acumulada 
                         estado['km_hoje'] += viagem_km
                         obras_no_periodo_macro += qtd_real
-                        
                         mun_anterior = mun_atual 
 
                     if estado['obras_hoje'] > 0:
@@ -2150,8 +2175,16 @@ def view_roteirizador():
                             'viagem_min': viagem_ret, 'dist_km': dist_ret
                         })
 
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        geoms_and_durs = list(executor.map(fetch_geom_wrapper, rotas_flat))
+                    geoms_and_durs = []
+                    if is_lista_continua:
+                        for item in rotas_flat:
+                            dist_m = item['dist_km'] * 1000
+                            dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
+                            geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
+                            geoms_and_durs.append((geom, dur_sec))
+                    else:
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            geoms_and_durs = list(executor.map(fetch_geom_wrapper, rotas_flat))
 
                     ordem_global = 1
                     for item, (geom, dur_sec) in zip(rotas_flat, geoms_and_durs):
