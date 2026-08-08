@@ -232,6 +232,7 @@ def extrair_lon_lat_kml(kml_text):
     for style_id, style_content in re.findall(r'<Style\s+id="([^"]+)"(.*?</Style>)', kml_text, re.DOTALL | re.IGNORECASE):
         if padrao_alvo.search(style_id) or padrao_alvo.search(style_content):
             target_styles.add(style_id)
+            
     for stylemap_id, stylemap_content in re.findall(r'<StyleMap\s+id="([^"]+)"(.*?</StyleMap>)', kml_text, re.DOTALL | re.IGNORECASE):
         if padrao_alvo.search(stylemap_id) or padrao_alvo.search(stylemap_content):
             target_styles.add(stylemap_id)
@@ -712,7 +713,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                         else:
                             coords_linha_kml.append(f"          {lon},{lat},0")
 
-                        if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                        if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+                            continue
 
                         is_super = str(r.get('SUPER_PONTO', '')).startswith('SIM')
                         
@@ -801,7 +803,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                     else:
                         coords_linha_kml.append(f"          {lon},{lat},0")
 
-                    if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                    if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+                        continue
 
                     is_super = str(r.get('SUPER_PONTO', '')).startswith('SIM')
                     cor_icone = 'orange' if is_super else ('red' if r.get('PRIORIDADE') == "Sim" else 'blue')
@@ -890,6 +893,7 @@ def view_roteirizador():
     if "col_prioridade" not in st.session_state: st.session_state.col_prioridade = "TIPO NOTA"
     if "colunas_originais" not in st.session_state: st.session_state.colunas_originais = []
     if "config_financeira" not in st.session_state: st.session_state.config_financeira = {}
+    
     if "cache_coords" not in st.session_state: st.session_state.cache_coords = {}
 
     status_exec = st.session_state.vrp_status
@@ -945,6 +949,7 @@ def view_roteirizador():
                 
             obras_por_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
             limite_periodos = st.number_input(f"Limite total de {tipo_periodo}s", min_value=1, value=5, step=1, disabled=is_locked)
+            
             tempo_medio_obra = 1.5
             velocidade_media_kmh = 30.0
 
@@ -958,6 +963,7 @@ def view_roteirizador():
             st.caption("Este link conecta o sistema à malha viária real de ruas do mundo.")
             
         st.markdown("---")
+        
         sidebar_html_placeholder = st.empty()
         
         st.markdown("### 📥 Ações e Arquivos")
@@ -1750,8 +1756,11 @@ def view_roteirizador():
                         
                 for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                     if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                        
-                if 'DATA DESPACHO CAMPO' in df_tasks.columns:
+                
+                # --- SOLUÇÃO APLICADA AQUI: CHECKBOX PARA NÃO APAGAR OBRAS DO ARQUIVO PRONTO ---            
+                ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida.")
+                
+                if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
                     mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
                     obras_despachadas = mask_despacho.sum()
                     if obras_despachadas > 0:
@@ -1774,31 +1783,40 @@ def view_roteirizador():
                     df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
                     
                 df_tasks = df_tasks.dropna(subset=['LEVANTADOR'])
-                df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
-                df_tasks_alocadas = df_tasks.copy()
-                st.session_state.tot_obras_nao_alocadas = 0
                 
-                bases_records = []
-                for lev in df_tasks_alocadas['LEVANTADOR'].unique():
-                    df_lev = df_tasks_alocadas[df_tasks_alocadas['LEVANTADOR'] == lev]
-                    mun_base = df_lev['MUNICIPIO'].mode().iloc[0] if not df_lev['MUNICIPIO'].dropna().empty else "DESCONHECIDO"
-                    reg_base = df_lev['REGIONAL'].iloc[0] if 'REGIONAL' in df_lev.columns else "DESCONHECIDO"
-                    lat, lon = obter_coordenadas_municipio_cached(mun_base)
-                    bases_records.append({
-                        'LEVANTADOR': lev,
-                        'RESIDENCIA': mun_base,
-                        'MUNICIPIO': mun_base,
-                        'REGIONAL': reg_base,
-                        'LATITUDE': lat,
-                        'LONGITUDE': lon,
-                        'TIPO_EQUIPE': 'LISTA_CONTINUA'
-                    })
-                
-                tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
-                sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
-                st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
-                
-                col_prioridade = "PRIORIDADE"
+                if df_tasks.empty:
+                    st.error("🚨 Nenhuma obra restou após os filtros de coordenadas. Verifique sua planilha.")
+                else:
+                    df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
+                    df_tasks_alocadas = df_tasks.copy()
+                    st.session_state.tot_obras_nao_alocadas = 0
+                    
+                    bases_records = []
+                    for lev in df_tasks_alocadas['LEVANTADOR'].unique():
+                        df_lev = df_tasks_alocadas[df_tasks_alocadas['LEVANTADOR'] == lev]
+                        mun_base = df_lev['MUNICIPIO'].mode().iloc[0] if not df_lev['MUNICIPIO'].dropna().empty else "DESCONHECIDO"
+                        reg_base = df_lev['REGIONAL'].iloc[0] if 'REGIONAL' in df_lev.columns else "DESCONHECIDO"
+                        lat, lon = obter_coordenadas_municipio_cached(mun_base)
+                        
+                        if pd.isna(lat) or pd.isna(lon):
+                            lat = df_lev['LATITUDE'].iloc[0]
+                            lon = df_lev['LONGITUDE'].iloc[0]
+                            
+                        bases_records.append({
+                            'LEVANTADOR': lev,
+                            'RESIDENCIA': mun_base,
+                            'MUNICIPIO': mun_base,
+                            'REGIONAL': reg_base,
+                            'LATITUDE': lat,
+                            'LONGITUDE': lon,
+                            'TIPO_EQUIPE': 'LISTA_CONTINUA'
+                        })
+                    
+                    tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                    sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
+                    st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
+                    
+                    col_prioridade = "PRIORIDADE"
 
         # --- AÇÕES FINAIS E BOTÃO DE START (COMUM AOS DOIS MODOS) ---
         if not df_tasks_alocadas.empty:
@@ -1854,7 +1872,7 @@ def view_roteirizador():
                         'obras_por_dia': obras_por_dia, 
                         'tipo_periodo': tipo_periodo, 
                         'limite_periodos': limite_periodos,
-                        'roteirizar_tudo': roteirizar_tudo_mode2 if modo_operacao.startswith("2️⃣") else roteirizar_tudo,
+                        'roteirizar_tudo': roteirizar_tudo_mode2 if modo_operacao.startswith("2️⃣") else False,
                         'dias_selecionados': dias_semana_selecionados,
                         'url_osrm_base': url_osrm_base
                     },
