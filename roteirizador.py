@@ -27,7 +27,7 @@ LOGO_PATH = "LOGO_NIP.png"
 icon_page = LOGO_PATH if os.path.exists(LOGO_PATH) else "⚡"
 
 st.set_page_config(
-    page_title="Roteirizador NIP v2.0 - Lista Contínua",
+    page_title="Roteirizador NIP v2.0 - UI Moderna",
     page_icon=icon_page,
     layout="wide",
     initial_sidebar_state="expanded"
@@ -88,7 +88,34 @@ st.markdown("""
     }
 
     .block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
-    .stSelectbox label, .stFileUploader label, .stRadio label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
+    .stSelectbox label, .stFileUploader label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
+    
+    /* Transformar Radio Buttons em Cards Modernos */
+    div.row-widget.stRadio > div[role="radiogroup"] {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label {
+        background-color: #ffffff;
+        border: 2px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 12px 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        transition: all 0.2s ease-in-out;
+        flex: 1; 
+        min-width: 250px;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
+        border-color: #0D256C;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(13, 37, 108, 0.1);
+    }
+    
+    /* Demais estilos */
     .stepper-container { display: flex; justify-content: space-between; margin-top: 0.5rem; margin-bottom: 1.5rem; padding: 0.85rem 1.2rem; background: rgba(13, 37, 108, 0.04); border-radius: 10px; border: 1px solid rgba(13, 37, 108, 0.12); }
     .step-item { font-size: 13px; font-weight: 700; color: #6c757d; display: flex; align-items: center; gap: 6px; }
     .step-item.active { color: #0D256C; }
@@ -878,7 +905,6 @@ def view_roteirizador():
     if "col_prioridade" not in st.session_state: st.session_state.col_prioridade = "TIPO NOTA"
     if "colunas_originais" not in st.session_state: st.session_state.colunas_originais = []
     if "config_financeira" not in st.session_state: st.session_state.config_financeira = {}
-    
     if "cache_coords" not in st.session_state: st.session_state.cache_coords = {}
 
     status_exec = st.session_state.vrp_status
@@ -917,10 +943,16 @@ def view_roteirizador():
             )
             
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
-            tipo_periodo = st.radio("Agrupamento de percurso:", ["Dia", "Semana"], index=1, horizontal=True, disabled=is_locked)
+            tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
+            tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
+            
+            if tipo_periodo_clean == "Dia":
+                st.caption("A IA encerra o roteiro no fim do dia.")
+            else:
+                st.caption("A IA monta jornadas contínuas de segunda a sexta.")
             
             dias_semana_selecionados = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
-            if tipo_periodo == "Semana":
+            if tipo_periodo_clean == "Semana":
                 dias_semana_selecionados = st.multiselect(
                     "Dias úteis na semana:",
                     ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"],
@@ -933,7 +965,7 @@ def view_roteirizador():
                     st.caption(f"ℹ️ Cada semana terá **{len(dias_semana_selecionados)} dias** alocados.")
                 
             obras_por_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
-            limite_periodos = st.number_input(f"Limite total de {tipo_periodo}s", min_value=1, value=5, step=1, disabled=is_locked)
+            limite_periodos = st.number_input(f"Limite total de {tipo_periodo_clean}s", min_value=1, value=5, step=1, disabled=is_locked)
             tempo_medio_obra = 1.5
             velocidade_media_kmh = 30.0
 
@@ -1282,11 +1314,21 @@ def view_roteirizador():
     # ESTADO 1 E 2: UPLOAD E FILTROS INICIAIS
     # ---------------------------------------------------------
     if status_exec == "IDLE" and not is_done:
-        modo_operacao = st.radio(
-            "Selecione o Modo de Roteirização:",
-            ["1️⃣ Planejamento Tático (IA distribui as obras entre as equipes)", "2️⃣ Lista Contínua Direta (Sua planilha já possui Levantador definido)"],
-            horizontal=True
+        st.markdown("### ⚙️ Selecione a Estratégia de Roteirização")
+        modo_selecionado = st.radio(
+            "Modo:",
+            ["🎯 1. Planejamento Tático (IA Automática)", "♾️ 2. Lista Contínua (Técnico Fixo)"],
+            horizontal=True,
+            label_visibility="collapsed"
         )
+
+        if "Tático" in modo_selecionado:
+            st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis, agrupando-as pela melhor rota geográfica.")
+            modo_operacao = "1"
+        else:
+            st.info("💡 **Como funciona a Lista Contínua:** O sistema respeita estritamente a coluna 'LEVANTADOR' da sua planilha. A IA apenas calcula as distâncias e roteiriza 100% da lista de cada técnico, gerando quantos dias forem necessários.")
+            modo_operacao = "2"
+
         st.markdown("---")
         
         df_tasks_alocadas = pd.DataFrame()
@@ -1297,7 +1339,7 @@ def view_roteirizador():
         vao_ativo = 60
         col_prioridade = "Nenhuma"
         
-        if modo_operacao.startswith("1️⃣"):
+        if modo_operacao == "1":
             col_up_1, col_up_2 = st.columns(2)
             with col_up_1:
                 st.markdown("### 👥 1. Levantadores Principais")
@@ -1408,7 +1450,8 @@ def view_roteirizador():
                 qtd_eq_atual_live = qtd_eq_princ + qtd_eq_temp
                 st.session_state.qtd_equipes_ativas = qtd_eq_atual_live
                 
-                dias_multiplier = len(dias_semana_selecionados) if tipo_periodo == 'Semana' else 1
+                tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
+                dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
                 cap_por_eq_live = obras_por_dia * dias_multiplier * limite_periodos
                 cap_total_estimada_live = cap_por_eq_live * (qtd_eq_atual_live if qtd_eq_atual_live > 0 else 1)
                 
@@ -1574,13 +1617,7 @@ def view_roteirizador():
 
             df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-            
-            erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
-            qtd_erros_coords_finais = erros_coords_mask.sum()
-            df_tasks = df_tasks[~erros_coords_mask]
-            
-            if qtd_erros_coords_finais > 0:
-                st.toast(f"⚠️ {qtd_erros_coords_finais} obras ignoradas por falta de coordenadas válidas (vazias ou 0.0).")
+            df_tasks = resgatar_coordenadas(df_tasks)
             
             erros_nome = 0
             if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
@@ -1640,6 +1677,9 @@ def view_roteirizador():
                                 if b['LEVANTADOR'] not in mun_to_main[m_limpo]: mun_to_main[m_limpo].append(b['LEVANTADOR'])
 
                 base_counts = {b['LEVANTADOR']: 0 for b in todas_bases_records}
+                
+                tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
+                dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
                 max_capacity = obras_por_dia * dias_multiplier * limite_periodos
 
                 def assign_load_balanced(df_sub, allowed_bases, is_prio=False):
@@ -1709,7 +1749,6 @@ def view_roteirizador():
 
         else:
             # --- MODO 2: LISTA CONTÍNUA DIRETA ---
-            roteirizar_tudo_mode2 = True 
             st.markdown("### 📥 1. Planilha de Demanda (Lista Contínua)")
             st.info("Neste modo, o sistema apenas lê as colunas **LEVANTADOR**, **REGIONAL** e **MUNICIPIO** da sua planilha. Nenhuma equipe receberá obras de outro levantador. A IA vai roteirizar 100% da lista ignorando o limite de dias.")
             
@@ -1772,7 +1811,6 @@ def view_roteirizador():
                 lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
                 df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
 
-                # --- MUDANÇA AQUI: PASSANDO TRUE PARA NÃO MISTURAR LEVANTADORES ---
                 df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=True)
                 if qtd_condensada > 0: st.toast(f"✅ {qtd_condensada} obras repetidas no mesmo endereço viraram 'Super Pontos'.")
                 
@@ -1821,7 +1859,7 @@ def view_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
-                if modo_operacao.startswith("1️⃣"):
+                if modo_operacao == "1":
                     if has_generica and not has_levantamento and not has_saneamento: cols_desejadas = todas_cols_limpas
                     elif has_saneamento and not has_levantamento: cols_desejadas = ['NOTA', 'CONTA CONTRATO', 'STATUS', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDEREÇO', 'BAIRRO', 'PONTO REFERÊNCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'TEL FIXO', 'TEL MÓVEL']
                     else: cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS']
@@ -1833,13 +1871,14 @@ def view_roteirizador():
                 st.info("⚡ **Deduplicação Ativa:** Obras num raio de 5 metros foram transformadas em Super Pontos para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
-                if tipo_periodo == "Semana" and not dias_semana_selecionados:
+                tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
+                if tipo_periodo_clean == "Semana" and not dias_semana_selecionados:
                     st.error("Selecione os dias da semana na barra lateral antes de continuar.")
                     return
 
                 df_rede_kml = pd.DataFrame()
-                rede_files_active = rede_files_m2 if modo_operacao.startswith("2️⃣") else (rede_files if 'rede_files' in locals() else None)
-                vao_ativo = vao_medio_postes_m2 if modo_operacao.startswith("2️⃣") else (vao_medio_postes if 'vao_medio_postes' in locals() else 60)
+                rede_files_active = rede_files_m2 if modo_operacao == "2" else (rede_files if 'rede_files' in locals() else None)
+                vao_ativo = vao_medio_postes_m2 if modo_operacao == "2" else (vao_medio_postes if 'vao_medio_postes' in locals() else 60)
                 
                 if rede_files_active:
                     with st.spinner("🗺️ Analisando e extraindo a malha elétrica dos arquivos KMZ/KML..."):
@@ -1852,7 +1891,7 @@ def view_roteirizador():
 
                 st.session_state.tarefas_alocadas_inicialmente = len(df_tasks_alocadas)
                 st.session_state.bases_records = bases_records
-                st.session_state.tipo_periodo = tipo_periodo
+                st.session_state.tipo_periodo = tipo_periodo_clean
                 st.session_state.colunas_exibir = colunas_exibir
                 st.session_state.col_prioridade = col_prioridade
                 
@@ -1867,10 +1906,10 @@ def view_roteirizador():
                         'velocidade_media_kmh': velocidade_media_kmh,
                         'tempo_medio_obra': tempo_medio_obra, 
                         'obras_por_dia': obras_por_dia, 
-                        'tipo_periodo': tipo_periodo, 
+                        'tipo_periodo': tipo_periodo_clean, 
                         'limite_periodos': limite_periodos,
-                        'roteirizar_tudo': roteirizar_tudo_mode2 if modo_operacao.startswith("2️⃣") else False,
-                        'is_lista_continua': True if modo_operacao.startswith("2️⃣") else False,
+                        'roteirizar_tudo': True if modo_operacao == "2" else False,
+                        'is_lista_continua': True if modo_operacao == "2" else False,
                         'dias_selecionados': dias_semana_selecionados,
                         'url_osrm_base': url_osrm_base
                     },
@@ -1960,7 +1999,6 @@ def view_roteirizador():
                     ordered_tasks = []
                     
                     if is_lista_continua:
-                        # --- MOTOR LEVE E RÁPIDO (BYPASS OR-TOOLS) ---
                         mun_groups = {}
                         for o in obras_equipe:
                             mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
@@ -2000,7 +2038,6 @@ def view_roteirizador():
                                 ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon))
 
                     else:
-                        # --- MOTOR PESADO (OR-TOOLS TSP) ---
                         coords_dict = {}
                         for o in obras_equipe:
                             k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
