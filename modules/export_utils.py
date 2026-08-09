@@ -49,13 +49,13 @@ def gerar_csv_autocad_proj(df_routed):
     df_cad['NORTE_LATITUDE'] = df_real['LATITUDE']
     df_cad['ELEVACAO_Z'] = 0
     
-    # Tratamento seguro caso a coluna de postes previstos não exista
+    # Tratamento seguro caso a coluna de postes previstos não exista (Evita o KeyError)
     if 'POSTES PREVISTOS' in df_real.columns:
         postes_str = " | Postes Prev: " + df_real['POSTES PREVISTOS'].fillna(0).astype(int).astype(str)
     else:
         postes_str = ""
         
-    df_cad['DESCRICAO'] = df_real['NOME'] + postes_str + " | Eq: " + df_real['BASE_ATRIBUIDA']
+    df_cad['DESCRICAO'] = df_real['NOME'].astype(str) + postes_str + " | Eq: " + df_real['BASE_ATRIBUIDA'].astype(str)
     
     return df_cad.to_csv(index=False, sep=';').encode('utf-8-sig')
 
