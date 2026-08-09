@@ -1,23 +1,30 @@
-/* Cabeçalho transparente para manter o botão do menu lateral visível */
+/* 1. CABEÇALHO TRANSPARENTE: Esconde a barra branca, mas MANTÉM o botão do menu visível */
 header[data-testid="stHeader"] { 
     background-color: transparent !important; 
 }
 
-/* Esconde botões desnecessários do Streamlit no topo */
-.stAppDeployButton, 
-[data-testid="stToolbar"] { 
-    display: none !important; 
+/* 2. FORÇA O BOTÃO DO MENU A APARECER: Destranca o menu lateral */
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    z-index: 999999 !important;
 }
 
-#MainMenu { display: none !important; }
-footer { display: none !important; }
-
+/* 3. Esconde os lixos padrão do Streamlit (Botão Deploy, Toolbar, Footer) */
+.stAppDeployButton, 
+[data-testid="stToolbar"], 
+#MainMenu, 
+footer, 
 .viewerBadge_container, 
 .viewerBadge_link, 
 [data-testid="manage-app-button"] { 
     display: none !important; 
 }
 
+/* ========================================= */
+/* ESTILOS DA NIP (Cards, Fontes e Cores)    */
+/* ========================================= */
 .block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
 .stSelectbox label, .stFileUploader label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
 
@@ -46,7 +53,7 @@ div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
     box-shadow: 0 4px 8px rgba(13, 37, 108, 0.1);
 }
 
-/* Demais estilos */
+/* Demais estilos de layout */
 .stepper-container { display: flex; justify-content: space-between; margin-top: 0.5rem; margin-bottom: 1.5rem; padding: 0.85rem 1.2rem; background: rgba(13, 37, 108, 0.04); border-radius: 10px; border: 1px solid rgba(13, 37, 108, 0.12); }
 .step-item { font-size: 13px; font-weight: 700; color: #6c757d; display: flex; align-items: center; gap: 6px; }
 .step-item.active { color: #0D256C; }
