@@ -1,6 +1,14 @@
-[data-testid="stHeader"] { display: none !important; }
-[data-testid="stToolbar"] { display: none !important; }
-.stDeployButton { display: none !important; }
+/* Cabeçalho transparente para manter o botão do menu lateral visível */
+header[data-testid="stHeader"] { 
+    background-color: transparent !important; 
+}
+
+/* Esconde botões desnecessários do Streamlit no topo */
+.stAppDeployButton, 
+[data-testid="stToolbar"] { 
+    display: none !important; 
+}
+
 #MainMenu { display: none !important; }
 footer { display: none !important; }
 
