@@ -164,6 +164,7 @@ def view_roteirizador():
         with st.expander("📡 Conexão de Rede (Avançado)", expanded=False):
             url_osrm_base = st.text_input("Endpoint OSRM ⚠️ (NÃO APAGUE OU EDITE):", value="http://router.project-osrm.org", disabled=is_locked)
             st.caption("Este link conecta o sistema à malha viária real de ruas do mundo.")
+            tracado_real = st.checkbox("🛣️ Desenhar Traçado de Ruas no Mapa (Lento)", value=False, disabled=is_locked, help="Desmarque para usar o modo Vetorial Rápido (Altamente recomendado para bases grandes).")
             
         st.markdown("---")
         sidebar_html_placeholder = st.empty()
@@ -172,7 +173,7 @@ def view_roteirizador():
         data_atual_formatada = datetime.now().strftime("%d.%m.%Y")
         bytes_zip_xl = st.session_state.get('bytes_zip_xl', b"")
         bytes_zip_kml = st.session_state.get('bytes_zip_kml', b"")
-        bytes_zip_csv = st.session_state.get('bytes_zip_csv', b"") 
+        bytes_zip_csv = st.session_state.get('bytes_zip_csv', b"")
         
         botoes_desabilitados = not is_done or st.session_state.df_routed.empty
         
@@ -420,7 +421,7 @@ def view_roteirizador():
         st_folium(mapa, use_container_width=True, height=550, returned_objects=[])
 
         st.markdown("<br>", unsafe_allow_html=True)
-        tab_dados, tab_relatorio = st.tabs(["📊 Dados Tabulares", "📉 Relatório de Déficit por Levantador"])
+        tab_dados, tab_relatorio, tab_hospedagem = st.tabs(["📊 Dados Tabulares", "📉 Relatório de Déficit", "🏨 Apoio Logístico (Hotéis)"])
 
         with tab_dados:
             st.markdown("#### Detalhamento de Rotas")
@@ -432,7 +433,7 @@ def view_roteirizador():
                     "LATITUDE": st.column_config.NumberColumn(disabled=True), "LONGITUDE": st.column_config.NumberColumn(disabled=True),
                     "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.ProgressColumn("Dist. Anterior (KM)", format="%.2f", min_value=0, max_value=30), 
                     "TEMPO_VIAGEM_MINUTOS": st.column_config.ProgressColumn("Tempo de Viagem (Min)", format="%.1f", min_value=0, max_value=60),
-                    "LINK_NAVEGACAO_OFFLINE": st.column_config.LinkColumn("Link GPS Offline", help="Clique para abrir a rota no Google Maps", display_text="📍 Abrir no Maps")
+                    "LINK_NAVEGACAO_OFFLINE": st.column_config.LinkColumn("Link GPS", display_text="📍 Abrir no Maps")
                 }
             )
 
@@ -490,6 +491,42 @@ def view_roteirizador():
                     )
                 }
             )
+
+        with tab_hospedagem:
+            st.markdown("#### 🏨 Análise de Distância Extrema e Pernoite")
+            st.markdown("O sistema calcula o **Centro de Gravidade** (Centroid) do bloco de obras atribuído a cada levantador. Se a massa de trabalho estiver concentrada a mais de **60 km** da base do técnico, o sistema sugere opções de hospedagem na região para evitar o desgaste diário com deslocamento em rodovias.")
+            
+            hospedagens_sugeridas = False
+            for base_record in st.session_state.bases_records:
+                nome_tec = base_record['LEVANTADOR']
+                lat_base = base_record.get('LATITUDE')
+                lon_base = base_record.get('LONGITUDE')
+                
+                df_tec = df_real_tasks[df_real_tasks['BASE_ATRIBUIDA'] == nome_tec]
+                if not df_tec.empty and pd.notna(lat_base) and pd.notna(lon_base):
+                    centro_lat = df_tec['LATITUDE'].mean()
+                    centro_lon = df_tec['LONGITUDE'].mean()
+                    
+                    distancia_base_polo = haversine_scalar(float(lat_base), float(lon_base), centro_lat, centro_lon)
+                    
+                    if distancia_base_polo > 60:
+                        hospedagens_sugeridas = True
+                        mun_polo = df_tec['MUNICIPIO'].mode().iloc[0] if 'MUNICIPIO' in df_tec.columns else "Região Afastada"
+                        qtd_obras_polo = len(df_tec)
+                        
+                        link_hoteis = f"https://www.google.com/maps/search/hoteis+pousadas/@{centro_lat:.6f},{centro_lon:.6f},12z"
+                        
+                        st.markdown(f"""
+                        <div style="background-color: #f8f9fa; border-left: 5px solid #0D256C; padding: 15px; margin-bottom: 15px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <h4 style="margin-top: 0; color: #0D256C;">👨‍🔧 {nome_tec}</h4>
+                            <p style="margin-bottom: 5px;"><b>Polo de Obras:</b> {mun_polo} ({qtd_obras_polo} paradas programadas)</p>
+                            <p style="margin-bottom: 5px; color: #d9534f;"><b>⚠️ Distância da Base:</b> {distancia_base_polo:.1f} KM</p>
+                            <a href="{link_hoteis}" target="_blank" style="display: inline-block; margin-top: 10px; padding: 8px 15px; background-color: #55B929; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">🏨 Buscar Hotéis no Centro da Operação</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+            
+            if not hospedagens_sugeridas:
+                st.success("✅ Logística Segura: Nenhuma equipe recebeu um pacote de obras cujo centro de gravidade fique a mais de 60km de sua residência atual.")
 
         sidebar_html_placeholder.markdown(renderizar_painel_lateral(meta_exata_por_equipe if not roteirizar_tudo_meta else "Ilimitado", tot_obras_reais, tot_equipes_cadastradas, meta_global_exata if not roteirizar_tudo_meta else "Ilimitado"), unsafe_allow_html=True)
         return 
@@ -1105,7 +1142,8 @@ def view_roteirizador():
                         'roteirizar_tudo': True if modo_operacao == "2" else False,
                         'is_lista_continua': True if modo_operacao == "2" else False,
                         'dias_selecionados': dias_semana_selecionados,
-                        'url_osrm_base': url_osrm_base
+                        'url_osrm_base': url_osrm_base,
+                        'tracado_real': tracado_real
                     },
                     'b_names': list(set([b['LEVANTADOR'] for b in bases_records])),
                     'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
@@ -1301,10 +1339,9 @@ def view_roteirizador():
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
-                        # Cálculo de Rota e Alerta de Topologia
                         viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
                         
-                        viagem_km = viagem_km_reta * 1.3 # Margem viária padrão
+                        viagem_km = viagem_km_reta * 1.3
                         obra['ALERTA_TOPOLOGIA'] = 'OK'
                         if viagem_km > (viagem_km_reta * 3) and viagem_km_reta > 2.0:
                             obra['ALERTA_TOPOLOGIA'] = '⚠️ Rota suspeita (Barreira física)'
@@ -1325,7 +1362,7 @@ def view_roteirizador():
                             rotas_flat.append({
                                 'obra': None, 'is_lunch': True, 'is_retorno': False,
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                                'lat_atual': estado['lat'], 'lon_atual': estado['lon'],
+                                'lat_atual': estado['lat'], 'lon_atual': estado['lat'],
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
                                 'hora_inicio': lunch_start, 'hora_fim': lunch_end,
                                 'viagem_min': 0.0, 'dist_km': 0.0
@@ -1417,7 +1454,8 @@ def view_roteirizador():
                         })
 
                     geoms_and_durs = []
-                    if is_lista_continua:
+                    # Verifica se o modo rápido está ativado para pular o travamento do OSRM
+                    if is_lista_continua or not cfg.get('tracado_real', False):
                         for item in rotas_flat:
                             dist_m = item['dist_km'] * 1000
                             dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
