@@ -1,31 +1,24 @@
 /* ========================================= */
-/* 1. LIMPEZA DO TOPO (SEM QUEBRAR O MENU)   */
+/* 1. LIMPEZA SEGURA (SEM TOCAR NO MENU)     */
 /* ========================================= */
 
-/* Deixa o cabeçalho transparente para manter o visual limpo, mas sem quebrar a barra */
-header {
-    background: transparent !important;
+/* Esconde a marca d'água "Made with Streamlit" no rodapé */
+footer { 
+    visibility: hidden !important; 
 }
 
-/* Oculta APENAS os botões da direita e rodapé (Deploy, 3 pontinhos, etc.) */
-.stAppDeployButton,
-.stDeployButton,
-[data-testid="stToolbar"],
-[data-testid="stActionElements"],
-#MainMenu, 
-footer, 
-.viewerBadge_container, 
-.viewerBadge_link, 
-[data-testid="manage-app-button"] { 
+/* Esconde APENAS o botão "Deploy" sem quebrar a barra superior */
+.stAppDeployButton { 
     display: none !important; 
 }
 
-/* Removemos qualquer regra que tentava forçar o botão ">", 
-   deixando o Streamlit fazer isso sozinho de forma nativa! */
-
+/* 
+IMPORTANTE: Removemos qualquer regra que esconda o "header" ou "stToolbar". 
+Isso garante que o botão ">" de reabrir o menu NUNCA mais seja ocultado por engano. 
+*/
 
 /* ========================================= */
-/* 2. ESTILOS VISUAIS NIP                    */
+/* 2. ESTILOS VISUAIS DA NIP                 */
 /* ========================================= */
 .block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
 .stSelectbox label, .stFileUploader label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
@@ -55,7 +48,7 @@ div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
     box-shadow: 0 4px 8px rgba(13, 37, 108, 0.1);
 }
 
-/* Demais estilos de layout */
+/* Demais estilos de layout, métricas e etapas */
 .stepper-container { display: flex; justify-content: space-between; margin-top: 0.5rem; margin-bottom: 1.5rem; padding: 0.85rem 1.2rem; background: rgba(13, 37, 108, 0.04); border-radius: 10px; border: 1px solid rgba(13, 37, 108, 0.12); }
 .step-item { font-size: 13px; font-weight: 700; color: #6c757d; display: flex; align-items: center; gap: 6px; }
 .step-item.active { color: #0D256C; }
