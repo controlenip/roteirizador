@@ -15,7 +15,17 @@ import os
 import base64
 
 # ==========================================
-# IMPORTAÇÕES DOS MÓDULOS DIVIDIDOS
+# 1. CONFIGURAÇÕES INICIAIS DA PÁGINA (DEVE SER O 1º COMANDO)
+# ==========================================
+st.set_page_config(
+    page_title="Roteirizador NIP v2.0 - UI Moderna",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ==========================================
+# 2. IMPORTAÇÕES DOS MÓDULOS DIVIDIDOS
 # ==========================================
 from modules.data_processing import (
     ler_planilha_cached, formatar_moeda, formata_campo_html, 
@@ -33,18 +43,7 @@ from modules.export_utils import (
     gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado
 )
 
-# ==========================================
-# 1. CONFIGURAÇÕES INICIAIS DA PÁGINA 
-# ==========================================
 LOGO_PATH = "assets/LOGO_NIP.png"
-icon_page = LOGO_PATH if os.path.exists(LOGO_PATH) else "⚡"
-
-st.set_page_config(
-    page_title="Roteirizador NIP v2.0 - UI Moderna",
-    page_icon=icon_page,
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Constantes Auxiliares
 STATUS_PADRAO = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
@@ -55,7 +54,7 @@ try:
     with open("assets/style.css") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 except FileNotFoundError:
-    pass # Caso o CSS ainda não esteja no lugar, o sistema continua funcionando com o estilo padrão.
+    pass 
 
 def tentar_rerun():
     try:
@@ -79,7 +78,7 @@ def limpar_roteirizador():
     tentar_rerun()
 
 # ==========================================
-# 2. TELA PRINCIPAL (UI STREAMLIT)
+# 3. TELA PRINCIPAL (UI STREAMLIT)
 # ==========================================
 def view_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
@@ -243,11 +242,6 @@ def view_roteirizador():
                 
         obras_faltantes = meta_global_exata - tot_obras_reais
         obras_sobrando_na_planilha = st.session_state.get('tot_obras_nao_alocadas', 0)
-        
-        if roteirizar_tudo_meta:
-            equipes_abaixo_meta = {} 
-        else:
-            equipes_abaixo_meta = {k: v for k, v in obras_por_equipe.items() if v < meta_exata_por_equipe}
         
         if roteirizar_tudo_meta:
              if obras_sobrando_na_planilha > 0:
@@ -492,7 +486,6 @@ def view_roteirizador():
                 }
             )
 
-        # Atualizando o card verde do menu lateral (MESMO NO ESTADO CONCLUÍDO)
         sidebar_html_placeholder.markdown(renderizar_painel_lateral(meta_exata_por_equipe if not roteirizar_tudo_meta else "Ilimitado", tot_obras_reais, tot_equipes_cadastradas, meta_global_exata if not roteirizar_tudo_meta else "Ilimitado"), unsafe_allow_html=True)
         return 
 
