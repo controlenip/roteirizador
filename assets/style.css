@@ -1,0 +1,52 @@
+[data-testid="stHeader"] { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+.stDeployButton { display: none !important; }
+#MainMenu { display: none !important; }
+footer { display: none !important; }
+
+.viewerBadge_container, 
+.viewerBadge_link, 
+[data-testid="manage-app-button"] { 
+    display: none !important; 
+}
+
+.block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
+.stSelectbox label, .stFileUploader label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
+
+/* Transformar Radio Buttons em Cards Modernos */
+div.row-widget.stRadio > div[role="radiogroup"] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+div.row-widget.stRadio > div[role="radiogroup"] > label {
+    background-color: #ffffff;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    transition: all 0.2s ease-in-out;
+    flex: 1; 
+    min-width: 250px;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+}
+div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
+    border-color: #0D256C;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(13, 37, 108, 0.1);
+}
+
+/* Demais estilos */
+.stepper-container { display: flex; justify-content: space-between; margin-top: 0.5rem; margin-bottom: 1.5rem; padding: 0.85rem 1.2rem; background: rgba(13, 37, 108, 0.04); border-radius: 10px; border: 1px solid rgba(13, 37, 108, 0.12); }
+.step-item { font-size: 13px; font-weight: 700; color: #6c757d; display: flex; align-items: center; gap: 6px; }
+.step-item.active { color: #0D256C; }
+.step-item.done { color: #55B929; }
+.metric-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px; box-shadow: 0 4px 8px rgba(0,0,0,0.04); display: flex; align-items: center; gap: 16px; margin-bottom: 12px; transition: transform 0.2s ease, box-shadow 0.2s ease; }
+.metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.08); }
+.metric-icon { font-size: 26px; padding: 12px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
+.metric-content .metric-title { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.metric-content .metric-value { font-size: 24px; font-weight: 800; color: #0D256C; }
+.profiling-box { background: rgba(85, 185, 41, 0.08); border-left: 4px solid #55B929; padding: 15px; border-radius: 6px; margin-bottom: 20px;}
+.brand-title { font-size: 28px; font-weight: 800; color: #0D256C; margin: 0; text-align: center; padding-bottom: 15px; }
