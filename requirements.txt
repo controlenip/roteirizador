@@ -1,12 +1,11 @@
 streamlit
 pandas
 numpy
-scipy
-openpyxl
-requests
-ortools
 folium
 streamlit-folium
+requests
+urllib3
+openpyxl
+ortools
 plotly
 scikit-learn
-geopandas
