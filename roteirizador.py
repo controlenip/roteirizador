@@ -1362,7 +1362,7 @@ def view_roteirizador():
                             rotas_flat.append({
                                 'obra': None, 'is_lunch': True, 'is_retorno': False,
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                                'lat_atual': estado['lat'], 'lon_atual': estado['lon'], # Correção do bug da coordenada para o mar
+                                'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
                                 'hora_inicio': lunch_start, 'hora_fim': lunch_end,
                                 'viagem_min': 0.0, 'dist_km': 0.0
@@ -1454,7 +1454,8 @@ def view_roteirizador():
                         })
 
                     geoms_and_durs = []
-                    if is_lista_continua or not cfg.get('tracado_real', False):
+                    # Verifica se o modo rápido está ativado para pular o travamento do OSRM
+                    if not cfg.get('tracado_real', False):
                         for item in rotas_flat:
                             dist_m = item['dist_km'] * 1000
                             dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
