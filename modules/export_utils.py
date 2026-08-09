@@ -48,7 +48,14 @@ def gerar_csv_autocad_proj(df_routed):
     df_cad['ESTE_LONGITUDE'] = df_real['LONGITUDE']
     df_cad['NORTE_LATITUDE'] = df_real['LATITUDE']
     df_cad['ELEVACAO_Z'] = 0
-    df_cad['DESCRICAO'] = df_real['NOME'] + " | Postes Prev: " + df_real['POSTES PREVISTOS'].fillna(0).astype(int).astype(str) + " | Eq: " + df_real['BASE_ATRIBUIDA']
+    
+    # Tratamento seguro caso a coluna de postes previstos não exista
+    if 'POSTES PREVISTOS' in df_real.columns:
+        postes_str = " | Postes Prev: " + df_real['POSTES PREVISTOS'].fillna(0).astype(int).astype(str)
+    else:
+        postes_str = ""
+        
+    df_cad['DESCRICAO'] = df_real['NOME'] + postes_str + " | Eq: " + df_real['BASE_ATRIBUIDA']
     
     return df_cad.to_csv(index=False, sep=';').encode('utf-8-sig')
 
@@ -62,8 +69,7 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
         if '_ORIGINAL_ROWS' in row and isinstance(row['_ORIGINAL_ROWS'], list):
             for orig in row['_ORIGINAL_ROWS']:
                 new_row = orig.copy()
-                # Adicionando o Link do Google Maps para navegação offline do técnico
-                link_maps = f"https://www.google.com/maps/search/?api=1&query={new_row['LATITUDE']},{new_row['LONGITUDE']}"
+                link_maps = f"https://www.google.com/maps/search/?api=1&query={new_row.get('LATITUDE','')},{new_row.get('LONGITUDE','')}"
                 new_row['LINK_NAVEGACAO_OFFLINE'] = link_maps
                 
                 for vrp_col in ['NOME_DIA', 'ORDEM', 'SEMANA', 'DIA', 'PERIODO', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ALERTA_TOPOLOGIA', 'DISTANCIA_PROXIMO_PONTO_KM', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'SUPER_PONTO', 'BASE_ATRIBUIDA', 'PRIORIDADE', 'DISTANCIA_REDE_METROS', 'POSTES PREVISTOS', 'LATITUDE_REDE', 'LONGITUDE_REDE']:
@@ -119,7 +125,6 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
             for col_idx in range(1, len(df_export.columns) + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell.alignment = col_types.get(col_idx, left_align)
-                # Hyperlink clicável no Excel
                 if df_export.columns[col_idx - 1] == 'LINK_NAVEGACAO_OFFLINE' and cell.value:
                     cell.hyperlink = cell.value
                     cell.font = Font(color="0000FF", underline="single")
@@ -140,7 +145,6 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
                             ws.cell(row=row_idx, column=col_idx_f).fill = yellow_fill
             except: pass
             
-        # Destacar Alertas de Topologia
         if 'ALERTA_TOPOLOGIA' in df_export.columns:
             try:
                 idx_alerta = df_export.columns.get_loc('ALERTA_TOPOLOGIA') + 1
@@ -176,9 +180,6 @@ def gerar_excel_resumo_bytes(df):
             for row_idx in range(2, len(df) + 2): ws.cell(row=row_idx, column=col_idx).alignment = col_align
     return buf_xl.getvalue()
 
-# ==========================================
-# GERAÇÃO KML (Cole abaixo a sua função original gigante do KML que já estava no seu sistema)
-# ==========================================
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_todas_bases=None, tipo_periodo="Dia"):
     if lista_todas_bases is None: lista_todas_bases = df_rota['BASE_ATRIBUIDA'].unique().tolist()
         
