@@ -40,7 +40,8 @@ from modules.routing_engine import (
 )
 from modules.export_utils import (
     identificar_icone_folium, renderizar_painel_lateral, 
-    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado
+    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado,
+    gerar_csv_autocad_proj
 )
 
 LOGO_PATH = "assets/LOGO_NIP.png"
@@ -74,6 +75,7 @@ def limpar_roteirizador():
     st.session_state.colunas_originais = []
     if 'bytes_zip_xl' in st.session_state: del st.session_state['bytes_zip_xl']
     if 'bytes_zip_kml' in st.session_state: del st.session_state['bytes_zip_kml']
+    if 'bytes_zip_csv' in st.session_state: del st.session_state['bytes_zip_csv']
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -170,11 +172,13 @@ def view_roteirizador():
         data_atual_formatada = datetime.now().strftime("%d.%m.%Y")
         bytes_zip_xl = st.session_state.get('bytes_zip_xl', b"")
         bytes_zip_kml = st.session_state.get('bytes_zip_kml', b"")
+        bytes_zip_csv = st.session_state.get('bytes_zip_csv', b"") 
         
         botoes_desabilitados = not is_done or st.session_state.df_routed.empty
         
         st.download_button("🌐 1. Baixar Planilhas (ZIP)", data=bytes_zip_xl if bytes_zip_xl else b"vazio", file_name=f"Planilhas_Equipes - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         st.download_button("🗺️ 2. Baixar Mapas (KML)", data=bytes_zip_kml if bytes_zip_kml else b"vazio", file_name=f"Mapas_Rotas - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
+        st.download_button("📐 3. Exportar Topologia (CSV Proj+)", data=bytes_zip_csv if bytes_zip_csv else b"vazio", file_name=f"Dados_ProjPlus - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
             limpar_roteirizador()
@@ -427,7 +431,8 @@ def view_roteirizador():
                 column_config={ 
                     "LATITUDE": st.column_config.NumberColumn(disabled=True), "LONGITUDE": st.column_config.NumberColumn(disabled=True),
                     "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.ProgressColumn("Dist. Anterior (KM)", format="%.2f", min_value=0, max_value=30), 
-                    "TEMPO_VIAGEM_MINUTOS": st.column_config.ProgressColumn("Tempo de Viagem (Min)", format="%.1f", min_value=0, max_value=60)
+                    "TEMPO_VIAGEM_MINUTOS": st.column_config.ProgressColumn("Tempo de Viagem (Min)", format="%.1f", min_value=0, max_value=60),
+                    "LINK_NAVEGACAO_OFFLINE": st.column_config.LinkColumn("Link GPS Offline", help="Clique para abrir a rota no Google Maps", display_text="📍 Abrir no Maps")
                 }
             )
 
@@ -871,13 +876,23 @@ def view_roteirizador():
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
                         mun_str = str(row.get('MUN_LIMPO', ''))
+                        
+                        precisa_4x4 = False
+                        if 'TIPO VEICULO' in row and str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4':
+                            precisa_4x4 = True
+                            
                         if mun_str not in valid_bases_cache:
                             if tipo_atribuicao == "Por Municípios Atendidos (Lê texto da planilha)":
                                 valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
                                 valid_bases_cache[mun_str] = [b for b in allowed_bases if b['LEVANTADOR'] in valid_names]
                             else:
                                 valid_bases_cache[mun_str] = allowed_bases
+                                
                         valid_bases = valid_bases_cache[mun_str]
+                        
+                        if precisa_4x4:
+                            valid_bases = [b for b in valid_bases if str(b.get('VEICULO', '')).upper() == '4X4']
+                            
                         best_base = None
                         best_dist = float('inf')
                         if pd.notna(lat) and pd.notna(lon):
@@ -1286,13 +1301,20 @@ def view_roteirizador():
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
-                        viagem_km = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
+                        # Cálculo de Rota e Alerta de Topologia
+                        viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
                         
-                        if viagem_km < 0.05 and estado['obras_hoje'] > 0:
+                        viagem_km = viagem_km_reta * 1.3 # Margem viária padrão
+                        obra['ALERTA_TOPOLOGIA'] = 'OK'
+                        if viagem_km > (viagem_km_reta * 3) and viagem_km_reta > 2.0:
+                            obra['ALERTA_TOPOLOGIA'] = '⚠️ Rota suspeita (Barreira física)'
+                            
+                        if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
                             viagem_min = 0.0
                             exec_min = 30.0 
                         else:
-                            viagem_min = (viagem_km / cfg['velocidade_media_kmh']) * 60
+                            vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
+                            viagem_min = (viagem_km / vel_dinamica) * 60
                             exec_min = cfg['tempo_medio_obra'] * 60
                         
                         chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
@@ -1352,11 +1374,14 @@ def view_roteirizador():
                             estado = iniciar_dia(dia_absoluto)
                             prio_acumulada = qtd_prio_atual 
                             
-                            viagem_km = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
-                            if viagem_km < 0.05 and estado['obras_hoje'] > 0:
+                            viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
+                            viagem_km = viagem_km_reta * 1.3
+                            
+                            if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
                                 viagem_min = 0.0; exec_min = 30.0 
                             else:
-                                viagem_min = (viagem_km / cfg['velocidade_media_kmh']) * 60; exec_min = cfg['tempo_medio_obra'] * 60
+                                vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
+                                viagem_min = (viagem_km / vel_dinamica) * 60; exec_min = cfg['tempo_medio_obra'] * 60
                             
                             chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                             fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
@@ -1505,12 +1530,14 @@ def view_roteirizador():
         
         buf_zip_xl = io.BytesIO()
         buf_zip_kml = io.BytesIO()
+        buf_zip_csv = io.BytesIO() 
         
         tipo_periodo_atual = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Dia')
         
         try:
             with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, \
-                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml:
+                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml, \
+                 zipfile.ZipFile(buf_zip_csv, 'w', zipfile.ZIP_DEFLATED) as zip_csv:
                  
                 def update_ui(msg):
                     nonlocal current_step
@@ -1556,6 +1583,10 @@ def view_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
+                update_ui("Gerando Arquivo de Topologia (Proj+/AutoCAD)...")
+                csv_bytes = gerar_csv_autocad_proj(df_routed)
+                zip_csv.writestr(f"DADOS_PROJ_PLUS - {data_atual_formatada}.csv", csv_bytes)
+                
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 kml_geral_str = gerar_kml_agrupado(df_routed, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", st.session_state.colunas_exibir, bases_unicas, tipo_periodo_atual)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
@@ -1574,6 +1605,7 @@ def view_roteirizador():
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
             st.session_state.bytes_zip_kml = buf_zip_kml.getvalue()
+            st.session_state.bytes_zip_csv = buf_zip_csv.getvalue()
             
             status_text.success("✅ Pacotes gerados com sucesso! (Rotas extraídas integralmente para KML).")
             time.sleep(1.5)
