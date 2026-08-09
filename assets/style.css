@@ -1,33 +1,17 @@
 /* ========================================= */
-/* 1. CONTROLE DO CABEÇALHO E MENU LATERAL   */
+/* 1. LIMPEZA DO TOPO (SEM QUEBRAR O MENU)   */
 /* ========================================= */
 
-/* Deixa o cabeçalho vivo, mas com fundo invisível para não atrapalhar o layout */
-[data-testid="stHeader"] {
-    background-color: transparent !important;
+/* Deixa o cabeçalho transparente para manter o visual limpo, mas sem quebrar a barra */
+header {
+    background: transparent !important;
 }
 
-/* Oculta os botões do lado DIREITO (Deploy, Menu do Streamlit, etc) */
-[data-testid="stToolbar"] {
-    display: none !important;
-    visibility: hidden !important;
-}
-
-/* DESTRANCA O BOTÃO DO LADO ESQUERDO: Garante que o ">" apareça quando o menu for fechado */
-[data-testid="collapsedControl"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    z-index: 999999 !important;
-    background-color: #ffffff !important; /* Fundo branco pra destacar */
-    border-radius: 8px !important;        /* Borda arredondada moderna */
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15) !important; /* Sombreado */
-    margin: 10px !important;
-}
-
-/* ========================================= */
-/* 2. LIMPEZA DE MARCAS D'ÁGUA               */
-/* ========================================= */
+/* Oculta APENAS os botões da direita e rodapé (Deploy, 3 pontinhos, etc.) */
+.stAppDeployButton,
+.stDeployButton,
+[data-testid="stToolbar"],
+[data-testid="stActionElements"],
 #MainMenu, 
 footer, 
 .viewerBadge_container, 
@@ -36,8 +20,12 @@ footer,
     display: none !important; 
 }
 
+/* Removemos qualquer regra que tentava forçar o botão ">", 
+   deixando o Streamlit fazer isso sozinho de forma nativa! */
+
+
 /* ========================================= */
-/* 3. ESTILOS VISUAIS NIP                    */
+/* 2. ESTILOS VISUAIS NIP                    */
 /* ========================================= */
 .block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
 .stSelectbox label, .stFileUploader label, .stNumberInput label, .stMultiSelect label { font-size: 14px !important; font-weight: 700 !important; color: #0D256C !important; }
@@ -67,7 +55,7 @@ div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
     box-shadow: 0 4px 8px rgba(13, 37, 108, 0.1);
 }
 
-/* Demais estilos de cards e botões */
+/* Demais estilos de layout */
 .stepper-container { display: flex; justify-content: space-between; margin-top: 0.5rem; margin-bottom: 1.5rem; padding: 0.85rem 1.2rem; background: rgba(13, 37, 108, 0.04); border-radius: 10px; border: 1px solid rgba(13, 37, 108, 0.12); }
 .step-item { font-size: 13px; font-weight: 700; color: #6c757d; display: flex; align-items: center; gap: 6px; }
 .step-item.active { color: #0D256C; }
