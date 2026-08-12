@@ -5,6 +5,7 @@ from streamlit_folium import st_folium
 import zipfile
 import re
 import numpy as np
+import io
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. MOTOR DE EXTRAÇÃO LEVE (SEM TRAVAR)
+# 2. MOTOR DE EXTRAÇÃO LEVE E ANTILIXO
 # ==========================================
 @st.cache_data(show_spinner=False)
 def processar_arquivos_kmz(arquivos):
@@ -24,12 +25,12 @@ def processar_arquivos_kmz(arquivos):
     
     for f in arquivos:
         nome_arquivo = f.name.upper().replace('.KMZ', '').replace('.KML', '')
-        
-        # 1. Leitura bruta do conteúdo
         conteudo_kml = ""
+        
         if f.name.lower().endswith('.kmz'):
             try:
-                with zipfile.ZipFile(f, 'r') as z:
+                # Usa BytesIO para leitura ultrarrápida da memória RAM (não trava)
+                with zipfile.ZipFile(io.BytesIO(f.getvalue()), 'r') as z:
                     for item in z.namelist():
                         if item.lower().endswith('.kml'):
                             conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
@@ -37,41 +38,44 @@ def processar_arquivos_kmz(arquivos):
             except Exception:
                 continue
         else:
-            conteudo_kml = f.read().decode('utf-8', errors='ignore')
-            
-        # 2. Tentativa de extrair Regional e Município dos metadados do CEMAR/Equatorial
+            try:
+                conteudo_kml = f.getvalue().decode('utf-8', errors='ignore')
+            except:
+                continue
+                
+        # Tenta extrair a cidade e regional de dentro do arquivo CEMAR
         mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        municipio = mun_match.group(1).strip().upper() if mun_match else "NÃO IDENTIFICADO"
+        municipio = mun_match.group(1).strip().upper() if mun_match else "N/A"
 
         reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        regional = reg_match.group(1).strip().upper() if reg_match else "NÃO IDENTIFICADO"
+        regional = reg_match.group(1).strip().upper() if reg_match else "N/A"
         
-        # Fallback: Se não achar a regional no KML, tenta extrair a sigla do nome do arquivo (ex: [GDI], [AAM])
-        if regional == "NÃO IDENTIFICADO":
+        if regional == "N/A":
             sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
             if sigla_match:
                 regional = sigla_match.group(1)
 
-        # 3. Extrair apenas as geometrias de linha (LineStrings) para desenhar o traçado
         linhas_mapa = []
         coords_matches = re.findall(r'<coordinates>(.*?)</coordinates>', conteudo_kml, re.DOTALL)
         
         for match in coords_matches:
             pontos = []
-            # Limpa quebras de linha e espaços
             coordenadas_brutas = match.strip().split()
             for coord in coordenadas_brutas:
                 partes = coord.split(',')
                 if len(partes) >= 2:
                     try:
-                        # Folium exige o formato [Latitude, Longitude]
                         lon = float(partes[0].strip())
                         lat = float(partes[1].strip())
-                        pontos.append([lat, lon])
+                        
+                        # 🛡️ FILTRO GEOGRÁFICO RESTRITO (O Fim das linhas loucas!)
+                        # Ignora os 0.0 e só aceita coordenadas que estejam dentro do BRASIL (Lat: -35 a 5, Lon: -75 a -30)
+                        if lat != 0.0 and lon != 0.0 and -35.0 <= lat <= 5.0 and -75.0 <= lon <= -30.0:
+                            pontos.append([lat, lon])
                     except:
                         continue
             
-            # Só adiciona se for uma linha válida
+            # Só adiciona no mapa se a linha tiver pelo menos 2 pontos válidos conectados
             if len(pontos) > 1:
                 linhas_mapa.append(pontos)
                 
@@ -86,77 +90,73 @@ def processar_arquivos_kmz(arquivos):
     return pd.DataFrame(dados_extraidos)
 
 # ==========================================
-# 3. INTERFACE E LÓGICA DE FILTROS
+# 3. INTERFACE E LÓGICA DO MENU
 # ==========================================
 def view_visualizador():
-    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Leve de Rede Existente</h2>", unsafe_allow_html=True)
-    st.markdown("Faça o upload dos seus arquivos KMZ/KML. O sistema extrairá a malha e permitirá o filtro rápido para análise.")
+    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Leve de Malha Elétrica (KMZ/KML)</h2>", unsafe_allow_html=True)
+    st.markdown("Faça o upload dos seus arquivos de rede. O sistema removerá erros geográficos de projeto e permitirá o filtro rápido.")
 
-    # Estado da sessão para armazenar os dados e não recarregar toda hora
-    if 'df_rede' not in st.session_state:
-        st.session_state.df_rede = pd.DataFrame()
+    if 'df_rede_vis' not in st.session_state:
+        st.session_state.df_rede_vis = pd.DataFrame()
 
     with st.sidebar:
         st.markdown("### 📥 1. Upload de Malha")
-        arquivos_upados = st.file_uploader("Selecione os KMZs", type=["kmz", "kml"], accept_multiple_files=True)
+        # Atenção: Fazer upload apenas dos arquivos .KMZ ou .KML
+        arquivos_upados = st.file_uploader("Selecione os Alimentadores", type=["kmz", "kml"], accept_multiple_files=True)
         
         if st.button("⚙️ Processar Arquivos", type="primary", use_container_width=True):
             if arquivos_upados:
-                with st.spinner("Extraindo linhas de rede..."):
+                with st.spinner("Limpando lixo geográfico e extraindo a rede..."):
                     df_extraido = processar_arquivos_kmz(arquivos_upados)
-                    st.session_state.df_rede = df_extraido
-                st.success(f"{len(df_extraido)} Alimentadores processados!")
+                    st.session_state.df_rede_vis = df_extraido
+                if not df_extraido.empty:
+                    st.success(f"✅ {len(df_extraido)} Alimentadores processados com sucesso!")
+                else:
+                    st.error("Nenhuma coordenada válida encontrada nos arquivos.")
             else:
-                st.warning("Suba ao menos um arquivo KMZ.")
+                st.warning("Suba ao menos um arquivo KMZ ou KML.")
                 
         st.markdown("---")
         
-        df = st.session_state.df_rede
+        df = st.session_state.df_rede_vis
         
-        # Filtros Dinâmicos
-        regioes_selecionadas = []
-        municipios_selecionados = []
-        alimentadores_selecionados = []
+        regioes_sel = []
+        municipios_sel = []
+        alim_sel = []
         
         if not df.empty:
             st.markdown("### 🔍 2. Filtros de Exibição")
             
-            # Filtro 1: Regional
+            # Filtro de Regional
             lista_regioes = sorted(df['REGIONAL'].unique().tolist())
-            regioes_selecionadas = st.multiselect("📍 Regional:", lista_regioes)
+            regioes_sel = st.multiselect("📍 Regional:", lista_regioes)
             
-            # Aplica filtro para o próximo dropdown
-            df_filt1 = df[df['REGIONAL'].isin(regioes_selecionadas)] if regioes_selecionadas else df
+            df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
             
-            # Filtro 2: Município
+            # Filtro de Município (depende do anterior)
             lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
-            municipios_selecionados = st.multiselect("🏙️ Município:", lista_municipios)
+            municipios_sel = st.multiselect("🏙️ Município:", lista_municipios)
             
-            # Aplica filtro para o próximo dropdown
-            df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_selecionados)] if municipios_selecionados else df_filt1
+            df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
             
-            # Filtro 3: Alimentador
+            # Filtro de Alimentador (depende do anterior)
             lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
-            alimentadores_selecionados = st.multiselect("⚡ Alimentador (Arquivo):", lista_alimentadores)
+            alim_sel = st.multiselect("⚡ Alimentador (Nome do Arquivo):", lista_alimentadores)
 
     # ==========================================
     # 4. RENDERIZAÇÃO DO MAPA
     # ==========================================
-    if not st.session_state.df_rede.empty:
-        # Pega a base filtrada ou a base completa se nada for filtrado
+    if not st.session_state.df_rede_vis.empty:
         df_mapa = df.copy()
-        if regioes_selecionadas:
-            df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_selecionadas)]
-        if municipios_selecionados:
-            df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_selecionados)]
-        if alimentadores_selecionados:
-            df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_selecionados)]
+        if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
+        if municipios_sel: df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_sel)]
+        if alim_sel: df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alim_sel)]
 
         if df_mapa.empty:
             st.info("Nenhuma rede encontrada para os filtros selecionados.")
             return
 
-        # Centralização inteligente do mapa
+        # Busca o centro para abrir a câmera do mapa no lugar exato
         todas_lats = []
         todas_lons = []
         for linhas in df_mapa['LINHAS']:
@@ -170,34 +170,28 @@ def view_visualizador():
             centro_lon = np.mean(todas_lons)
             mapa = folium.Map(location=[centro_lat, centro_lon], zoom_start=11, tiles="CartoDB positron")
             
-            # Desenhando as linhas
+            # Paleta de cores para diferenciar os alimentadores quando exibidos juntos
             cores = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
             
             for idx, row in df_mapa.iterrows():
                 cor_atual = cores[idx % len(cores)]
                 alimentador_nome = row['ALIMENTADOR']
                 
-                # Criar um grupo para cada alimentador (permite ligar/desligar no mapa)
+                # Agrupa tudo em um Layer Control (Menu flutuante do mapa)
                 fg = folium.FeatureGroup(name=alimentador_nome)
-                
                 for segmento in row['LINHAS']:
                     folium.PolyLine(
                         locations=segmento,
                         color=cor_atual,
                         weight=3,
-                        opacity=0.8,
-                        tooltip=f"<b>Alimentador:</b> {alimentador_nome}<br><b>Mun:</b> {row['MUNICIPIO']}"
+                        opacity=0.9,
+                        tooltip=f"<b>Alimentador:</b> {alimentador_nome}<br><b>Município:</b> {row['MUNICIPIO']}"
                     ).add_to(fg)
-                
                 fg.add_to(mapa)
 
-            # Adiciona controle de camadas (Layer Control)
             folium.LayerControl().add_to(mapa)
-            
-            # Renderiza o mapa na tela inteira
             st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
             
-            # Tabela de Resumo abaixo do mapa
             st.markdown("### 📋 Tabela Resumo dos Alimentadores Visíveis")
             df_resumo = df_mapa[['REGIONAL', 'MUNICIPIO', 'ALIMENTADOR']].reset_index(drop=True)
             st.dataframe(df_resumo, use_container_width=True)
