@@ -13,7 +13,6 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import os
 import base64
-import xml.etree.ElementTree as ET
 
 # ==========================================
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA
@@ -49,6 +48,7 @@ LOGO_PATH = "assets/LOGO_NIP.png"
 STATUS_PADRAO = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
 TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
 
+# Injeção de CSS
 try:
     with open("assets/style.css") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -77,327 +77,10 @@ def limpar_roteirizador():
     ler_planilha_cached.clear()
     tentar_rerun()
 
-
 # ==========================================
-# 3. MOTOR LEVE DO VISUALIZADOR DE KMZ (COM PASTAS E NOMES)
+# 3. LÓGICA PRINCIPAL DO ROTEIRIZADOR
 # ==========================================
-def extrair_coordenadas_vis(texto_coords):
-    """Filtro Antilixo: Converte texto de coordenadas e ignora a Ilha Nula e coordenadas fora do Brasil"""
-    pontos = []
-    coordenadas_brutas = texto_coords.strip().split()
-    for coord in coordenadas_brutas:
-        partes = coord.split(',')
-        if len(partes) >= 2:
-            try:
-                lon = float(partes[0].strip())
-                lat = float(partes[1].strip())
-                if lat != 0.0 and lon != 0.0 and -35.0 <= lat <= 5.0 and -75.0 <= lon <= -30.0:
-                    pontos.append([lat, lon]) 
-            except:
-                continue
-    return pontos
-
-@st.cache_data(show_spinner=False)
-def processar_arquivos_kmz_estruturado(arquivos):
-    dados_extraidos = []
-    
-    for f in arquivos:
-        nome_arquivo = f.name.upper().replace('.KMZ', '').replace('.KML', '')
-        conteudo_kml = ""
-        
-        if f.name.lower().endswith('.kmz'):
-            try:
-                with zipfile.ZipFile(io.BytesIO(f.getvalue()), 'r') as z:
-                    for item in z.namelist():
-                        if item.lower().endswith('.kml'):
-                            conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
-                            break
-            except Exception:
-                continue
-        else:
-            try:
-                conteudo_kml = f.getvalue().decode('utf-8', errors='ignore')
-            except:
-                continue
-        
-        conteudo_kml = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', conteudo_kml)
-        
-        try:
-            root = ET.fromstring(conteudo_kml)
-        except Exception:
-            continue 
-
-        municipio = "N/A"
-        regional = "N/A"
-        mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if mun_match: municipio = mun_match.group(1).strip().upper()
-        reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if reg_match: regional = reg_match.group(1).strip().upper()
-        
-        if regional == "N/A":
-            sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
-            if sigla_match: regional = sigla_match.group(1)
-
-        camadas_do_alimentador = {}
-        
-        for folder in root.findall('.//Folder'):
-            name_tag = folder.find('name')
-            if name_tag is not None and name_tag.text:
-                nome_pasta = name_tag.text.strip().upper()
-                
-                if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta:
-                    continue
-
-                linhas = []
-                pontos = []
-                
-                for placemark in folder.findall('.//Placemark'):
-                    # Captura o NOME DO POSTE/TRAFO/REDE da tag <name>
-                    pm_name_tag = placemark.find('name')
-                    nome_elemento = pm_name_tag.text.strip() if pm_name_tag is not None and pm_name_tag.text else "N/A"
-                    
-                    for ls in placemark.findall('.//LineString/coordinates'):
-                        if ls.text:
-                            coords_linha = extrair_coordenadas_vis(ls.text)
-                            if len(coords_linha) > 1:
-                                linhas.append({'nome': nome_elemento, 'coords': coords_linha})
-                            
-                    for pt in placemark.findall('.//Point/coordinates'):
-                        if pt.text:
-                            coords_ponto = extrair_coordenadas_vis(pt.text)
-                            if len(coords_ponto) > 0:
-                                pontos.append({'nome': nome_elemento, 'coords': coords_ponto[0]}) 
-                
-                if linhas or pontos:
-                    camadas_do_alimentador[nome_pasta] = {
-                        'linhas': linhas,
-                        'pontos': pontos
-                    }
-        
-        if camadas_do_alimentador:
-            dados_extraidos.append({
-                'ALIMENTADOR': nome_arquivo,
-                'REGIONAL': regional,
-                'MUNICIPIO': municipio,
-                'CAMADAS': camadas_do_alimentador
-            })
-            
-    return pd.DataFrame(dados_extraidos)
-
-def view_visualizador():
-    st.markdown("<h2 style='color: #0D256C;'>🗺️ Inspeção de Malha Elétrica (KMZ)</h2>", unsafe_allow_html=True)
-    st.markdown("Faça o upload dos arquivos KMZ. Navegue pelas camadas, pesquise equipamentos e visualize informações ricas via satélite.")
-
-    if 'df_rede_vis' not in st.session_state:
-        st.session_state.df_rede_vis = pd.DataFrame()
-        st.session_state.processed_files = set()
-
-    with st.sidebar:
-        st.markdown("### 📥 1. Upload de Malha")
-        arquivos_upados = st.file_uploader("Selecione os Alimentadores", type=["kmz", "kml"], accept_multiple_files=True)
-        
-        nomes_arquivos_atuais = set([f.name for f in arquivos_upados]) if arquivos_upados else set()
-        
-        if nomes_arquivos_atuais != st.session_state.processed_files:
-            if arquivos_upados:
-                with st.spinner("Processando, limpando lixos e renderizando mapa..."):
-                    df_extraido = processar_arquivos_kmz_estruturado(arquivos_upados)
-                    st.session_state.df_rede_vis = df_extraido
-                    st.session_state.processed_files = nomes_arquivos_atuais
-            else:
-                st.session_state.df_rede_vis = pd.DataFrame()
-                st.session_state.processed_files = set()
-
-        df = st.session_state.df_rede_vis
-        
-        alim_sel = []
-        camadas_ativas = {}
-        termo_pesquisa = ""
-        
-        if not df.empty:
-            st.markdown("---")
-            st.markdown("### 🔎 2. Pesquisa de Equipamento")
-            termo_pesquisa = st.text_input("Nome/Num. Poste ou Trafo:", placeholder="Ex: 554930, 201...", help="Ao pesquisar, o mapa focará diretamente neste equipamento.").strip().upper()
-            
-            st.markdown("---")
-            st.markdown("### 🔍 3. Filtros Geográficos")
-            
-            lista_regioes = sorted(df['REGIONAL'].unique().tolist())
-            regioes_sel = st.multiselect("📍 Escolha a Regional:", lista_regioes)
-            df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
-            
-            lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
-            municipios_sel = st.multiselect("🏙️ Escolha o Município:", lista_municipios)
-            df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
-            
-            lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
-            alim_sel = st.multiselect("⚡ Selecione o Alimentador:", lista_alimentadores)
-            
-            alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
-
-            st.markdown("---")
-            st.markdown("### 🗂️ 4. Camadas (Google Earth)")
-            
-            for alim in alimentadores_visiveis:
-                st.markdown(f"**{alim}**")
-                dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
-                lista_camadas_alim = sorted(list(dict_camadas.keys()))
-                
-                camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE']
-                camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
-                
-                camadas_ativas[alim] = st.multiselect(
-                    "Ligar/Desligar Visibilidade:", 
-                    lista_camadas_alim, 
-                    default=camadas_default,
-                    key=f"ms_{alim}"
-                )
-
-    # ==========================================
-    # 4. RENDERIZAÇÃO DO MAPA (INTERATIVO)
-    # ==========================================
-    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
-    
-    folium.TileLayer(
-        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-        attr='Google',
-        name='Satélite (Google)',
-        overlay=False,
-        control=True
-    ).add_to(mapa)
-
-    folium.TileLayer(
-        tiles='CartoDB positron',
-        name='Mapa Vetorial (Limpo)',
-        overlay=False,
-        control=True
-    ).add_to(mapa)
-
-    if not df.empty:
-        df_mapa = df.copy()
-        if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
-        if municipios_sel: df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_sel)]
-        
-        alimentadores_visiveis = alim_sel if alim_sel else df_mapa['ALIMENTADOR'].unique().tolist()
-        df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_visiveis)]
-
-        dict_cores = {
-            'REDE PRIMÁRIA': '#e6194b', 'REDE PRIMARIA': '#e6194b',
-            'REDE SECUNDÁRIA': '#4363d8', 'REDE SECUNDARIA': '#4363d8',
-            'POSTE': '#a9a9a9', 'TRANSFORMADOR': '#f58231', 
-            'CHAVE': '#3cb44b', 'REGULADOR': '#911eb4', 
-            'RELIGADOR': '#46f0f0', 'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
-        }
-
-        todas_lats, todas_lons = [], []
-        busca_lats, busca_lons = [], []
-        
-        for alim in alimentadores_visiveis:
-            if alim not in df_mapa['ALIMENTADOR'].values:
-                continue
-                
-            dict_camadas = df_mapa[df_mapa['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
-            camadas_permitidas = camadas_ativas.get(alim, [])
-            
-            fg_alim = folium.FeatureGroup(name=f"⚡ {alim}", show=True)
-            
-            for nome_pasta, conteudos in dict_camadas.items():
-                if nome_pasta not in camadas_permitidas:
-                    continue 
-                    
-                cor_elemento = dict_cores.get(nome_pasta, '#333333') 
-                
-                # --- PROCESSA AS LINHAS ---
-                for linha in conteudos['linhas']:
-                    nome_item = linha['nome']
-                    coords_item = linha['coords']
-                    
-                    pesquisado = termo_pesquisa != "" and termo_pesquisa in nome_item.upper()
-                    cor_final = "#FF00FF" if pesquisado else cor_elemento # Magenta se pesquisado
-                    peso = 8 if pesquisado else (3 if 'PRIM' in nome_pasta else 2)
-                    
-                    if pesquisado:
-                        for pt in coords_item:
-                            busca_lats.append(pt[0]); busca_lons.append(pt[1])
-
-                    html_popup = f"""
-                    <div style="min-width: 200px; font-family: sans-serif;">
-                        <h4 style="margin-top: 0; color: {cor_elemento}; border-bottom: 1px solid #ccc; padding-bottom: 5px;">{nome_pasta}</h4>
-                        <b style="color: #555;">IDENTIFICAÇÃO:</b> {html.escape(nome_item)}<br>
-                        <b style="color: #555;">ALIMENTADOR:</b> {html.escape(alim)}
-                    </div>
-                    """
-                    
-                    folium.PolyLine(
-                        locations=coords_item,
-                        color=cor_final,
-                        weight=peso,
-                        opacity=0.9 if not pesquisado else 1.0,
-                        tooltip=f"<b>{nome_pasta}</b><br>{html.escape(nome_item)}",
-                        popup=folium.Popup(html_popup, max_width=300)
-                    ).add_to(fg_alim)
-                    
-                    for pt in coords_item:
-                        todas_lats.append(pt[0]); todas_lons.append(pt[1])
-                
-                # --- PROCESSA OS PONTOS (Postes, Trafos) ---
-                for ponto in conteudos['pontos']:
-                    nome_item = ponto['nome']
-                    coords_item = ponto['coords']
-                    
-                    pesquisado = termo_pesquisa != "" and termo_pesquisa in nome_item.upper()
-                    cor_final = "#FF00FF" if pesquisado else cor_elemento
-                    raio = 10 if pesquisado else (5 if 'TRANSFORMADOR' in nome_pasta else (3 if 'POSTE' in nome_pasta else 4))
-                    
-                    if pesquisado:
-                        busca_lats.append(coords_item[0]); busca_lons.append(coords_item[1])
-                        # Adiciona uma estrela gigante na pesquisa
-                        folium.Marker(
-                            location=coords_item,
-                            icon=folium.Icon(color='purple', icon='star'),
-                            tooltip=f"ALVO ENCONTRADO: {nome_item}"
-                        ).add_to(fg_alim)
-
-                    html_popup = f"""
-                    <div style="min-width: 200px; font-family: sans-serif;">
-                        <h4 style="margin-top: 0; color: {cor_elemento}; border-bottom: 1px solid #ccc; padding-bottom: 5px;">{nome_pasta}</h4>
-                        <b style="color: #555;">IDENTIFICAÇÃO:</b> {html.escape(nome_item)}<br>
-                        <b style="color: #555;">ALIMENTADOR:</b> {html.escape(alim)}<br>
-                        <b style="color: #555;">GPS:</b> {coords_item[0]:.5f}, {coords_item[1]:.5f}
-                    </div>
-                    """
-
-                    folium.CircleMarker(
-                        location=coords_item,
-                        radius=raio,
-                        color=cor_final,
-                        fill=True,
-                        fill_color=cor_final,
-                        fill_opacity=1.0 if pesquisado else 0.8,
-                        tooltip=f"<b>{nome_pasta}</b><br>{html.escape(nome_item)}",
-                        popup=folium.Popup(html_popup, max_width=300)
-                    ).add_to(fg_alim)
-                    
-                    todas_lats.append(coords_item[0]); todas_lons.append(coords_item[1])
-                    
-            fg_alim.add_to(mapa)
-
-        # Foco Inteligente de Câmera
-        if busca_lats and busca_lons:
-            # Se o usuário pesquisou algo, a câmera dá um zoom gigante direto no poste/trafo
-            mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]], max_zoom=19)
-        elif todas_lats and todas_lons:
-            # Se não pesquisou, mostra a visão macro do alimentador
-            mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
-
-    folium.LayerControl(position='topright').add_to(mapa)
-    st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
-
-
-# ==========================================
-# 4. APLICAÇÃO ORIGINAL DO ROTEIRIZADOR
-# ==========================================
-def view_roteirizador():
+def app_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
     if "vrp_status" not in st.session_state: st.session_state.vrp_status = "IDLE"
     if "vrp_state" not in st.session_state: st.session_state.vrp_state = {}
@@ -431,6 +114,16 @@ def view_roteirizador():
     is_locked = status_exec != "IDLE" or is_done
     
     with st.sidebar:
+        if os.path.exists(LOGO_PATH):
+            with open(LOGO_PATH, "rb") as f:
+                encoded_logo = base64.b64encode(f.read()).decode()
+            st.markdown(
+                f'<div style="text-align: center; margin-bottom: 25px;">'
+                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
@@ -978,7 +671,7 @@ def view_roteirizador():
 
                 if not task_files and not saneamento_files and not generica_files: 
                     st.info("Aguardando upload de obras para iniciar o roteamento.")
-                    return
+                    st.stop()
 
                 try:
                     dfs = []
@@ -1031,7 +724,7 @@ def view_roteirizador():
                                 if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
                             dfs.append(df_temp)
                             
-                    if not dfs: return
+                    if not dfs: st.stop()
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
                     total_obras_inicial = len(df_tasks)
@@ -1043,7 +736,7 @@ def view_roteirizador():
                     for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                         if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
                             
-                except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
+                except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); st.stop()
 
                 if not df_status_upload.empty and coluna_status_selecionada:
                     df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
@@ -1071,7 +764,7 @@ def view_roteirizador():
                         status_unicos = sorted(list(set(status_brutos)))
                         padroes_ativos = [s for s in status_unicos if s in STATUS_PADRAO]
                         status_selecionados = c_filt1.multiselect("📌 Filtrar Status de Início:", options=status_unicos, default=padroes_ativos)
-                        if not status_selecionados: st.warning("Selecione um status."); return
+                        if not status_selecionados: st.warning("Selecione um status."); st.stop()
                         df_lev['STATUS_LIMPO'] = df_lev['STATUS LIST'].astype(str).str.strip().str.upper()
                         df_lev = df_lev[df_lev['STATUS_LIMPO'].isin(status_selecionados)].drop(columns=['STATUS_LIMPO'])
 
@@ -1086,7 +779,7 @@ def view_roteirizador():
                         df_lev[coluna_prio] = df_lev[coluna_prio].fillna('SEM TIPO').astype(str).str.strip().str.upper()
                         valores_unicos = sorted(list(set(df_lev[coluna_prio].unique())))
                         tipos_selecionados = c_filt2.multiselect(f"🏷️ 2. Filtrar dados na coluna '{coluna_prio}':", valores_unicos, default=valores_unicos, key='filt_prio_lev')
-                        if not tipos_selecionados: st.warning(f"Selecione valores em {coluna_prio}."); return
+                        if not tipos_selecionados: st.warning(f"Selecione valores em {coluna_prio}."); st.stop()
                         df_lev = df_lev[df_lev[coluna_prio].isin(tipos_selecionados)]
                         default_prio = [x for x in tipos_selecionados if x in TIPOS_PRIORITARIOS]
                         valores_prio = c_filt3.multiselect(f"🚨 3. Definir PRIORIDADE em '{coluna_prio}':", tipos_selecionados, default=default_prio, key='def_prio_lev')
@@ -1131,7 +824,7 @@ def view_roteirizador():
                         st.session_state.col_prioridade_gen = "Nenhuma"
                     df_list.append(df_gen)
 
-            if not df_list: return
+            if not df_list: st.stop()
             df_tasks = pd.concat(df_list, ignore_index=True)
 
             df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -1159,7 +852,7 @@ def view_roteirizador():
                 <b>Análise Estrutural:</b> Das {total_obras_inicial} linhas encontradas, o sistema aprovou <b style="color: #0D256C;">{tot_obras_aprovadas} obras reais</b> (compactadas em {len(df_tasks)} paradas físicas no mapa). <br>
             </div>
             """, unsafe_allow_html=True)
-            if df_tasks.empty: return
+            if df_tasks.empty: st.stop()
 
             df_tasks_alocadas = pd.DataFrame()
             bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
@@ -1269,7 +962,7 @@ def view_roteirizador():
 
                 if df_tasks_alocadas.empty: 
                     st.error("Nenhuma obra encontrou equipes com cobertura geográfica ou com limite diário disponível.")
-                    return
+                    st.stop()
                 bases_records = todas_bases_records 
 
             if has_generica: col_prioridade = st.session_state.get('col_prioridade_gen', "Nenhuma")
@@ -1401,7 +1094,7 @@ def view_roteirizador():
                 tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
                 if tipo_periodo_clean == "Semana" and not dias_semana_selecionados:
                     st.error("Selecione os dias da semana na barra lateral antes de continuar.")
-                    return
+                    st.stop()
 
                 df_rede_kml = pd.DataFrame()
                 rede_files_active = rede_files_m2 if modo_operacao == "2" else (rede_files if 'rede_files' in locals() else None)
@@ -1833,9 +1526,8 @@ def view_roteirizador():
             st.code(traceback.format_exc())
             st.session_state.vrp_status = "IDLE"
             if st.button("⬅️ Voltar e Tentar Novamente"): limpar_roteirizador()
-            return
+            st.stop()
 
-    # EMPACOTAMENTO FINAL
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
         st.markdown("A inteligência já finalizou as rotas. Compilando os dados e construindo os polígonos no mapa para o download...")
@@ -1947,4 +1639,7 @@ def view_roteirizador():
             st.code(traceback.format_exc())
             st.session_state.vrp_status = "IDLE"
             if st.button("⬅️ Voltar"): limpar_roteirizador()
-            return
+            st.stop()
+
+if __name__ == "__main__":
+    app_roteirizador()
