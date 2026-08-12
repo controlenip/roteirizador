@@ -79,7 +79,7 @@ def limpar_roteirizador():
 
 
 # ==========================================
-# 3. MOTOR LEVE DO VISUALIZADOR DE KMZ (COM PASTAS)
+# 3. MOTOR LEVE DO VISUALIZADOR DE KMZ (COM PASTAS E NOMES)
 # ==========================================
 def extrair_coordenadas_vis(texto_coords):
     """Filtro Antilixo: Converte texto de coordenadas e ignora a Ilha Nula e coordenadas fora do Brasil"""
@@ -152,17 +152,21 @@ def processar_arquivos_kmz_estruturado(arquivos):
                 pontos = []
                 
                 for placemark in folder.findall('.//Placemark'):
+                    # Captura o NOME DO POSTE/TRAFO/REDE da tag <name>
+                    pm_name_tag = placemark.find('name')
+                    nome_elemento = pm_name_tag.text.strip() if pm_name_tag is not None and pm_name_tag.text else "N/A"
+                    
                     for ls in placemark.findall('.//LineString/coordinates'):
                         if ls.text:
                             coords_linha = extrair_coordenadas_vis(ls.text)
                             if len(coords_linha) > 1:
-                                linhas.append(coords_linha)
+                                linhas.append({'nome': nome_elemento, 'coords': coords_linha})
                             
                     for pt in placemark.findall('.//Point/coordinates'):
                         if pt.text:
                             coords_ponto = extrair_coordenadas_vis(pt.text)
                             if len(coords_ponto) > 0:
-                                pontos.append(coords_ponto[0]) 
+                                pontos.append({'nome': nome_elemento, 'coords': coords_ponto[0]}) 
                 
                 if linhas or pontos:
                     camadas_do_alimentador[nome_pasta] = {
@@ -182,9 +186,8 @@ def processar_arquivos_kmz_estruturado(arquivos):
 
 def view_visualizador():
     st.markdown("<h2 style='color: #0D256C;'>🗺️ Inspeção de Malha Elétrica (KMZ)</h2>", unsafe_allow_html=True)
-    st.markdown("Faça o upload dos arquivos KMZ. O mapa os guiará automaticamente com visão via Satélite.")
+    st.markdown("Faça o upload dos arquivos KMZ. Navegue pelas camadas, pesquise equipamentos e visualize informações ricas via satélite.")
 
-    # Variáveis de sessão para auto-processamento
     if 'df_rede_vis' not in st.session_state:
         st.session_state.df_rede_vis = pd.DataFrame()
         st.session_state.processed_files = set()
@@ -193,12 +196,11 @@ def view_visualizador():
         st.markdown("### 📥 1. Upload de Malha")
         arquivos_upados = st.file_uploader("Selecione os Alimentadores", type=["kmz", "kml"], accept_multiple_files=True)
         
-        # --- LÓGICA DE AUTO-PROCESSAMENTO INSTANTÂNEO ---
         nomes_arquivos_atuais = set([f.name for f in arquivos_upados]) if arquivos_upados else set()
         
         if nomes_arquivos_atuais != st.session_state.processed_files:
             if arquivos_upados:
-                with st.spinner("Processando e renderizando mapa..."):
+                with st.spinner("Processando, limpando lixos e renderizando mapa..."):
                     df_extraido = processar_arquivos_kmz_estruturado(arquivos_upados)
                     st.session_state.df_rede_vis = df_extraido
                     st.session_state.processed_files = nomes_arquivos_atuais
@@ -210,10 +212,15 @@ def view_visualizador():
         
         alim_sel = []
         camadas_ativas = {}
+        termo_pesquisa = ""
         
         if not df.empty:
             st.markdown("---")
-            st.markdown("### 🔍 2. Filtros de Exibição")
+            st.markdown("### 🔎 2. Pesquisa de Equipamento")
+            termo_pesquisa = st.text_input("Nome/Num. Poste ou Trafo:", placeholder="Ex: 554930, 201...", help="Ao pesquisar, o mapa focará diretamente neste equipamento.").strip().upper()
+            
+            st.markdown("---")
+            st.markdown("### 🔍 3. Filtros Geográficos")
             
             lista_regioes = sorted(df['REGIONAL'].unique().tolist())
             regioes_sel = st.multiselect("📍 Escolha a Regional:", lista_regioes)
@@ -229,8 +236,7 @@ def view_visualizador():
             alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
 
             st.markdown("---")
-            st.markdown("### 🗂️ 3. Camadas (Google Earth)")
-            st.caption("Ligue ou desligue elementos específicos da rede.")
+            st.markdown("### 🗂️ 4. Camadas (Google Earth)")
             
             for alim in alimentadores_visiveis:
                 st.markdown(f"**{alim}**")
@@ -241,20 +247,17 @@ def view_visualizador():
                 camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
                 
                 camadas_ativas[alim] = st.multiselect(
-                    "Ocultar/Exibir:", 
+                    "Ligar/Desligar Visibilidade:", 
                     lista_camadas_alim, 
                     default=camadas_default,
                     key=f"ms_{alim}"
                 )
 
     # ==========================================
-    # 4. RENDERIZAÇÃO DO MAPA (SEMPRE ATIVO)
+    # 4. RENDERIZAÇÃO DO MAPA (INTERATIVO)
     # ==========================================
-    
-    # Cria o mapa vazio por padrão, focado no Maranhão
     mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
     
-    # Camada Satélite (Google)
     folium.TileLayer(
         tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
         attr='Google',
@@ -263,7 +266,6 @@ def view_visualizador():
         control=True
     ).add_to(mapa)
 
-    # Camada Mapa Limpo (CartoDB)
     folium.TileLayer(
         tiles='CartoDB positron',
         name='Mapa Vetorial (Limpo)',
@@ -288,6 +290,7 @@ def view_visualizador():
         }
 
         todas_lats, todas_lons = [], []
+        busca_lats, busca_lons = [], []
         
         for alim in alimentadores_visiveis:
             if alim not in df_mapa['ALIMENTADOR'].values:
@@ -304,33 +307,87 @@ def view_visualizador():
                     
                 cor_elemento = dict_cores.get(nome_pasta, '#333333') 
                 
+                # --- PROCESSA AS LINHAS ---
                 for linha in conteudos['linhas']:
+                    nome_item = linha['nome']
+                    coords_item = linha['coords']
+                    
+                    pesquisado = termo_pesquisa != "" and termo_pesquisa in nome_item.upper()
+                    cor_final = "#FF00FF" if pesquisado else cor_elemento # Magenta se pesquisado
+                    peso = 8 if pesquisado else (3 if 'PRIM' in nome_pasta else 2)
+                    
+                    if pesquisado:
+                        for pt in coords_item:
+                            busca_lats.append(pt[0]); busca_lons.append(pt[1])
+
+                    html_popup = f"""
+                    <div style="min-width: 200px; font-family: sans-serif;">
+                        <h4 style="margin-top: 0; color: {cor_elemento}; border-bottom: 1px solid #ccc; padding-bottom: 5px;">{nome_pasta}</h4>
+                        <b style="color: #555;">IDENTIFICAÇÃO:</b> {html.escape(nome_item)}<br>
+                        <b style="color: #555;">ALIMENTADOR:</b> {html.escape(alim)}
+                    </div>
+                    """
+                    
                     folium.PolyLine(
-                        locations=linha,
-                        color=cor_elemento,
-                        weight=3 if 'PRIM' in nome_pasta else 2,
-                        opacity=0.9,
-                        tooltip=f"{alim}<br><b>{nome_pasta}</b>"
+                        locations=coords_item,
+                        color=cor_final,
+                        weight=peso,
+                        opacity=0.9 if not pesquisado else 1.0,
+                        tooltip=f"<b>{nome_pasta}</b><br>{html.escape(nome_item)}",
+                        popup=folium.Popup(html_popup, max_width=300)
                     ).add_to(fg_alim)
-                    for pt in linha:
+                    
+                    for pt in coords_item:
                         todas_lats.append(pt[0]); todas_lons.append(pt[1])
                 
+                # --- PROCESSA OS PONTOS (Postes, Trafos) ---
                 for ponto in conteudos['pontos']:
+                    nome_item = ponto['nome']
+                    coords_item = ponto['coords']
+                    
+                    pesquisado = termo_pesquisa != "" and termo_pesquisa in nome_item.upper()
+                    cor_final = "#FF00FF" if pesquisado else cor_elemento
+                    raio = 10 if pesquisado else (5 if 'TRANSFORMADOR' in nome_pasta else (3 if 'POSTE' in nome_pasta else 4))
+                    
+                    if pesquisado:
+                        busca_lats.append(coords_item[0]); busca_lons.append(coords_item[1])
+                        # Adiciona uma estrela gigante na pesquisa
+                        folium.Marker(
+                            location=coords_item,
+                            icon=folium.Icon(color='purple', icon='star'),
+                            tooltip=f"ALVO ENCONTRADO: {nome_item}"
+                        ).add_to(fg_alim)
+
+                    html_popup = f"""
+                    <div style="min-width: 200px; font-family: sans-serif;">
+                        <h4 style="margin-top: 0; color: {cor_elemento}; border-bottom: 1px solid #ccc; padding-bottom: 5px;">{nome_pasta}</h4>
+                        <b style="color: #555;">IDENTIFICAÇÃO:</b> {html.escape(nome_item)}<br>
+                        <b style="color: #555;">ALIMENTADOR:</b> {html.escape(alim)}<br>
+                        <b style="color: #555;">GPS:</b> {coords_item[0]:.5f}, {coords_item[1]:.5f}
+                    </div>
+                    """
+
                     folium.CircleMarker(
-                        location=ponto,
-                        radius=4 if 'TRANSFORMADOR' in nome_pasta else (2 if 'POSTE' in nome_pasta else 3),
-                        color=cor_elemento,
+                        location=coords_item,
+                        radius=raio,
+                        color=cor_final,
                         fill=True,
-                        fill_color=cor_elemento,
-                        fill_opacity=1.0,
-                        tooltip=f"{alim}<br><b>{nome_pasta}</b>"
+                        fill_color=cor_final,
+                        fill_opacity=1.0 if pesquisado else 0.8,
+                        tooltip=f"<b>{nome_pasta}</b><br>{html.escape(nome_item)}",
+                        popup=folium.Popup(html_popup, max_width=300)
                     ).add_to(fg_alim)
-                    todas_lats.append(ponto[0]); todas_lons.append(ponto[1])
+                    
+                    todas_lats.append(coords_item[0]); todas_lons.append(coords_item[1])
                     
             fg_alim.add_to(mapa)
 
-        # O Mapa voa automaticamente para o centro dos arquivos plotados!
-        if todas_lats and todas_lons:
+        # Foco Inteligente de Câmera
+        if busca_lats and busca_lons:
+            # Se o usuário pesquisou algo, a câmera dá um zoom gigante direto no poste/trafo
+            mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]], max_zoom=19)
+        elif todas_lats and todas_lons:
+            # Se não pesquisou, mostra a visão macro do alimentador
             mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
 
     folium.LayerControl(position='topright').add_to(mapa)
@@ -1778,6 +1835,7 @@ def view_roteirizador():
             if st.button("⬅️ Voltar e Tentar Novamente"): limpar_roteirizador()
             return
 
+    # EMPACOTAMENTO FINAL
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
         st.markdown("A inteligência já finalizou as rotas. Compilando os dados e construindo os polígonos no mapa para o download...")
@@ -1890,20 +1948,3 @@ def view_roteirizador():
             st.session_state.vrp_status = "IDLE"
             if st.button("⬅️ Voltar"): limpar_roteirizador()
             return
-
-# ==========================================
-# 6. GERENCIADOR DE ROTAS (MENU LATERAL VIRTUAL)
-# ==========================================
-if __name__ == "__main__":
-    st.sidebar.markdown("### 🧭 Menu Principal")
-    modo_app = st.sidebar.radio(
-        "Navegação:",
-        ["🚗 1. Roteirizador de Obras", "🗺️ 2. Visualizador de Malha (KMZ)"],
-        label_visibility="collapsed"
-    )
-    st.sidebar.markdown("---")
-
-    if "1. Roteirizador" in modo_app:
-        view_roteirizador()
-    else:
-        view_visualizador()
