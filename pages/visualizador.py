@@ -11,6 +11,7 @@ import requests
 import unicodedata
 import folium
 from streamlit_folium import st_folium
+import html  # <-- BIBLIOTECA ADICIONADA AQUI
 
 st.set_page_config(page_title="Visualizador de Malha", page_icon="🗺️", layout="wide")
 
@@ -163,13 +164,13 @@ def get_base_geojson():
     except:
         return None
 
-    # Ajusta as cores fiéis à imagem solicitada pelo usuário
+    # Ajusta as cores fiéis à imagem solicitada
     reg_colors = {
         'LESTE': '#1f77b4',     # Azul
         'CENTRO': '#d62728',    # Vermelho
         'NOROESTE': '#bcbd22',  # Amarelo
         'NORTE': '#ff7f0e',     # Laranja
-        'SUL': '#8fbc8f',       # Verde Musgo (Mais claro para satélite)
+        'SUL': '#8fbc8f',       # Verde Musgo
         'DESCONHECIDO': '#cccccc'
     }
 
@@ -295,10 +296,8 @@ with st.sidebar:
 # ==========================================
 # 3. MOTOR FOLIUM OTIMIZADO (SATÉLITE + POPUPS)
 # ==========================================
-# Cria o mapa base centrado no Maranhão
 mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None)
 
-# 1. Camadas de Mapa Base
 folium.TileLayer(
     tiles='CartoDB positron',
     name='Mapa Base (Limpo)',
@@ -306,7 +305,6 @@ folium.TileLayer(
     control=True
 ).add_to(mapa)
 
-# O SATÉLITE REAL DO GOOGLE 
 folium.TileLayer(
     tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
     attr='Google',
@@ -315,26 +313,23 @@ folium.TileLayer(
     control=True
 ).add_to(mapa)
 
-# 2. Camada GeoJSON (Maranhão por Regionais)
 geo_data = get_base_geojson()
 if geo_data:
     def style_function(feature):
         reg_mun = feature['properties'].get('MUNICIPIO', '')
         reg_name = feature['properties'].get('REGIONAL', '')
         
-        # Se um município foi selecionado, destaca apenas ele
         if municipios_sel:
             if reg_mun in municipios_sel:
                 return {
                     'fillColor': feature['properties']['fillColor'],
-                    'color': '#FFD700', # Contorno Dourado 
+                    'color': '#FFD700', 
                     'weight': 3,
                     'fillOpacity': 0.7
                 }
             else:
                 return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
                 
-        # Se regional foi selecionada, destaca apenas a regional
         elif regioes_sel:
             if reg_name in regioes_sel:
                 return {
@@ -346,7 +341,6 @@ if geo_data:
             else:
                 return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
         
-        # Padrão: Mostra o estado inteiro colorido
         return {
             'fillColor': feature['properties']['fillColor'],
             'color': '#000000',
@@ -354,7 +348,6 @@ if geo_data:
             'fillOpacity': 0.6
         }
 
-    # MÁGICA: A cor do estado desaparece se o zoom for maior que 9, para liberar a visão do satélite de perto!
     folium.GeoJson(
         geo_data,
         name="Divisão IBGE (Maranhão)",
@@ -384,8 +377,6 @@ if geo_data:
         </script>
     """)).add_to(mapa)
 
-
-# 3. Processador de Redes e Popups
 if not df.empty:
     df_mapa = df.copy()
     if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
@@ -398,7 +389,6 @@ if not df.empty:
             mask_camadas = mask_camadas | ((df_mapa['ALIMENTADOR'] == alim) & (df_mapa['TIPO_REDE'].isin(camadas_ativas[alim])))
     df_mapa = df_mapa[mask_camadas]
 
-    # Processador de Buscas
     df_busca = pd.DataFrame()
     nearest_idx = None
     todas_lats, todas_lons = [], []
@@ -425,7 +415,6 @@ if not df.empty:
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    # Prepara Polígonos Otimizados
     fg_rede = folium.FeatureGroup(name="Rede Elétrica (Malha)")
     
     def criar_popup(row):
@@ -443,7 +432,6 @@ if not df.empty:
         """
         return folium.Popup(html_popup, max_width=350)
 
-    # Desenha Malha Padrão
     for _, row in df_mapa.iterrows():
         if row['TIPO_GEOMETRIA'] == 'Linha':
             folium.PolyLine(
@@ -467,7 +455,6 @@ if not df.empty:
             ).add_to(fg_rede)
             todas_lats.append(row['COORDS'][0]); todas_lons.append(row['COORDS'][1])
 
-    # Desenha Resultados da Pesquisa (Gigante e Rosa)
     busca_lats, busca_lons = [], []
     for _, row in df_busca.iterrows():
         if row['TIPO_GEOMETRIA'] == 'Linha':
@@ -489,7 +476,6 @@ if not df.empty:
             ).add_to(fg_rede)
             busca_lats.append(row['COORDS'][0]); busca_lons.append(row['COORDS'][1])
 
-    # Adiciona Pino Dourado de Coordenada da Pesquisa Manual
     if busca_lat is not None and busca_lon is not None:
         folium.Marker(
             location=[busca_lat, busca_lon],
@@ -499,13 +485,11 @@ if not df.empty:
 
     fg_rede.add_to(mapa)
 
-    # 4. Movimentação Inteligente de Câmera
     if busca_lat is not None and busca_lon is not None:
         mapa.fit_bounds([[busca_lat - 0.001, busca_lon - 0.001], [busca_lat + 0.001, busca_lon + 0.001]])
     elif busca_lats and busca_lons:
         mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]])
     elif municipios_sel and geo_data:
-        # Se selecionou um município, procura ele no GeoJSON para focar a câmera no polígono do município
         mun_foco_lats, mun_foco_lons = [], []
         for feature in geo_data['features']:
             if feature['properties'].get('MUNICIPIO') in municipios_sel:
@@ -526,6 +510,4 @@ if not df.empty:
         mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
 
 folium.LayerControl(position='topright').add_to(mapa)
-
-# Altura expansiva para usar todo o monitor
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
