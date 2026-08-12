@@ -40,7 +40,7 @@ def renderizar_painel_lateral(cap_eq, obras_prontas, eq_sel, cap_tot):
     '''
 
 def gerar_csv_autocad_proj(df_routed):
-    """Gera um arquivo CSV limpo no padrão Topografia para importar no Proj+/AutoCAD"""
+    """Gera um arquivo CSV limpo no padrão Topografia (Ponto, X, Y, Z, Descrição) para importar no Proj+/AutoCAD"""
     df_cad = pd.DataFrame()
     df_real = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
     
@@ -49,14 +49,13 @@ def gerar_csv_autocad_proj(df_routed):
     df_cad['NORTE_LATITUDE'] = df_real['LATITUDE']
     df_cad['ELEVACAO_Z'] = 0
     
-    # Adiciona a informação do Alimentador na descrição do AutoCAD
-    desc_extra = ""
+    # Tratamento seguro caso a coluna de postes previstos não exista (Evita o KeyError)
     if 'POSTES PREVISTOS' in df_real.columns:
-        desc_extra += " | Postes Prev: " + df_real['POSTES PREVISTOS'].fillna(0).astype(int).astype(str)
-    if 'ALIMENTADOR_PROXIMO' in df_real.columns:
-        desc_extra += " | Alim: " + df_real['ALIMENTADOR_PROXIMO'].fillna('N/A').astype(str)
+        postes_str = " | Postes Prev: " + df_real['POSTES PREVISTOS'].fillna(0).astype(int).astype(str)
+    else:
+        postes_str = ""
         
-    df_cad['DESCRICAO'] = df_real['NOME'].astype(str) + desc_extra + " | Eq: " + df_real['BASE_ATRIBUIDA'].astype(str)
+    df_cad['DESCRICAO'] = df_real['NOME'].astype(str) + postes_str + " | Eq: " + df_real['BASE_ATRIBUIDA'].astype(str)
     
     return df_cad.to_csv(index=False, sep=';').encode('utf-8-sig')
 
@@ -73,8 +72,7 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
                 link_maps = f"https://www.google.com/maps/search/?api=1&query={new_row.get('LATITUDE','')},{new_row.get('LONGITUDE','')}"
                 new_row['LINK_NAVEGACAO_OFFLINE'] = link_maps
                 
-                # NOVO: Garante que a coluna ALIMENTADOR_PROXIMO seja incluída no Excel
-                for vrp_col in ['NOME_DIA', 'ORDEM', 'SEMANA', 'DIA', 'PERIODO', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ALERTA_TOPOLOGIA', 'DISTANCIA_PROXIMO_PONTO_KM', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'SUPER_PONTO', 'BASE_ATRIBUIDA', 'PRIORIDADE', 'ALIMENTADOR_PROXIMO', 'DISTANCIA_REDE_METROS', 'POSTES PREVISTOS', 'LATITUDE_REDE', 'LONGITUDE_REDE']:
+                for vrp_col in ['NOME_DIA', 'ORDEM', 'SEMANA', 'DIA', 'PERIODO', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ALERTA_TOPOLOGIA', 'DISTANCIA_PROXIMO_PONTO_KM', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'SUPER_PONTO', 'BASE_ATRIBUIDA', 'PRIORIDADE', 'DISTANCIA_REDE_METROS', 'POSTES PREVISTOS', 'LATITUDE_REDE', 'LONGITUDE_REDE']:
                     if vrp_col in row:
                         new_row[vrp_col] = row[vrp_col]
                 unpacked_rows.append(new_row)
@@ -112,7 +110,7 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
             col_letter = get_column_letter(col_idx)
             col_name_upper = str(col_name).upper()
             if any(x in col_name_upper for x in ['NOME', 'CLIENTE', 'ENDEREÇO', 'INFORMAÇ']): ws.column_dimensions[col_letter].width = 45.0
-            elif any(x in col_name_upper for x in ['PROTOCOLO', 'MUNICIPIO', 'BASE', 'LOCALIDADE', 'LINK_NAVEGACAO_OFFLINE', 'ALIMENTADOR_PROXIMO']): ws.column_dimensions[col_letter].width = 25.0
+            elif any(x in col_name_upper for x in ['PROTOCOLO', 'MUNICIPIO', 'BASE', 'LOCALIDADE', 'LINK_NAVEGACAO_OFFLINE']): ws.column_dimensions[col_letter].width = 25.0
             else: ws.column_dimensions[col_letter].width = 18.0
                 
             if col_name_upper in ['NOME_DIA', 'ORDEM', 'SEMANA', 'DIA', 'PERIODO', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'TEMPO_VIAGEM_MINUTOS', 'PRIORIDADE', 'HORA_INICIO', 'HORA_FIM', 'DISTANCIA_REDE_METROS', 'POSTES PREVISTOS', 'LATITUDE_REDE', 'LONGITUDE_REDE']:
@@ -270,7 +268,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                         postes_prev = r.get('POSTES PREVISTOS')
                         rede_lat = r.get('LATITUDE_REDE')
                         rede_lon = r.get('LONGITUDE_REDE')
-                        alim_prox = r.get('ALIMENTADOR_PROXIMO')
                         
                         extra_rows_list = []
                         for c in cols_exibir:
@@ -278,11 +275,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                                 val_html = formata_campo_html(r.get(c, ''))
                                 extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
                                 
-                        # Adiciona o Alimentador Mais Próximo no Balão do KML
-                        if pd.notna(alim_prox):
-                            extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Alimentador da Rede:</td><td style='padding:3px 6px; color:#28a745; font-weight:bold;'>{html.escape(str(alim_prox))}</td></tr>")
                         if pd.notna(dist_rede):
-                            extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Distância da Rede:</td><td style='padding:3px 6px; color:#17a2b8; font-weight:bold;'>{dist_rede:.1f} Metros</td></tr>")
+                            extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Rede Mais Próxima:</td><td style='padding:3px 6px; color:#17a2b8; font-weight:bold;'>{dist_rede:.1f} Metros</td></tr>")
                         if pd.notna(rede_lat) and pd.notna(rede_lon):
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Coord. da Rede:</td><td style='padding:3px 6px; color:#e83e8c; font-weight:bold;'>{rede_lat:.6f}, {rede_lon:.6f}</td></tr>")
                         if pd.notna(postes_prev):
@@ -365,7 +359,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                     postes_prev = r.get('POSTES PREVISTOS')
                     rede_lat = r.get('LATITUDE_REDE')
                     rede_lon = r.get('LONGITUDE_REDE')
-                    alim_prox = r.get('ALIMENTADOR_PROXIMO')
                     
                     extra_rows_list = []
                     for c in cols_exibir:
@@ -373,11 +366,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir, lista_toda
                             val_html = formata_campo_html(r.get(c, ''))
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
                             
-                    # Adiciona o Alimentador Mais Próximo no Balão do KML
-                    if pd.notna(alim_prox):
-                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Alimentador da Rede:</td><td style='padding:3px 6px; color:#28a745; font-weight:bold;'>{html.escape(str(alim_prox))}</td></tr>")
                     if pd.notna(dist_rede):
-                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Distância da Rede:</td><td style='padding:3px 6px; color:#17a2b8; font-weight:bold;'>{dist_rede:.1f} Metros</td></tr>")
+                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Rede Mais Próxima:</td><td style='padding:3px 6px; color:#17a2b8; font-weight:bold;'>{dist_rede:.1f} Metros</td></tr>")
                     if pd.notna(rede_lat) and pd.notna(rede_lon):
                         extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Coord. da Rede:</td><td style='padding:3px 6px; color:#e83e8c; font-weight:bold;'>{rede_lat:.6f}, {rede_lon:.6f}</td></tr>")
                     if pd.notna(postes_prev):
