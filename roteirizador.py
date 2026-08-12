@@ -13,8 +13,6 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import os
 import base64
-import xml.etree.ElementTree as ET
-import pydeck as pdk
 
 # ==========================================
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA
@@ -25,10 +23,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Cria a pasta do Banco de Dados de Malha se não existir
-if not os.path.exists("database/redes"):
-    os.makedirs("database/redes", exist_ok=True)
 
 # ==========================================
 # 2. IMPORTAÇÕES DOS MÓDULOS DIVIDIDOS
@@ -82,313 +76,10 @@ def limpar_roteirizador():
     ler_planilha_cached.clear()
     tentar_rerun()
 
-
 # ==========================================
-# 3. MOTOR GPU / BANCO DE DADOS DE MALHA (PYDECK + PICKLE)
+# 3. LÓGICA DO ROTEIRIZADOR
 # ==========================================
-def extrair_coordenadas_pdk(texto_coords):
-    """Extrai e valida coordenadas no formato [LON, LAT] exigido pela placa de vídeo (PyDeck)"""
-    pontos = []
-    for coord in texto_coords.strip().split():
-        partes = coord.split(',')
-        if len(partes) >= 2:
-            try:
-                lon = float(partes[0].strip())
-                lat = float(partes[1].strip())
-                # Filtro Antilixo: Só aceita Brasil
-                if lat != 0.0 and lon != 0.0 and -35.0 <= lat <= 5.0 and -75.0 <= lon <= -30.0:
-                    pontos.append([lon, lat]) 
-            except:
-                continue
-    return pontos
-
-def processar_e_salvar_kmz(arquivos):
-    dict_cores_rgb = {
-        'REDE PRIMÁRIA': [230, 25, 75], 'REDE PRIMARIA': [230, 25, 75],
-        'REDE SECUNDÁRIA': [67, 99, 216], 'REDE SECUNDARIA': [67, 99, 216],
-        'POSTE': [169, 169, 169], 'TRANSFORMADOR': [245, 130, 49], 
-        'CHAVE': [60, 180, 75], 'REGULADOR': [145, 30, 180], 
-        'RELIGADOR': [70, 240, 240], 'SUBESTAÇÃO': [150, 150, 150], 'SUBESTACAO': [150, 150, 150]
-    }
-
-    novos_processados = 0
-    for f in arquivos:
-        nome_arquivo = f.name.upper().replace('.KMZ', '').replace('.KML', '')
-        caminho_db = f"database/redes/{nome_arquivo}.pkl"
-        
-        # Se já existe no Banco de Dados, pula.
-        if os.path.exists(caminho_db):
-            continue
-            
-        conteudo_kml = ""
-        if f.name.lower().endswith('.kmz'):
-            try:
-                with zipfile.ZipFile(io.BytesIO(f.getvalue()), 'r') as z:
-                    for item in z.namelist():
-                        if item.lower().endswith('.kml'):
-                            conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
-                            break
-            except Exception: continue
-        else:
-            try: conteudo_kml = f.getvalue().decode('utf-8', errors='ignore')
-            except: continue
-        
-        conteudo_kml = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', conteudo_kml)
-        try: root = ET.fromstring(conteudo_kml)
-        except Exception: continue 
-
-        municipio = "N/A"
-        regional = "N/A"
-        mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if mun_match: municipio = mun_match.group(1).strip().upper()
-        reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if reg_match: regional = reg_match.group(1).strip().upper()
-        if regional == "N/A":
-            sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
-            if sigla_match: regional = sigla_match.group(1)
-
-        registros_flat = []
-        
-        for folder in root.findall('.//Folder'):
-            name_tag = folder.find('name')
-            if name_tag is not None and name_tag.text:
-                nome_pasta = name_tag.text.strip().upper()
-                if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta: continue
-
-                cor_elemento = dict_cores_rgb.get(nome_pasta, [100, 100, 100]) # Cinza padrão se desconhecido
-                
-                for placemark in folder.findall('.//Placemark'):
-                    pm_name_tag = placemark.find('name')
-                    nome_elemento = pm_name_tag.text.strip() if pm_name_tag is not None and pm_name_tag.text else "S/N"
-                    
-                    for ls in placemark.findall('.//LineString/coordinates'):
-                        if ls.text:
-                            coords = extrair_coordenadas_pdk(ls.text)
-                            if len(coords) > 1:
-                                registros_flat.append({
-                                    'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
-                                    'TIPO_GEOMETRIA': 'Linha', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords, 'COR': cor_elemento, 'RAIO': 0
-                                })
-                            
-                    for pt in placemark.findall('.//Point/coordinates'):
-                        if pt.text:
-                            coords = extrair_coordenadas_pdk(pt.text)
-                            if len(coords) > 0:
-                                raio = 5 if 'TRANSFORMADOR' in nome_pasta else (2 if 'POSTE' in nome_pasta else 3)
-                                registros_flat.append({
-                                    'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
-                                    'TIPO_GEOMETRIA': 'Ponto', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords[0], 'COR': cor_elemento, 'RAIO': raio
-                                })
-        
-        if registros_flat:
-            # Salva no disco rígido comprimido e super rápido
-            df_alimentador = pd.DataFrame(registros_flat)
-            df_alimentador.to_pickle(caminho_db)
-            novos_processados += 1
-            
-    return novos_processados
-
-@st.cache_data(show_spinner=False)
-def carregar_banco_redes():
-    """Lê todos os alimentadores já processados que estão no HD/Servidor"""
-    dfs = []
-    arquivos = [f for f in os.listdir("database/redes") if f.endswith('.pkl')]
-    for f in arquivos:
-        try: dfs.append(pd.read_pickle(f"database/redes/{f}"))
-        except: pass
-    if dfs: return pd.concat(dfs, ignore_index=True)
-    return pd.DataFrame()
-
-
-def view_visualizador():
-    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Avançado de Malha (Alta Performance)</h2>", unsafe_allow_html=True)
-    st.markdown("O sistema usa **Aceleração 3D (GPU)** e **Banco de Dados** para aguentar o estado inteiro sem travar. O que você upar fica salvo e disponível na hora.")
-
-    # Carrega base local
-    df = carregar_banco_redes()
-
-    with st.sidebar:
-        st.markdown("### 📥 1. Upload para o Banco de Dados")
-        st.caption("A IA vai ler, converter e salvar no servidor. Nunca mais precisará fazer upload deste mesmo KMZ.")
-        arquivos_upados = st.file_uploader("Arraste novos KMZs aqui", type=["kmz", "kml"], accept_multiple_files=True)
-        
-        if arquivos_upados:
-            if st.button("💾 Processar e Salvar no Banco", type="primary", use_container_width=True):
-                with st.spinner("Decodificando, limpando lixos e gravando em disco..."):
-                    qtd = processar_e_salvar_kmz(arquivos_upados)
-                if qtd > 0:
-                    st.success(f"✅ {qtd} novos Alimentadores salvos!")
-                    carregar_banco_redes.clear() # Limpa o cache para forçar a leitura do novo arquivo
-                    time.sleep(1)
-                    tentar_rerun()
-                else:
-                    st.info("Os arquivos upados já existiam no banco ou não continham redes válidas.")
-
-        st.markdown("---")
-        
-        if not df.empty:
-            st.markdown("### 🗑️ Gerenciar Malha Local")
-            lista_arquivos_bd = sorted(df['ALIMENTADOR'].unique().tolist())
-            alim_para_deletar = st.selectbox("Apagar Alimentador do Banco:", ["Selecione..."] + lista_arquivos_bd)
-            if alim_para_deletar != "Selecione...":
-                if st.button("❌ Excluir Permanentemente", use_container_width=True):
-                    caminho_del = f"database/redes/{alim_para_deletar}.pkl"
-                    if os.path.exists(caminho_del):
-                        os.remove(caminho_del)
-                        carregar_banco_redes.clear()
-                        st.success("Excluído!")
-                        time.sleep(1)
-                        tentar_rerun()
-
-            st.markdown("---")
-            st.markdown("### 🔎 2. Pesquisa de Equipamento")
-            termo_pesquisa = st.text_input("Nome/Num. Poste ou Trafo:", placeholder="Ex: 554930...", help="A câmera dará um zoom diretamente no equipamento!").strip().upper()
-            
-            st.markdown("---")
-            st.markdown("### 🔍 3. Filtros Geográficos")
-            lista_regioes = sorted(df['REGIONAL'].unique().tolist())
-            regioes_sel = st.multiselect("📍 Regional:", lista_regioes)
-            df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
-            
-            lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
-            municipios_sel = st.multiselect("🏙️ Município:", lista_municipios)
-            df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
-            
-            lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
-            alim_sel = st.multiselect("⚡ Alimentador:", lista_alimentadores)
-            
-            alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
-
-            st.markdown("---")
-            st.markdown("### 🗂️ 4. Camadas (Desempenho)")
-            camadas_ativas = {}
-            for alim in alimentadores_visiveis:
-                st.markdown(f"**{alim}**")
-                lista_camadas_alim = sorted(df[df['ALIMENTADOR'] == alim]['TIPO_REDE'].unique().tolist())
-                
-                # Por padrão, carrega só a estrutura crítica
-                camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE']
-                camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
-                
-                camadas_ativas[alim] = st.multiselect(
-                    "Ligado/Desligado:", 
-                    lista_camadas_alim, 
-                    default=camadas_default,
-                    key=f"ms_{alim}"
-                )
-
-            st.markdown("---")
-            tipo_mapa = st.radio("Visual do Mapa:", ["🗺️ Satélite (Real)", "🛣️ Vetorial (Rápido)"])
-            map_style_pdk = "satellite" if "Satélite" in tipo_mapa else "road"
-
-    # ==========================================
-    # 4. RENDERIZAÇÃO DO MAPA 3D (GPU)
-    # ==========================================
-    if df.empty:
-        # Mapa Vazio Inicial
-        st.info("O Banco de Dados de Malha está vazio. Faça o upload de um KMZ no menu lateral.")
-        view_state = pdk.ViewState(latitude=-5.2, longitude=-45.0, zoom=6, pitch=0)
-        st.pydeck_chart(pdk.Deck(initial_view_state=view_state, map_style="road"))
-        return
-
-    # Aplica filtros
-    df_mapa = df.copy()
-    if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
-    if municipios_sel: df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_sel)]
-    df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_visiveis)]
-
-    # Filtra as Camadas (Pastas) ligadas/desligadas
-    mask_camadas = pd.Series(False, index=df_mapa.index)
-    for alim in alimentadores_visiveis:
-        if alim in camadas_ativas:
-            mask_camadas = mask_camadas | ((df_mapa['ALIMENTADOR'] == alim) & (df_mapa['TIPO_REDE'].isin(camadas_ativas[alim])))
-    df_mapa = df_mapa[mask_camadas]
-
-    # SEPARA EM PESQUISA VS NORMAL
-    df_busca = pd.DataFrame()
-    if termo_pesquisa != "":
-        df_busca = df_mapa[df_mapa['NOME'].str.contains(termo_pesquisa, case=False, na=False)]
-        df_mapa = df_mapa[~df_mapa['NOME'].str.contains(termo_pesquisa, case=False, na=False)]
-
-    df_linhas = df_mapa[df_mapa['TIPO_GEOMETRIA'] == 'Linha']
-    df_pontos = df_mapa[df_mapa['TIPO_GEOMETRIA'] == 'Ponto']
-
-    layers = []
-
-    # Camada de Linhas
-    if not df_linhas.empty:
-        layers.append(
-            pdk.Layer(
-                "PathLayer",
-                data=df_linhas,
-                pickable=True,
-                get_color="COR",
-                width_scale=20,
-                width_min_pixels=2,
-                get_path="COORDS",
-                get_width=5
-            )
-        )
-    
-    # Camada de Pontos
-    if not df_pontos.empty:
-        layers.append(
-            pdk.Layer(
-                "ScatterplotLayer",
-                data=df_pontos,
-                pickable=True,
-                get_position="COORDS",
-                get_color="COR",
-                get_radius="RAIO",
-                radius_min_pixels=3,
-                radius_max_pixels=6
-            )
-        )
-        
-    # Camada da Pesquisa (Gigante e Rosa)
-    if not df_busca.empty:
-        df_busca_linhas = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Linha']
-        df_busca_pontos = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto']
-        
-        if not df_busca_linhas.empty:
-            layers.append(pdk.Layer("PathLayer", data=df_busca_linhas, pickable=True, get_color=[255, 0, 255], width_min_pixels=6, get_path="COORDS"))
-        if not df_busca_pontos.empty:
-            layers.append(pdk.Layer("ScatterplotLayer", data=df_busca_pontos, pickable=True, get_position="COORDS", get_color=[255, 0, 255], radius_min_pixels=8, radius_max_pixels=15))
-
-    # Câmera Inteligente
-    if not df_busca.empty and not df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto'].empty:
-        alvo = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto'].iloc[0]['COORDS']
-        view_state = pdk.ViewState(latitude=alvo[1], longitude=alvo[0], zoom=18, pitch=45)
-    elif not df_pontos.empty:
-        centro_lon = df_pontos['COORDS'].apply(lambda x: x[0]).mean()
-        centro_lat = df_pontos['COORDS'].apply(lambda x: x[1]).mean()
-        view_state = pdk.ViewState(latitude=centro_lat, longitude=centro_lon, zoom=12, pitch=0)
-    else:
-        view_state = pdk.ViewState(latitude=-5.2, longitude=-45.0, zoom=6, pitch=0)
-
-    # Dicionário do Tooltip (Pop-up ao passar o mouse)
-    tooltip_html = {
-        "html": "<b>{TIPO_REDE}</b><br/><b>Nome/Nº:</b> {NOME}<br/><b>Alim:</b> {ALIMENTADOR}",
-        "style": {"backgroundColor": "steelblue", "color": "white", "fontFamily": "sans-serif"}
-    }
-
-    # Joga pro motor 3D!
-    r = pdk.Deck(
-        layers=layers,
-        initial_view_state=view_state,
-        map_style=map_style_pdk,
-        tooltip=tooltip_html
-    )
-    
-    st.pydeck_chart(r)
-
-
-# ==========================================
-# 5. APLICAÇÃO ORIGINAL DO ROTEIRIZADOR
-# ==========================================
-def view_roteirizador():
+def app_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
     if "vrp_status" not in st.session_state: st.session_state.vrp_status = "IDLE"
     if "vrp_state" not in st.session_state: st.session_state.vrp_state = {}
@@ -422,6 +113,16 @@ def view_roteirizador():
     is_locked = status_exec != "IDLE" or is_done
     
     with st.sidebar:
+        if os.path.exists(LOGO_PATH):
+            with open(LOGO_PATH, "rb") as f:
+                encoded_logo = base64.b64encode(f.read()).decode()
+            st.markdown(
+                f'<div style="text-align: center; margin-bottom: 25px;">'
+                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
@@ -822,7 +523,6 @@ def view_roteirizador():
         sidebar_html_placeholder.markdown(renderizar_painel_lateral(meta_exata_por_equipe if not roteirizar_tudo_meta else "Ilimitado", tot_obras_reais, tot_equipes_cadastradas, meta_global_exata if not roteirizar_tudo_meta else "Ilimitado"), unsafe_allow_html=True)
         return 
 
-    # UPLOAD E FILTROS INICIAIS
     if status_exec == "IDLE" and not is_done:
         st.markdown("### ⚙️ Selecione a Estratégia de Roteirização")
         modo_selecionado = st.radio(
