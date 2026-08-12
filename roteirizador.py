@@ -18,7 +18,7 @@ import base64
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA (DEVE SER O 1º COMANDO)
 # ==========================================
 st.set_page_config(
-    page_title="Roteirizador NIP v2.0 - UI Moderna",
+    page_title="Roteirizador NIP v2.0",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -79,8 +79,166 @@ def limpar_roteirizador():
     ler_planilha_cached.clear()
     tentar_rerun()
 
+
 # ==========================================
-# 3. TELA PRINCIPAL (UI STREAMLIT)
+# 3. NOVO MOTOR LEVE DO VISUALIZADOR DE KMZ
+# ==========================================
+@st.cache_data(show_spinner=False)
+def processar_arquivos_kmz(arquivos):
+    dados_extraidos = []
+    for f in arquivos:
+        nome_arquivo = f.name.upper().replace('.KMZ', '').replace('.KML', '')
+        conteudo_kml = ""
+        
+        if f.name.lower().endswith('.kmz'):
+            try:
+                with zipfile.ZipFile(f, 'r') as z:
+                    for item in z.namelist():
+                        if item.lower().endswith('.kml'):
+                            conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
+                            break
+            except Exception:
+                continue
+        else:
+            conteudo_kml = f.read().decode('utf-8', errors='ignore')
+            
+        # Extrai Município e Regional dos metadados do arquivo via Regex (Ultra rápido)
+        mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
+        municipio = mun_match.group(1).strip().upper() if mun_match else "N/A"
+
+        reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
+        regional = reg_match.group(1).strip().upper() if reg_match else "N/A"
+        
+        if regional == "N/A":
+            sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
+            if sigla_match:
+                regional = sigla_match.group(1)
+
+        linhas_mapa = []
+        coords_matches = re.findall(r'<coordinates>(.*?)</coordinates>', conteudo_kml, re.DOTALL)
+        
+        for match in coords_matches:
+            pontos = []
+            coordenadas_brutas = match.strip().split()
+            for coord in coordenadas_brutas:
+                partes = coord.split(',')
+                if len(partes) >= 2:
+                    try:
+                        lon = float(partes[0].strip())
+                        lat = float(partes[1].strip())
+                        pontos.append([lat, lon])
+                    except:
+                        continue
+            if len(pontos) > 1:
+                linhas_mapa.append(pontos)
+                
+        if linhas_mapa:
+            dados_extraidos.append({
+                'ALIMENTADOR': nome_arquivo,
+                'REGIONAL': regional,
+                'MUNICIPIO': municipio,
+                'LINHAS': linhas_mapa
+            })
+            
+    return pd.DataFrame(dados_extraidos)
+
+def view_visualizador():
+    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Leve de Malha Elétrica (KMZ)</h2>", unsafe_allow_html=True)
+    st.markdown("Faça o upload dos seus arquivos KMZ/KML. O sistema extrairá a malha e criará filtros instantâneos no menu lateral.")
+
+    if 'df_rede' not in st.session_state:
+        st.session_state.df_rede = pd.DataFrame()
+
+    col_up1, col_up2 = st.columns([1, 2])
+    with col_up1:
+        arquivos_upados = st.file_uploader("📂 1. Suba os arquivos KMZ da Malha", type=["kmz", "kml"], accept_multiple_files=True)
+        if st.button("⚙️ Processar e Desenhar", type="primary", use_container_width=True):
+            if arquivos_upados:
+                with st.spinner("Extraindo linhas de rede (Modo Rápido)..."):
+                    df_extraido = processar_arquivos_kmz(arquivos_upados)
+                    st.session_state.df_rede = df_extraido
+                st.success(f"✅ {len(df_extraido)} Alimentadores prontos!")
+            else:
+                st.warning("Suba ao menos um arquivo KMZ.")
+
+    df = st.session_state.df_rede
+    
+    regioes_selecionadas = []
+    municipios_selecionados = []
+    alimentadores_selecionados = []
+    
+    if not df.empty:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🔍 Filtros de Exibição (Mapa)")
+        
+        lista_regioes = sorted(df['REGIONAL'].unique().tolist())
+        regioes_selecionadas = st.sidebar.multiselect("📍 Escolha a Regional:", lista_regioes)
+        
+        df_filt1 = df[df['REGIONAL'].isin(regioes_selecionadas)] if regioes_selecionadas else df
+        
+        lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
+        municipios_selecionados = st.sidebar.multiselect("🏙️ Escolha o Município:", lista_municipios)
+        
+        df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_selecionados)] if municipios_selecionados else df_filt1
+        
+        lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
+        alimentadores_selecionados = st.sidebar.multiselect("⚡ Selecione o Alimentador:", lista_alimentadores)
+
+    st.markdown("---")
+
+    if not st.session_state.df_rede.empty:
+        df_mapa = df.copy()
+        if regioes_selecionadas:
+            df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_selecionadas)]
+        if municipios_selecionados:
+            df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_selecionados)]
+        if alimentadores_selecionados:
+            df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_selecionados)]
+
+        if df_mapa.empty:
+            st.info("Nenhuma rede encontrada para os filtros selecionados.")
+            return
+
+        todas_lats = []
+        todas_lons = []
+        for linhas in df_mapa['LINHAS']:
+            for segmento in linhas:
+                for ponto in segmento:
+                    todas_lats.append(ponto[0])
+                    todas_lons.append(ponto[1])
+                    
+        if todas_lats and todas_lons:
+            centro_lat = np.mean(todas_lats)
+            centro_lon = np.mean(todas_lons)
+            mapa = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="CartoDB positron")
+            
+            cores = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
+            
+            for idx, row in df_mapa.iterrows():
+                cor_atual = cores[idx % len(cores)]
+                alimentador_nome = row['ALIMENTADOR']
+                
+                fg = folium.FeatureGroup(name=alimentador_nome)
+                for segmento in row['LINHAS']:
+                    folium.PolyLine(
+                        locations=segmento,
+                        color=cor_atual,
+                        weight=3,
+                        opacity=0.8,
+                        tooltip=f"<b>Alimentador:</b> {alimentador_nome}<br><b>Mun:</b> {row['MUNICIPIO']}"
+                    ).add_to(fg)
+                fg.add_to(mapa)
+
+            folium.LayerControl().add_to(mapa)
+            st_folium(mapa, use_container_width=True, height=600, returned_objects=[])
+            
+            with st.expander("📋 Tabela Resumo dos Alimentadores Visíveis"):
+                df_resumo = df_mapa[['REGIONAL', 'MUNICIPIO', 'ALIMENTADOR']].reset_index(drop=True)
+                st.dataframe(df_resumo, use_container_width=True)
+
+
+# ==========================================
+# 4. APLICAÇÃO ORIGINAL DO ROTEIRIZADOR
 # ==========================================
 def view_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
@@ -99,9 +257,6 @@ def view_roteirizador():
 
     st.markdown("<h1 class='brand-title'>Plataforma Roteirizadora NIP v2.0</h1>", unsafe_allow_html=True)
 
-    # ---------------------------------------------------------
-    # UI DE NAVEGAÇÃO E SIDEBAR (SEMPRE VISÍVEL)
-    # ---------------------------------------------------------
     s1_class = "step-item done" if (status_exec != "IDLE" or is_done) else "step-item active"
     s2_class = "step-item done" if (status_exec != "IDLE" or is_done) else "step-item active"
     s3_class = "step-item active" if status_exec in ["RUNNING", "PACKAGING"] else ("step-item done" if is_done else "step-item")
@@ -119,16 +274,6 @@ def view_roteirizador():
     is_locked = status_exec != "IDLE" or is_done
     
     with st.sidebar:
-        if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, "rb") as f:
-                encoded_logo = base64.b64encode(f.read()).decode()
-            st.markdown(
-                f'<div style="text-align: center; margin-bottom: 25px;">'
-                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-            
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
@@ -184,9 +329,7 @@ def view_roteirizador():
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
             limpar_roteirizador()
 
-    # ---------------------------------------------------------
-    # ESTADO 4: RESULTADOS FINAIS (TELA DE SUCESSO)
-    # ---------------------------------------------------------
+    # RESULTADOS FINAIS
     if is_done and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Otimização")
 
@@ -531,9 +674,7 @@ def view_roteirizador():
         sidebar_html_placeholder.markdown(renderizar_painel_lateral(meta_exata_por_equipe if not roteirizar_tudo_meta else "Ilimitado", tot_obras_reais, tot_equipes_cadastradas, meta_global_exata if not roteirizar_tudo_meta else "Ilimitado"), unsafe_allow_html=True)
         return 
 
-    # ---------------------------------------------------------
-    # ESTADO 1 E 2: UPLOAD E FILTROS INICIAIS
-    # ---------------------------------------------------------
+    # UPLOAD E FILTROS INICIAIS
     if status_exec == "IDLE" and not is_done:
         st.markdown("### ⚙️ Selecione a Estratégia de Roteirização")
         modo_selecionado = st.radio(
@@ -613,10 +754,6 @@ def view_roteirizador():
                 with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
                 with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
                 with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
-                with st.container(border=True):
-                    rede_files = st.file_uploader("5️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
-                    vao_medio_postes = st.slider("📏 Vão entre Postes (Metros)", min_value=20, max_value=100, value=60, step=1, help="Distância padrão entre postes para calcular os postes previstos.")
-                    st.caption("⚡ A IA varrerá as redes e transformadores nestes mapas e guiará o técnico no KML final ignorando outros componentes.")
 
                 df_status_upload = pd.DataFrame()
                 coluna_status_selecionada = None
@@ -1084,7 +1221,7 @@ def view_roteirizador():
                     
                     col_prioridade = "PRIORIDADE"
 
-        # --- AÇÕES FINAIS E BOTÃO DE START (COMUM AOS DOIS MODOS) ---
+        # --- AÇÕES FINAIS E BOTÃO DE START ---
         if not df_tasks_alocadas.empty:
             with st.expander("🛠️ 5. Configuração de Saída", expanded=True):
                 todas_cols = df_tasks_alocadas.columns.tolist()
@@ -1151,9 +1288,7 @@ def view_roteirizador():
                 st.session_state.vrp_status = "RUNNING"
                 tentar_rerun()
 
-    # ---------------------------------------------------------
-    # ESTADO 3.1: MOTOR IA (VRP) E BALANCEAMENTO DE CARGA
-    # ---------------------------------------------------------
+    # MOTOR VRP
     def fetch_geom_wrapper(item):
         time.sleep(0.8) 
         try:
@@ -1454,7 +1589,6 @@ def view_roteirizador():
                         })
 
                     geoms_and_durs = []
-                    # Verifica se o modo rápido está ativado para pular o travamento do OSRM
                     if not cfg.get('tracado_real', False):
                         for item in rotas_flat:
                             dist_m = item['dist_km'] * 1000
@@ -1543,9 +1677,7 @@ def view_roteirizador():
             if st.button("⬅️ Voltar e Tentar Novamente"): limpar_roteirizador()
             return
 
-    # ---------------------------------------------------------
-    # ESTADO 3.2: EMPACOTAMENTO FINAL (ZIP EXCEL E KML)
-    # ---------------------------------------------------------
+    # EMPACOTAMENTO FINAL
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
         st.markdown("A inteligência já finalizou as rotas. Compilando os dados e construindo os polígonos no mapa para o download...")
@@ -1659,5 +1791,19 @@ def view_roteirizador():
             if st.button("⬅️ Voltar"): limpar_roteirizador()
             return
 
+# ==========================================
+# 5. GERENCIADOR DE ROTAS (MENU LATERAL VIRTUAL)
+# ==========================================
 if __name__ == "__main__":
-    view_roteirizador()
+    st.sidebar.markdown("### 🧭 Menu Principal")
+    modo_app = st.sidebar.radio(
+        "Navegação:",
+        ["🚗 1. Roteirizador de Obras", "🗺️ 2. Visualizador de Malha (KMZ)"],
+        label_visibility="collapsed"
+    )
+    st.sidebar.markdown("---")
+
+    if "1. Roteirizador" in modo_app:
+        view_roteirizador()
+    else:
+        view_visualizador()
