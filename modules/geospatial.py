@@ -57,8 +57,7 @@ def resgatar_coordenadas(df_tarefas):
                     if cache_key in st.session_state.cache_coords:
                         lat, lon = st.session_state.cache_coords[cache_key]
                     else:
-                        # Assumindo que geocode_endereco_nominatim está definida ou usa o método genérico acima
-                        lat, lon = obter_coordenadas_municipio_cached(mun_val) # Adaptação segura
+                        lat, lon = obter_coordenadas_municipio_cached(mun_val)
                         st.session_state.cache_coords[cache_key] = (lat, lon)
                         time.sleep(0.6)
                     lats.append(lat)
@@ -78,7 +77,7 @@ def resgatar_coordenadas(df_tarefas):
     final_mask = df_tarefas['LATITUDE'].isna() | df_tarefas['LONGITUDE'].isna() | (df_tarefas['LATITUDE'] == 0.0) | (df_tarefas['LONGITUDE'] == 0.0)
     return df_tarefas[~final_mask]
 
-def extrair_lon_lat_kml(kml_text):
+def extrair_lon_lat_kml(kml_text, nome_alimentador):
     coords = []
     padrao_alvo = re.compile(r'prim[aá]ri|secund[aá]ri|trafo|transformador|_pri|_sec|\bpri\b|\bsec\b|\bmt\b|\bbt\b', re.IGNORECASE)
     target_styles = set()
@@ -111,7 +110,9 @@ def extrair_lon_lat_kml(kml_text):
                         try:
                             lon = float(parts[0])
                             lat = float(parts[1])
-                            if lat != 0.0 and lon != 0.0: coords.append((lon, lat))
+                            if lat != 0.0 and lon != 0.0: 
+                                # NOVO: Anexa o nome do alimentador junto com as coordenadas!
+                                coords.append((lon, lat, nome_alimentador)) 
                         except: pass
     return list(set(coords)) 
 
@@ -119,21 +120,25 @@ def extrair_coordenadas_rede(uploaded_files):
     coords_list = []
     for f in uploaded_files:
         file_bytes = f.getvalue()
+        # Captura o nome do arquivo para usar como nome do Alimentador
+        nome_alimentador = f.name.replace('.kmz', '').replace('.kml', '').replace('.KMZ', '').replace('.KML', '')
+        
         if f.name.lower().endswith('.kmz'):
             try:
                 with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                     for zinfo in z.namelist():
                         if zinfo.lower().endswith('.kml'):
                             kml_data = z.read(zinfo).decode('utf-8', errors='ignore')
-                            coords_list.extend(extrair_lon_lat_kml(kml_data))
+                            coords_list.extend(extrair_lon_lat_kml(kml_data, nome_alimentador))
             except Exception: pass
         elif f.name.lower().endswith('.kml'):
             kml_data = file_bytes.decode('utf-8', errors='ignore')
-            coords_list.extend(extrair_lon_lat_kml(kml_data))
+            coords_list.extend(extrair_lon_lat_kml(kml_data, nome_alimentador))
     
     if not coords_list: return pd.DataFrame()
-    df_rede = pd.DataFrame(coords_list, columns=['LONGITUDE', 'LATITUDE'])
-    df_rede = df_rede.dropna().drop_duplicates()
+    # Adicionamos a coluna ALIMENTADOR
+    df_rede = pd.DataFrame(coords_list, columns=['LONGITUDE', 'LATITUDE', 'ALIMENTADOR'])
+    df_rede = df_rede.dropna(subset=['LONGITUDE', 'LATITUDE']).drop_duplicates()
     return df_rede
 
 def encontrar_rede_mais_proxima(df_tasks, df_rede, vao_medio):
@@ -141,12 +146,14 @@ def encontrar_rede_mais_proxima(df_tasks, df_rede, vao_medio):
     
     rede_lats = df_rede['LATITUDE'].values
     rede_lons = df_rede['LONGITUDE'].values
-    nearest_lats, nearest_lons, nearest_dists, nearest_postes = [], [], [], []
+    rede_alims = df_rede['ALIMENTADOR'].values if 'ALIMENTADOR' in df_rede.columns else ["N/A"] * len(df_rede)
+    
+    nearest_lats, nearest_lons, nearest_dists, nearest_postes, nearest_alims = [], [], [], [], []
     
     for _, row in df_tasks.iterrows():
         t_lat, t_lon = row.get('LATITUDE'), row.get('LONGITUDE')
         if pd.isna(t_lat) or pd.isna(t_lon):
-            nearest_lats.append(np.nan); nearest_lons.append(np.nan); nearest_dists.append(np.nan); nearest_postes.append(np.nan)
+            nearest_lats.append(np.nan); nearest_lons.append(np.nan); nearest_dists.append(np.nan); nearest_postes.append(np.nan); nearest_alims.append(np.nan)
             continue
             
         dists = haversine_vectorized(t_lat, t_lon, rede_lats, rede_lons)
@@ -159,11 +166,13 @@ def encontrar_rede_mais_proxima(df_tasks, df_rede, vao_medio):
         nearest_postes.append(postes)
         nearest_lats.append(rede_lats[min_idx])
         nearest_lons.append(rede_lons[min_idx])
+        nearest_alims.append(rede_alims[min_idx]) # Salva o alimentador mais próximo
         
     df_tasks['DISTANCIA_REDE_METROS'] = nearest_dists
     df_tasks['POSTES PREVISTOS'] = nearest_postes
     df_tasks['LATITUDE_REDE'] = nearest_lats
     df_tasks['LONGITUDE_REDE'] = nearest_lons
+    df_tasks['ALIMENTADOR_PROXIMO'] = nearest_alims # Nova Coluna gerada
     return df_tasks
 
 def fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False):
