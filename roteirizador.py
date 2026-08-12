@@ -120,7 +120,6 @@ def processar_arquivos_kmz_estruturado(arquivos):
             except:
                 continue
         
-        # Limpeza agressiva de namespaces XML para não quebrar a leitura
         conteudo_kml = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', conteudo_kml)
         
         try:
@@ -146,7 +145,6 @@ def processar_arquivos_kmz_estruturado(arquivos):
             if name_tag is not None and name_tag.text:
                 nome_pasta = name_tag.text.strip().upper()
                 
-                # Ignora pastas raiz que não são elementos da rede
                 if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta:
                     continue
 
@@ -183,79 +181,103 @@ def processar_arquivos_kmz_estruturado(arquivos):
     return pd.DataFrame(dados_extraidos)
 
 def view_visualizador():
-    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Avançado de Malha Elétrica</h2>", unsafe_allow_html=True)
-    st.markdown("Faça o upload dos arquivos KMZ. O sistema recriará as camadas (Rede, Postes, Chaves) exatamente como no Google Earth.")
+    st.markdown("<h2 style='color: #0D256C;'>🗺️ Inspeção de Malha Elétrica (KMZ)</h2>", unsafe_allow_html=True)
+    st.markdown("Faça o upload dos arquivos KMZ. O mapa os guiará automaticamente com visão via Satélite.")
 
+    # Variáveis de sessão para auto-processamento
     if 'df_rede_vis' not in st.session_state:
         st.session_state.df_rede_vis = pd.DataFrame()
+        st.session_state.processed_files = set()
 
-    col_up1, col_up2 = st.columns([1, 2])
-    with col_up1:
+    with st.sidebar:
         st.markdown("### 📥 1. Upload de Malha")
-        arquivos_upados = st.file_uploader("Selecione os Arquivos KMZ", type=["kmz", "kml"], accept_multiple_files=True)
+        arquivos_upados = st.file_uploader("Selecione os Alimentadores", type=["kmz", "kml"], accept_multiple_files=True)
         
-        if st.button("⚙️ Processar e Desenhar", type="primary", use_container_width=True):
+        # --- LÓGICA DE AUTO-PROCESSAMENTO INSTANTÂNEO ---
+        nomes_arquivos_atuais = set([f.name for f in arquivos_upados]) if arquivos_upados else set()
+        
+        if nomes_arquivos_atuais != st.session_state.processed_files:
             if arquivos_upados:
-                with st.spinner("Decodificando pastas e equipamentos..."):
+                with st.spinner("Processando e renderizando mapa..."):
                     df_extraido = processar_arquivos_kmz_estruturado(arquivos_upados)
                     st.session_state.df_rede_vis = df_extraido
-                if not df_extraido.empty:
-                    st.success(f"✅ {len(df_extraido)} Alimentadores processados!")
-                else:
-                    st.error("Nenhuma rede válida encontrada.")
+                    st.session_state.processed_files = nomes_arquivos_atuais
             else:
-                st.warning("Suba ao menos um arquivo KMZ.")
+                st.session_state.df_rede_vis = pd.DataFrame()
+                st.session_state.processed_files = set()
 
-    df = st.session_state.df_rede_vis
-    
-    alim_sel = []
-    camadas_ativas = {}
-    
-    if not df.empty:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🔍 Filtros de Exibição (Mapa)")
+        df = st.session_state.df_rede_vis
         
-        lista_regioes = sorted(df['REGIONAL'].unique().tolist())
-        regioes_sel = st.sidebar.multiselect("📍 Escolha a Regional:", lista_regioes)
-        df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
+        alim_sel = []
+        camadas_ativas = {}
         
-        lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
-        municipios_sel = st.sidebar.multiselect("🏙️ Escolha o Município:", lista_municipios)
-        df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
-        
-        lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
-        alim_sel = st.sidebar.multiselect("⚡ Selecione o Alimentador:", lista_alimentadores)
-        
-        alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
-
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🗂️ Camadas da Rede")
-        
-        for alim in alimentadores_visiveis:
-            st.sidebar.markdown(f"**{alim}**")
-            dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
-            lista_camadas_alim = sorted(list(dict_camadas.keys()))
+        if not df.empty:
+            st.markdown("---")
+            st.markdown("### 🔍 2. Filtros de Exibição")
             
-            camadas_ativas[alim] = st.sidebar.multiselect(
-                "Ocultar/Exibir:", 
-                lista_camadas_alim, 
-                default=lista_camadas_alim,
-                key=f"ms_{alim}"
-            )
+            lista_regioes = sorted(df['REGIONAL'].unique().tolist())
+            regioes_sel = st.multiselect("📍 Escolha a Regional:", lista_regioes)
+            df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
+            
+            lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
+            municipios_sel = st.multiselect("🏙️ Escolha o Município:", lista_municipios)
+            df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
+            
+            lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
+            alim_sel = st.multiselect("⚡ Selecione o Alimentador:", lista_alimentadores)
+            
+            alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
 
-    st.markdown("---")
+            st.markdown("---")
+            st.markdown("### 🗂️ 3. Camadas (Google Earth)")
+            st.caption("Ligue ou desligue elementos específicos da rede.")
+            
+            for alim in alimentadores_visiveis:
+                st.markdown(f"**{alim}**")
+                dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
+                lista_camadas_alim = sorted(list(dict_camadas.keys()))
+                
+                camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE']
+                camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
+                
+                camadas_ativas[alim] = st.multiselect(
+                    "Ocultar/Exibir:", 
+                    lista_camadas_alim, 
+                    default=camadas_default,
+                    key=f"ms_{alim}"
+                )
 
-    if not st.session_state.df_rede_vis.empty:
+    # ==========================================
+    # 4. RENDERIZAÇÃO DO MAPA (SEMPRE ATIVO)
+    # ==========================================
+    
+    # Cria o mapa vazio por padrão, focado no Maranhão
+    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
+    
+    # Camada Satélite (Google)
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attr='Google',
+        name='Satélite (Google)',
+        overlay=False,
+        control=True
+    ).add_to(mapa)
+
+    # Camada Mapa Limpo (CartoDB)
+    folium.TileLayer(
+        tiles='CartoDB positron',
+        name='Mapa Vetorial (Limpo)',
+        overlay=False,
+        control=True
+    ).add_to(mapa)
+
+    if not df.empty:
         df_mapa = df.copy()
         if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
         if municipios_sel: df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_sel)]
         
         alimentadores_visiveis = alim_sel if alim_sel else df_mapa['ALIMENTADOR'].unique().tolist()
         df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_visiveis)]
-
-        if df_mapa.empty:
-            st.info("Nenhuma rede encontrada para os filtros selecionados.")
-            return
 
         dict_cores = {
             'REDE PRIMÁRIA': '#e6194b', 'REDE PRIMARIA': '#e6194b',
@@ -266,10 +288,12 @@ def view_visualizador():
         }
 
         todas_lats, todas_lons = [], []
-        mapa = folium.Map(tiles="CartoDB positron")
         
         for alim in alimentadores_visiveis:
-            dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
+            if alim not in df_mapa['ALIMENTADOR'].values:
+                continue
+                
+            dict_camadas = df_mapa[df_mapa['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
             camadas_permitidas = camadas_ativas.get(alim, [])
             
             fg_alim = folium.FeatureGroup(name=f"⚡ {alim}", show=True)
@@ -305,11 +329,12 @@ def view_visualizador():
                     
             fg_alim.add_to(mapa)
 
+        # O Mapa voa automaticamente para o centro dos arquivos plotados!
         if todas_lats and todas_lons:
             mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
-            
-        folium.LayerControl().add_to(mapa)
-        st_folium(mapa, use_container_width=True, height=600, returned_objects=[])
+
+    folium.LayerControl(position='topright').add_to(mapa)
+    st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
 
 
 # ==========================================
@@ -1299,7 +1324,6 @@ def view_roteirizador():
                     
                     col_prioridade = "PRIORIDADE"
 
-        # --- AÇÕES FINAIS E BOTÃO DE START ---
         if not df_tasks_alocadas.empty:
             with st.expander("🛠️ 5. Configuração de Saída", expanded=True):
                 todas_cols = df_tasks_alocadas.columns.tolist()
@@ -1366,7 +1390,6 @@ def view_roteirizador():
                 st.session_state.vrp_status = "RUNNING"
                 tentar_rerun()
 
-    # MOTOR VRP
     def fetch_geom_wrapper(item):
         time.sleep(0.8) 
         try:
@@ -1755,7 +1778,6 @@ def view_roteirizador():
             if st.button("⬅️ Voltar e Tentar Novamente"): limpar_roteirizador()
             return
 
-    # EMPACOTAMENTO FINAL
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
         st.markdown("A inteligência já finalizou as rotas. Compilando os dados e construindo os polígonos no mapa para o download...")
@@ -1868,142 +1890,6 @@ def view_roteirizador():
             st.session_state.vrp_status = "IDLE"
             if st.button("⬅️ Voltar"): limpar_roteirizador()
             return
-
-
-# ==========================================
-# 5. NOVO VISUALIZADOR INTELIGENTE (COM PASTAS)
-# ==========================================
-def view_visualizador():
-    st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Avançado de Malha Elétrica</h2>", unsafe_allow_html=True)
-    st.markdown("Faça o upload dos arquivos KMZ. O sistema recriará as camadas (Rede, Postes, Chaves) exatamente como no Google Earth.")
-
-    if 'df_rede_vis' not in st.session_state:
-        st.session_state.df_rede_vis = pd.DataFrame()
-
-    col_up1, col_up2 = st.columns([1, 2])
-    with col_up1:
-        st.markdown("### 📥 1. Upload de Malha")
-        arquivos_upados = st.file_uploader("Selecione os Arquivos KMZ", type=["kmz", "kml"], accept_multiple_files=True)
-        
-        if st.button("⚙️ Processar e Desenhar", type="primary", use_container_width=True):
-            if arquivos_upados:
-                with st.spinner("Decodificando pastas e equipamentos (Removendo lixo geográfico)..."):
-                    df_extraido = processar_arquivos_kmz_estruturado(arquivos_upados)
-                    st.session_state.df_rede_vis = df_extraido
-                if not df_extraido.empty:
-                    st.success(f"✅ {len(df_extraido)} Alimentadores processados!")
-                else:
-                    st.error("Nenhuma rede válida encontrada.")
-            else:
-                st.warning("Suba ao menos um arquivo KMZ.")
-
-    df = st.session_state.df_rede_vis
-    
-    alim_sel = []
-    camadas_ativas = {}
-    
-    if not df.empty:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🔍 Filtros de Exibição (Mapa)")
-        
-        lista_regioes = sorted(df['REGIONAL'].unique().tolist())
-        regioes_sel = st.sidebar.multiselect("📍 Escolha a Regional:", lista_regioes)
-        df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel else df
-        
-        lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist())
-        municipios_sel = st.sidebar.multiselect("🏙️ Escolha o Município:", lista_municipios)
-        df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel else df_filt1
-        
-        lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist())
-        alim_sel = st.sidebar.multiselect("⚡ Selecione o Alimentador:", lista_alimentadores)
-        
-        # A MÁGICA ACONTECE AQUI: Se o usuário não selecionar nenhum alimentador, ele pega todos os visíveis no filtro atual!
-        alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
-
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🗂️ Camadas da Rede")
-        st.sidebar.caption("Ligue ou desligue elementos específicos da rede.")
-        
-        for alim in alimentadores_visiveis:
-            st.sidebar.markdown(f"**{alim}**")
-            dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
-            lista_camadas_alim = sorted(list(dict_camadas.keys()))
-            
-            camadas_ativas[alim] = st.sidebar.multiselect(
-                "Ocultar/Exibir:", 
-                lista_camadas_alim, 
-                default=lista_camadas_alim,
-                key=f"ms_{alim}"
-            )
-
-    st.markdown("---")
-
-    if not st.session_state.df_rede_vis.empty:
-        df_mapa = df.copy()
-        if regioes_sel: df_mapa = df_mapa[df_mapa['REGIONAL'].isin(regioes_sel)]
-        if municipios_sel: df_mapa = df_mapa[df_mapa['MUNICIPIO'].isin(municipios_sel)]
-        
-        alimentadores_visiveis = alim_sel if alim_sel else df_mapa['ALIMENTADOR'].unique().tolist()
-        df_mapa = df_mapa[df_mapa['ALIMENTADOR'].isin(alimentadores_visiveis)]
-
-        if df_mapa.empty:
-            st.info("Nenhuma rede encontrada para os filtros selecionados.")
-            return
-
-        dict_cores = {
-            'REDE PRIMÁRIA': '#e6194b', 'REDE PRIMARIA': '#e6194b',
-            'REDE SECUNDÁRIA': '#4363d8', 'REDE SECUNDARIA': '#4363d8',
-            'POSTE': '#a9a9a9', 'TRANSFORMADOR': '#f58231', 
-            'CHAVE': '#3cb44b', 'REGULADOR': '#911eb4', 
-            'RELIGADOR': '#46f0f0', 'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
-        }
-
-        todas_lats, todas_lons = [], []
-        mapa = folium.Map(tiles="CartoDB positron")
-        
-        for alim in alimentadores_visiveis:
-            dict_camadas = df[df['ALIMENTADOR'] == alim]['CAMADAS'].iloc[0]
-            camadas_permitidas = camadas_ativas.get(alim, [])
-            
-            fg_alim = folium.FeatureGroup(name=f"⚡ {alim}", show=True)
-            
-            for nome_pasta, conteudos in dict_camadas.items():
-                if nome_pasta not in camadas_permitidas:
-                    continue 
-                    
-                cor_elemento = dict_cores.get(nome_pasta, '#333333') 
-                
-                for linha in conteudos['linhas']:
-                    folium.PolyLine(
-                        locations=linha,
-                        color=cor_elemento,
-                        weight=3 if 'PRIM' in nome_pasta else 2,
-                        opacity=0.9,
-                        tooltip=f"{alim}<br><b>{nome_pasta}</b>"
-                    ).add_to(fg_alim)
-                    for pt in linha:
-                        todas_lats.append(pt[0]); todas_lons.append(pt[1])
-                
-                for ponto in conteudos['pontos']:
-                    folium.CircleMarker(
-                        location=ponto,
-                        radius=4 if 'TRANSFORMADOR' in nome_pasta else (2 if 'POSTE' in nome_pasta else 3),
-                        color=cor_elemento,
-                        fill=True,
-                        fill_color=cor_elemento,
-                        fill_opacity=1.0,
-                        tooltip=f"{alim}<br><b>{nome_pasta}</b>"
-                    ).add_to(fg_alim)
-                    todas_lats.append(ponto[0]); todas_lons.append(ponto[1])
-                    
-            fg_alim.add_to(mapa)
-
-        if todas_lats and todas_lons:
-            mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
-            
-        folium.LayerControl().add_to(mapa)
-        st_folium(mapa, use_container_width=True, height=600, returned_objects=[])
-
 
 # ==========================================
 # 6. GERENCIADOR DE ROTAS (MENU LATERAL VIRTUAL)
