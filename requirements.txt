@@ -9,3 +9,4 @@ openpyxl
 ortools
 plotly
 scikit-learn
+pydeck
