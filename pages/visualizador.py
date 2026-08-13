@@ -10,6 +10,7 @@ import math
 import requests
 import unicodedata
 import folium
+import gc
 from streamlit_folium import st_folium
 import html
 from concurrent.futures import ThreadPoolExecutor
@@ -319,19 +320,23 @@ with st.sidebar:
         if st.button(f"💾 Processar e Salvar {len(arquivos_upados)} Arquivo(s)", type="primary", use_container_width=True):
             
             qtd_total_processados = 0
-            total_lotes = math.ceil(len(arquivos_upados) / 10.0)
+            tamanho_lote = 3 # Lote reduzido para não estourar a memória
+            total_lotes = math.ceil(len(arquivos_upados) / tamanho_lote)
             
             barra_progresso = st.progress(0.0)
             texto_status = st.empty()
             
-            for i in range(0, len(arquivos_upados), 10):
-                lote_atual = (i // 10) + 1
-                lote_arquivos = arquivos_upados[i:i+10]
+            for i in range(0, len(arquivos_upados), tamanho_lote):
+                lote_atual = (i // tamanho_lote) + 1
+                lote_arquivos = arquivos_upados[i:i+tamanho_lote]
                 
-                texto_status.text(f"⏳ Processando Lote {lote_atual} de {total_lotes} (10 arquivos por vez)...")
+                texto_status.text(f"⏳ Processando Lote {lote_atual} de {total_lotes} (3 arquivos por vez para evitar travamentos)...")
                 qtd_total_processados += processar_e_salvar_kmz_paralelo(lote_arquivos)
                 
                 barra_progresso.progress(lote_atual / total_lotes)
+                
+                # Força a limpeza da memória RAM após cada lote
+                gc.collect() 
 
             if qtd_total_processados > 0:
                 st.success(f"✅ {qtd_total_processados} novos Alimentadores salvos!")
@@ -702,4 +707,3 @@ if mostrar_uc_municipal:
 
 folium.LayerControl(position='topright').add_to(mapa)
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
-
