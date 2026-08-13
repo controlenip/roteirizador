@@ -277,7 +277,6 @@ with st.sidebar:
     if arquivos_upados:
         if st.button(f"💾 Processar e Salvar {len(arquivos_upados)} Arquivo(s)", type="primary", use_container_width=True):
             
-            # 🔥 TRAVA DE SEGURANÇA: Lê apenas 10 alimentadores por vez no processamento! 🔥
             qtd_total_processados = 0
             total_lotes = math.ceil(len(arquivos_upados) / 10.0)
             
@@ -531,20 +530,21 @@ if not df.empty:
     if features:
         geojson_data = {"type": "FeatureCollection", "features": features}
         
-        # 🔥 AQUI ESTÁ A CORREÇÃO DOS TAMANHOS DOS MARCADORES DE 2 E 4 PARA 4 E 7 🔥
+        # 🔥 AQUI ESTÁ A ATUALIZAÇÃO DOS TAMANHOS DOS MARCADORES E REDES 🔥
         def style_fn(feature):
             cor = feature['properties']['COR']
             tipo = feature['properties']['TIPO_REDE']
             if feature['geometry']['type'] == 'LineString': 
-                return {'color': cor, 'weight': 3 if 'PRIM' in tipo else 2, 'opacity': 0.8}
+                return {'color': cor, 'weight': 4 if 'PRIM' in tipo else 3, 'opacity': 0.8}
             else: 
-                raio = 4
-                if 'POSTE' in tipo: raio = 4
-                elif any(x in tipo for x in ['TRANSFORMADOR', 'CHAVE', 'REGULADOR', 'RELIGADOR', 'SUBESTA', 'CAPACITOR']): raio = 7
-                return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 1}
+                raio = 6
+                if 'POSTE' in tipo: raio = 6
+                elif any(x in tipo for x in ['TRANSFORMADOR', 'CHAVE', 'REGULADOR', 'RELIGADOR', 'SUBESTA', 'CAPACITOR']): raio = 12
+                return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 2}
 
+        # Aplicando raio padrão 6 para o CircleMarker
         folium.GeoJson(
-            geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=4, fill=True, fillOpacity=1),
+            geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=6, fill=True, fillOpacity=1),
             tooltip=folium.features.GeoJsonTooltip(fields=['TIPO_REDE', 'NOME'], aliases=['Rede:', 'Identificação:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"),
             popup=folium.features.GeoJsonPopup(fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO', 'GPS'], aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:', 'Coordenadas:'], style="font-family: sans-serif; font-size: 13px; min-width: 250px;")
         ).add_to(mapa)
