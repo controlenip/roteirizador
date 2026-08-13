@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document id="root_doc">
+<Schema name="ucs" id="ucs">
+	<SimpleField name="Name" type="string"></SimpleField>
+	<SimpleField name="gml_id" type="string"></SimpleField>
+	<SimpleField name="docleg_id" type="string"></SimpleField>
+	<SimpleField name="uc_id" type="string"></SimpleField>
+	<SimpleField name="cd_cnuc" type="string"></SimpleField>
+	<SimpleField name="wdpa_pid" type="string"></SimpleField>
+	<SimpleField name="cria_ano" type="string"></SimpleField>
+	<SimpleField name="cria_ato" type="string"></SimpleField>
+	<SimpleField name="outro_ato" type="string"></SimpleField>
+	<SimpleField name="pl_manejo" type="string"></SimpleField>
+	<SimpleField name="co_gestor" type="string"></SimpleField>
+	<SimpleField name="quali_pol" type="string"></SimpleField>
+	<SimpleField name="ppgr" type="string"></SimpleField>
+	<SimpleField name="ha_total" type="string"></SimpleField>
+	<SimpleField name="ha_ato" type="string"></SimpleField>
+	<SimpleField name="esfera" type="string"></SimpleField>
+	<SimpleField name="uf" type="string"></SimpleField>
+	<SimpleField name="municipio" type="string"></SimpleField>
+	<SimpleField name="org_gestor" type="string"></SimpleField>
+	<SimpleField name="grupo" type="string"></SimpleField>
+	<SimpleField name="categoria" type="string"></SimpleField>
+	<SimpleField name="cat_iucn" type="string"></SimpleField>
+	<SimpleField name="amazonia" type="string"></SimpleField>
+	<SimpleField name="caatinga" type="string"></SimpleField>
+	<SimpleField name="cerrado" type="string"></SimpleField>
+	<SimpleField name="matlantica" type="string"></SimpleField>
+	<SimpleField name="pampa" type="string"></SimpleField>
+	<SimpleField name="pantanal" type="string"></SimpleField>
+	<SimpleField name="marinho" type="string"></SimpleField>
+	<SimpleField name="situacao" type="string"></SimpleField>
+	<SimpleField name="limite" type="string"></SimpleField>
+</Schema>
+<Folder><name>ucs</name>
+  <Placemark id="ucs.1">
+	<name>ÁREA DE PROTEÇÃO AMBIENTAL TRIZIDELA DE USO SUSTENTÁVEL</name>
+	<Style><LineStyle><color>ff0000ff</color></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+	<ExtendedData><SchemaData schemaUrl="#ucs">
+		<SimpleData name="docleg_id">14703</SimpleData>
+		<SimpleData name="uc_id">3485</SimpleData>
+		<SimpleData name="cd_cnuc">0330.21.3485</SimpleData>
+		<SimpleData name="wdpa_pid">555636609</SimpleData>
+		<SimpleData name="cria_ano">04-04-2017</SimpleData>
+		<SimpleData name="cria_ato">Decreto 4091 de 16-08-2016</SimpleData>
+		<SimpleData name="outro_ato">Decreto 4109 de 22-02-2017 Alteração de nome , Decreto 4113 de 27-03-2017 Revisão dos limites</SimpleData>
+		<SimpleData name="pl_manejo">Sem informação</SimpleData>
+		<SimpleData name="co_gestor">Sem informação</SimpleData>
+		<SimpleData name="quali_pol">Polígono é uma estimativa dos limites da UC</SimpleData>
+		<SimpleData name="ha_total">26.11</SimpleData>
+		<SimpleData name="ha_ato">26.1</SimpleData>
+		<SimpleData name="esfera">Municipal</SimpleData>
+		<SimpleData name="uf">MARANHÃO</SimpleData>
+		<SimpleData name="municipio">CODÓ (MA)</SimpleData>
+		<SimpleData name="org_gestor">SECRETARIA MUNICIPAL DE MEIO AMBIENTE, FINANÇAS E PLANEJAMENTO DE CODÓ - MA</SimpleData>
+		<SimpleData name="grupo">Uso Sustentável</SimpleData>
+		<SimpleData name="categoria">Área de Proteção Ambiental</SimpleData>
+		<SimpleData name="cat_iucn">Category V</SimpleData>
+		<SimpleData name="cerrado">52.22</SimpleData>
+		<SimpleData name="situacao">Ativo</SimpleData>
+		<SimpleData name="limite">uc</SimpleData>
+	</SchemaData></ExtendedData>
+      <MultiGeometry><Polygon><outerBoundaryIs><LinearRing><coordinates>-43.8815439091096,-4.44745474378057 -43.8810832297685,-4.44815956323577 -43.8805229387909,-4.44918080908331 -43.8797917183319,-4.45000280154803 -43.8783664833097,-4.45087800577351 -43.8766790174786,-4.45233169241534 -43.8761918427339,-4.45267466220919 -43.8756341088884,-4.45200447154882 -43.8757605937983,-4.451796627945 -43.8754815624312,-4.45157007341742 -43.8745608745166,-4.45252744598388 -43.8746328201485,-4.45262705168232 -43.874416268494,-4.45279857706527 -43.8745600907811,-4.45304301479661 -43.873766104702,-4.4536478206891 -43.8732334277427,-4.45428016064687 -43.8722973537913,-4.45350084737988 -43.8712584262945,-4.45516354922488 -43.8705722232074,-4.45600368680065 -43.8715891578964,-4.45694593822937 -43.8722484767144,-4.45600626193184 -43.8732296420198,-4.45676755504128 -43.8740603401664,-4.45572864291945 -43.8738084139938,-4.45545690404356 -43.8740792590097,-4.45514074056235 -43.8736203290741,-4.45468778245614 -43.8737738242111,-4.45449807097205 -43.8745664767405,-4.45477063856778 -43.8747200128636,-4.45455379088307 -43.8771194434312,-4.45310119887203 -43.8767955296407,-4.45275699049842 -43.8772829093158,-4.45227834370125 -43.8777779305276,-4.45270421958818 -43.8787525519238,-4.45183737566287 -43.8791770370256,-4.45123200096206 -43.8793030830839,-4.45131359849871 -43.8794837753829,-4.45101538519807 -43.8796908901086,-4.45112424189335 -43.8788236898297,-4.45247064230758 -43.8788135691331,-4.45320328072997 -43.8790115748187,-4.45337543989806 -43.879544794592,-4.45238129026519 -43.8798337287298,-4.4520199254404 -43.8801939667177,-4.45218328645758 -43.8813319360355,-4.45056594289701 -43.8812703950029,-4.44954375037154 -43.8818752944964,-4.44882106070803 -43.8823649593922,-4.44682283267397 -43.8820138714307,-4.44656903598296 -43.8818152519539,-4.44680390782465 -43.8815439091096,-4.44745474378057</coordinates></LinearRing></outerBoundaryIs></Polygon></MultiGeometry>
+  </Placemark>
+  <Placemark id="ucs.2">
+	<name>ÁREA DE PROTEÇÃO AMBIENTAL, DE USO SUSTENTÁVEL, SUCUPIRA</name>
+	<Style><LineStyle><color>ff0000ff</color></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+	<ExtendedData><SchemaData schemaUrl="#ucs">
+		<SimpleData name="docleg_id">15066</SimpleData>
+		<SimpleData name="uc_id">3605</SimpleData>
+		<SimpleData name="cd_cnuc">1220.21.3605</SimpleData>
+		<SimpleData name="wdpa_pid">555682172</SimpleData>
+		<SimpleData name="cria_ano">09-11-2017</SimpleData>
+		<SimpleData name="cria_ato">Decreto DECRETO Nº 077, DE 09 DE NOVEMBRO DE 2017 de 09-11-2017</SimpleData>
+		<SimpleData name="outro_ato">Sem informação</SimpleData>
+		<SimpleData name="pl_manejo">Sem informação</SimpleData>
+		<SimpleData name="co_gestor">Sem informação</SimpleData>
+		<SimpleData name="quali_pol">Polígono corresponde ao memorial descritivo</SimpleData>
+		<SimpleData name="ha_total">6.85</SimpleData>
+		<SimpleData name="ha_ato">7</SimpleData>
+		<SimpleData name="esfera">Municipal</SimpleData>
+		<SimpleData name="uf">MARANHÃO</SimpleData>
+		<SimpleData name="municipio">TIMON (MA)</SimpleData>
+		<SimpleData name="org_gestor">SECRETARIA MUNICIPAL DO MEIO AMBIENTE DE TIMON - MA</SimpleData>
+		<SimpleData name="grupo">Uso Sustentável</SimpleData>
+		<SimpleData name="categoria">Área de Proteção Ambiental</SimpleData>
+		<SimpleData name="cat_iucn">Category V</SimpleData>
+		<SimpleData name="cerrado">6.85</SimpleData>
+		<SimpleData name="situacao">Ativo</SimpleData>
+		<SimpleData name="limite">uc</SimpleData>
+	</SchemaData></ExtendedData>
+      <MultiGeometry><Polygon><outerBoundaryIs><LinearRing><coordinates>-42.8418282833544,-5.07757492849283 -42.8418532168632,-5.07750478388968 -42.8426285906615,-5.07766639804573 -42.8429248381948,-5.07712548788419 -42.8424206511441,-5.07702099410117 -42.8424787149799,-5.07690733767732 -42.8426233712932,-5.07648279685587 -42.8424024008211,-5.07644281995634 -42.8406013443303,-5.07611436724631 -42.8404781023446,-5.07691421075697 -42.8400171252571,-5.07685848887712 -42.8400018353158,-5.07695102774703 -42.8404411343951,-5.0770041292749 -42.8403321227555,-5.07718706877185 -42.8401238596176,-5.07749669449984 -42.8399782843582,-5.07784251383019 -42.8401108032699,-5.07800154349145 -42.8400533041171,-5.07814068903558 -42.8398005489622,-5.07810740981059 -42.8397081316893,-5.07860993037059 -42.8396400928339,-5.07910893310725 -42.8398972092096,-5.07918507278379 -42.8403283470104,-5.0795637295303 -42.840644922983,-5.07944437602142 -42.8406788293412,-5.07940910812512 -42.8410792898078,-5.07899256628385 -42.8410916323521,-5.07892937952691 -42.8411617270727,-5.07857053420269 -42.84135492471,-5.07836165971389 -42.8413713170953,-5.07831605403237 -42.8414400597211,-5.07814180595301 -42.8414441688913,-5.07810832219466 -42.8414617446713,-5.07803950978551 -42.8417081449385,-5.07788561095092 -42.8418282833544,-5.07757492849283</coordinates></LinearRing></outerBoundaryIs></Polygon></MultiGeometry>
+  </Placemark>
+  <Placemark id="ucs.3">
+	<name>PARQUE NATURAL MUNICIPAL RIACHO ESTRELA</name>
+	<Style><LineStyle><color>ff0000ff</color></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+	<ExtendedData><SchemaData schemaUrl="#ucs">
+		<SimpleData name="docleg_id">15106</SimpleData>
+		<SimpleData name="uc_id">3615</SimpleData>
+		<SimpleData name="cd_cnuc">0080.21.3615</SimpleData>
+		<SimpleData name="wdpa_pid">555682229</SimpleData>
+		<SimpleData name="cria_ano">16-01-2018</SimpleData>
+		<SimpleData name="cria_ato">Decreto 134/2017 de 30-10-2017</SimpleData>
+		<SimpleData name="outro_ato">Sem informação</SimpleData>
+		<SimpleData name="pl_manejo">Sem informação</SimpleData>
+		<SimpleData name="co_gestor">Sem informação</SimpleData>
+		<SimpleData name="quali_pol">Polígono corresponde ao memorial descritivo</SimpleData>
+		<SimpleData name="ha_total">4.79</SimpleData>
+		<SimpleData name="ha_ato">4.79</SimpleData>
+		<SimpleData name="esfera">Municipal</SimpleData>
+		<SimpleData name="uf">MARANHÃO</SimpleData>
+		<SimpleData name="municipio">ANAPURUS (MA)</SimpleData>
+		<SimpleData name="org_gestor">PREFEITURA MUNICIPAL DE ANAPURUS - MA</SimpleData>
+		<SimpleData name="grupo">Proteção Integral</SimpleData>
+		<SimpleData name="categoria">Parque</SimpleData>
+		<SimpleData name="cat_iucn">Category II</SimpleData>
+		<SimpleData name="cerrado">4.79</SimpleData>
+		<SimpleData name="situacao">Ativo</SimpleData>
+		<SimpleData name="limite">uc</SimpleData>
+	</SchemaData></ExtendedData>
+      <MultiGeometry><Polygon><outerBoundaryIs><LinearRing><coordinates>-43.1200718154512,-3.67337033419558 -43.1216625501239,-3.67302748785512 -43.1207508356344,-3.67104288597892 -43.1197018010116,-3.67079063861836 -43.1191028243894,-3.67125384951695 -43.1200718154512,-3.67337033419558</coordinates></LinearRing></outerBoundaryIs></Polygon></MultiGeometry>
+  </Placemark>
+  <Placemark id="ucs.4">
+	<name>MONUMENTO NATURAL MORRO DA LADEIRA</name>
+	<Style><LineStyle><color>ff0000ff</color></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+	<ExtendedData><SchemaData schemaUrl="#ucs">
+		<SimpleData name="docleg_id">50064</SimpleData>
+		<SimpleData name="uc_id">19433</SimpleData>
+		<SimpleData name="cd_cnuc">1707.21.4942</SimpleData>
+		<SimpleData name="wdpa_pid">555799804</SimpleData>
+		<SimpleData name="cria_ano">31-10-2023</SimpleData>
+		<SimpleData name="cria_ato">Decreto 183 de 31-10-2023</SimpleData>
+		<SimpleData name="outro_ato">Sem informação</SimpleData>
+		<SimpleData name="pl_manejo">Não</SimpleData>
+		<SimpleData name="co_gestor">Sim</SimpleData>
+		<SimpleData name="quali_pol">Polígono é uma estimativa dos limites da UC</SimpleData>
+		<SimpleData name="ha_total">2.84</SimpleData>
+		<SimpleData name="ha_ato">2.938</SimpleData>
+		<SimpleData name="esfera">Municipal</SimpleData>
+		<SimpleData name="uf">MARANHÃO</SimpleData>
+		<SimpleData name="municipio">BARREIRINHAS (MA)</SimpleData>
+		<SimpleData name="org_gestor">SECRETARIA MUNICIPAL DE MEIO AMBIENTE DE BARREIRINHAS - MA</SimpleData>
+		<SimpleData name="grupo">Proteção Integral</SimpleData>
+		<SimpleData name="categoria">Monumento Natural</SimpleData>
+		<SimpleData name="cat_iucn">Category III</SimpleData>
+		<SimpleData name="cerrado">2.83</SimpleData>
+		<SimpleData name="situacao">Ativo</SimpleData>
+		<SimpleData name="limite">uc</SimpleData>
+	</SchemaData></ExtendedData>
+      <MultiGeometry><Polygon><outerBoundaryIs><LinearRing><coordinates>-42.82652812797,-2.75315211700774 -42.8254860251105,-2.75251699141009 -42.8249914678213,-2.75304626276496 -42.8245322360527,-2.75330207716887 -42.8241171611849,-2.7534167525735 -42.8240111846229,-2.75406069887128 -42.8248501657386,-2.75402541415166 -42.8250797816229,-2.75384016935644 -42.8258216175568,-2.75401659297159 -42.8261748727634,-2.75388427526268 -42.8264133200279,-2.75361081861769 -42.82652812797,-2.75315211700774</coordinates></LinearRing></outerBoundaryIs></Polygon></MultiGeometry>
+  </Placemark>
+</Folder>
+</Document></kml>
