@@ -410,6 +410,9 @@ with st.sidebar:
     mostrar_quilombos = st.checkbox("🟠 Áreas Quilombolas", value=False)
     mostrar_indigenas = st.checkbox("🟢 Terras Indígenas", value=False)
     mostrar_arqueologia = st.checkbox("🔵 Sítios Arqueológicos", value=False)
+    mostrar_uc_federal = st.checkbox("🟡 UC Federal", value=False)
+    mostrar_uc_estadual = st.checkbox("🟡 UC Estadual", value=False)
+    mostrar_uc_municipal = st.checkbox("🟡 UC Municipal", value=False)
             
     st.markdown("---")
     st.markdown("### 🗑️ Gerenciar Malha Local")
@@ -668,6 +671,33 @@ if mostrar_arqueologia:
             geo_a, name="Sítios Arqueológicos",
             marker=folium.CircleMarker(radius=6, fill=True, fillOpacity=1, color="#1f77b4"),
             tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['Sítio:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
+
+if mostrar_uc_federal:
+    geo_uc_fed = get_kml_cached("assets/uc_federal.kml", "#e6b800") # Amarelo Escuro
+    if geo_uc_fed:
+        folium.GeoJson(
+            geo_uc_fed, name="UC Federal",
+            style_function=lambda x: {'fillColor': x['properties']['COR'], 'color': x['properties']['COR'], 'weight': 2, 'fillOpacity': 0.4},
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['UC Federal:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
+
+if mostrar_uc_estadual:
+    geo_uc_est = get_kml_cached("assets/uc_estadual.kml", "#ffff00") # Amarelo Padrão
+    if geo_uc_est:
+        folium.GeoJson(
+            geo_uc_est, name="UC Estadual",
+            style_function=lambda x: {'fillColor': x['properties']['COR'], 'color': x['properties']['COR'], 'weight': 2, 'fillOpacity': 0.4},
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['UC Estadual:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
+
+if mostrar_uc_municipal:
+    geo_uc_mun = get_kml_cached("assets/uc_municipal.kml", "#ffea70") # Amarelo Claro
+    if geo_uc_mun:
+        folium.GeoJson(
+            geo_uc_mun, name="UC Municipal",
+            style_function=lambda x: {'fillColor': x['properties']['COR'], 'color': x['properties']['COR'], 'weight': 2, 'fillOpacity': 0.4},
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['UC Municipal:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
         ).add_to(mapa)
 
 folium.LayerControl(position='topright').add_to(mapa)
