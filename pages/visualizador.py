@@ -128,6 +128,48 @@ def extrair_coordenadas_vis(texto_coords):
                 continue
     return pontos
 
+def ler_kml_para_geojson(caminho_arquivo, cor_hex):
+    """Lê nativamente os arquivos KML estáticos (sem precisar do Geopandas)"""
+    if not os.path.exists(caminho_arquivo): return None
+    try:
+        with open(caminho_arquivo, 'r', encoding='utf-8', errors='ignore') as f:
+            kml_str = f.read()
+        kml_str = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', kml_str)
+        root = ET.fromstring(kml_str)
+        
+        features = []
+        for placemark in root.findall('.//Placemark'):
+            name_tag = placemark.find('name')
+            nome = name_tag.text.strip() if name_tag is not None and name_tag.text else "Área Demarcada"
+            
+            # Tenta buscar detalhes estendidos do IPHAN ou INCRA/IBGE
+            for simple_data in placemark.findall('.//SimpleData'):
+                if simple_data.attrib.get('name') in ['nm_municip', 'fase_ti', 'etnia', 'nome']:
+                    if simple_data.text: nome += f" | {simple_data.text}"
+            
+            for poly in placemark.findall('.//Polygon//coordinates'):
+                if poly.text:
+                    coords = []
+                    for coord_str in poly.text.strip().split():
+                        partes = coord_str.split(',')
+                        if len(partes) >= 2: coords.append([float(partes[0]), float(partes[1])])
+                    if coords:
+                        features.append({"type": "Feature", "properties": {"NOME": nome, "COR": cor_hex}, "geometry": {"type": "Polygon", "coordinates": [coords]}})
+                        
+            for pt in placemark.findall('.//Point/coordinates'):
+                if pt.text:
+                    partes = pt.text.strip().split(',')
+                    if len(partes) >= 2:
+                        features.append({"type": "Feature", "properties": {"NOME": nome, "COR": cor_hex}, "geometry": {"type": "Point", "coordinates": [float(partes[0]), float(partes[1])]}})
+        
+        if features: return {"type": "FeatureCollection", "features": features}
+        return None
+    except: return None
+
+@st.cache_data(show_spinner=False)
+def get_kml_cached(path, color):
+    return ler_kml_para_geojson(path, color)
+
 def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
     """Função isolada para permitir o processamento paralelo rápido"""
     dict_cores = {
@@ -230,7 +272,6 @@ def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
     return None
 
 def processar_e_salvar_kmz_paralelo(arquivos):
-    """Executa múltiplos arquivos ao mesmo tempo usando Threads"""
     base_map = load_base_mapping()
     geo_data = get_base_geojson()
     novos_processados = 0
@@ -364,18 +405,24 @@ with st.sidebar:
             camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
             camadas_ativas[alim] = st.multiselect("Visibilidade:", lista_camadas_alim, default=camadas_default, key=f"ms_{alim}")
             
-        st.markdown("---")
-        st.markdown("### 🗑️ Gerenciar Malha Local")
-        alim_para_deletar = st.selectbox("Apagar Alimentador do Banco:", ["Selecione..."] + sorted(df['ALIMENTADOR'].unique().tolist()))
-        if alim_para_deletar != "Selecione...":
-            if st.button("❌ Excluir Permanentemente", use_container_width=True):
-                caminho_del = f"database/redes/{alim_para_deletar}.pkl"
-                if os.path.exists(caminho_del):
-                    os.remove(caminho_del)
-                    carregar_banco_redes.clear()
-                    st.success("Excluído!")
-                    time.sleep(1)
-                    st.rerun()
+    st.markdown("---")
+    st.markdown("### 🗺️ 5. Áreas Especiais")
+    mostrar_quilombos = st.checkbox("🟠 Áreas Quilombolas", value=False)
+    mostrar_indigenas = st.checkbox("🟢 Terras Indígenas", value=False)
+    mostrar_arqueologia = st.checkbox("🔵 Sítios Arqueológicos", value=False)
+            
+    st.markdown("---")
+    st.markdown("### 🗑️ Gerenciar Malha Local")
+    alim_para_deletar = st.selectbox("Apagar Alimentador do Banco:", ["Selecione..."] + sorted(df['ALIMENTADOR'].unique().tolist()) if not df.empty else ["Selecione..."])
+    if alim_para_deletar != "Selecione...":
+        if st.button("❌ Excluir Permanentemente", use_container_width=True):
+            caminho_del = f"database/redes/{alim_para_deletar}.pkl"
+            if os.path.exists(caminho_del):
+                os.remove(caminho_del)
+                carregar_banco_redes.clear()
+                st.success("Excluído!")
+                time.sleep(1)
+                st.rerun()
 
 # ==========================================
 # 3. CONSTRUÇÃO DO MAPA FOLIUM
@@ -530,7 +577,6 @@ if not df.empty:
     if features:
         geojson_data = {"type": "FeatureCollection", "features": features}
         
-        # 🔥 AQUI ESTÁ A ATUALIZAÇÃO DOS TAMANHOS DOS MARCADORES E REDES 🔥
         def style_fn(feature):
             cor = feature['properties']['COR']
             tipo = feature['properties']['TIPO_REDE']
@@ -542,7 +588,6 @@ if not df.empty:
                 elif any(x in tipo for x in ['TRANSFORMADOR', 'CHAVE', 'REGULADOR', 'RELIGADOR', 'SUBESTA', 'CAPACITOR']): raio = 12
                 return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 2}
 
-        # Aplicando raio padrão 6 para o CircleMarker
         folium.GeoJson(
             geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=6, fill=True, fillOpacity=1),
             tooltip=folium.features.GeoJsonTooltip(fields=['TIPO_REDE', 'NOME'], aliases=['Rede:', 'Identificação:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"),
@@ -594,6 +639,36 @@ if not df.empty:
         if mun_foco_lats and mun_foco_lons: mapa.fit_bounds([[min(mun_foco_lats), min(mun_foco_lons)], [max(mun_foco_lats), max(mun_foco_lons)]])
         elif todas_lats and todas_lons: mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
     elif todas_lats and todas_lons: mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
+
+# ==========================================
+# CAMADAS DE KML (ÁREAS ESPECIAIS)
+# ==========================================
+if mostrar_quilombos:
+    geo_q = get_kml_cached("assets/quilombos.kml", "#ff7f00") # Laranja
+    if geo_q:
+        folium.GeoJson(
+            geo_q, name="Áreas Quilombolas",
+            style_function=lambda x: {'fillColor': x['properties']['COR'], 'color': x['properties']['COR'], 'weight': 2, 'fillOpacity': 0.4},
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['Quilombo:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
+
+if mostrar_indigenas:
+    geo_i = get_kml_cached("assets/indigenas.kml", "#2ca02c") # Verde
+    if geo_i:
+        folium.GeoJson(
+            geo_i, name="Terras Indígenas",
+            style_function=lambda x: {'fillColor': x['properties']['COR'], 'color': x['properties']['COR'], 'weight': 2, 'fillOpacity': 0.4},
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['Terra Indígena:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
+
+if mostrar_arqueologia:
+    geo_a = get_kml_cached("assets/arqueologia.kml", "#1f77b4") # Azul
+    if geo_a:
+        folium.GeoJson(
+            geo_a, name="Sítios Arqueológicos",
+            marker=folium.CircleMarker(radius=6, fill=True, fillOpacity=1, color="#1f77b4"),
+            tooltip=folium.features.GeoJsonTooltip(fields=['NOME'], aliases=['Sítio:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;")
+        ).add_to(mapa)
 
 folium.LayerControl(position='topright').add_to(mapa)
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
