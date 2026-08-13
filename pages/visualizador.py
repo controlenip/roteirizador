@@ -6,10 +6,12 @@ import re
 import time
 import os
 import xml.etree.ElementTree as ET
-import pydeck as pdk
 import math
 import requests
 import unicodedata
+import folium
+from streamlit_folium import st_folium
+import html
 
 st.set_page_config(page_title="Visualizador de Malha", page_icon="🗺️", layout="wide")
 
@@ -17,8 +19,38 @@ if not os.path.exists("database/redes"):
     os.makedirs("database/redes", exist_ok=True)
 
 # ==========================================
-# 1. FUNÇÕES MATEMÁTICAS E DE EXTRAÇÃO
+# 1. FUNÇÕES BASE E PLANILHA
 # ==========================================
+def remove_accents(input_str):
+    nfkd_form = unicodedata.normalize('NFKD', str(input_str))
+    return u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+@st.cache_data(show_spinner=False)
+def load_base_mapping():
+    """Lê a BASE.xlsx para descobrir exatamente qual município pertence a qual regional"""
+    mun_to_reg = {}
+    try:
+        if os.path.exists("BASE.xlsx"):
+            df_base = pd.read_excel("BASE.xlsx")
+            for _, row in df_base.iterrows():
+                mun = remove_accents(row.get('MunicIpio', '')).upper().strip()
+                reg = str(row.get('Regional', '')).strip().upper()
+                if mun and reg and reg != 'NAN':
+                    mun_to_reg[mun] = reg
+    except:
+        pass
+    
+    # Forçar Overrides (Correções Manuais solicitadas)
+    overrides_centro = [
+        'SANTA LUZIA', 'CONCEICAO DO LAGO-ACU', 'CONCEICAO DO LAGO ACU', 
+        'PINDARE-MIRIM', 'PINDARE MIRIM', 'OLHO DAGUA DAS CUNHAS', 
+        'OLHO D\'AGUA DAS CUNHAS', 'GOVERNADOR LUIZ ROCHA'
+    ]
+    for mun in overrides_centro:
+        mun_to_reg[mun] = 'CENTRO'
+        
+    return mun_to_reg
+
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
@@ -28,7 +60,7 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.asin(math.sqrt(a))
     return R * c
 
-def extrair_coordenadas_pdk(texto_coords):
+def extrair_coordenadas_vis(texto_coords):
     pontos = []
     for coord in texto_coords.strip().split():
         partes = coord.split(',')
@@ -37,18 +69,19 @@ def extrair_coordenadas_pdk(texto_coords):
                 lon = float(partes[0].strip().replace(',', '.'))
                 lat = float(partes[1].strip().replace(',', '.'))
                 if lat != 0.0 and lon != 0.0 and -35.0 <= lat <= 5.0 and -75.0 <= lon <= -30.0:
-                    pontos.append([lon, lat]) # PyDeck usa [LON, LAT]
+                    pontos.append([lat, lon]) 
             except:
                 continue
     return pontos
 
 def processar_e_salvar_kmz(arquivos):
-    dict_cores_rgb = {
-        'REDE PRIMÁRIA': [230, 25, 75], 'REDE PRIMARIA': [230, 25, 75],
-        'REDE SECUNDÁRIA': [67, 99, 216], 'REDE SECUNDARIA': [67, 99, 216],
-        'POSTE': [180, 180, 180], 'TRANSFORMADOR': [245, 130, 49], 
-        'CHAVE': [60, 180, 75], 'REGULADOR': [145, 30, 180], 
-        'RELIGADOR': [70, 240, 240], 'SUBESTAÇÃO': [255, 255, 255], 'SUBESTACAO': [255, 255, 255]
+    base_map = load_base_mapping()
+    dict_cores = {
+        'REDE PRIMÁRIA': '#e6194b', 'REDE PRIMARIA': '#e6194b',
+        'REDE SECUNDÁRIA': '#4363d8', 'REDE SECUNDARIA': '#4363d8',
+        'POSTE': '#808080', 'TRANSFORMADOR': '#f58231', 
+        'CHAVE': '#3cb44b', 'REGULADOR': '#911eb4', 
+        'RELIGADOR': '#46f0f0', 'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
     }
 
     novos_processados = 0
@@ -78,23 +111,30 @@ def processar_e_salvar_kmz(arquivos):
 
         municipio = "N/A"
         regional = "N/A"
+        
         mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if mun_match: municipio = mun_match.group(1).strip().upper()
-        reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if reg_match: regional = reg_match.group(1).strip().upper()
+        if mun_match: 
+            municipio = mun_match.group(1).strip().upper()
+            mun_norm = remove_accents(municipio)
+            if mun_norm in base_map:
+                regional = base_map[mun_norm]
+
+        if regional == "N/A":
+            reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
+            if reg_match: regional = reg_match.group(1).strip().upper()
+
         if regional == "N/A":
             sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
             if sigla_match: regional = sigla_match.group(1)
 
         registros_flat = []
-        
         for folder in root.findall('.//Folder'):
             name_tag = folder.find('name')
             if name_tag is not None and name_tag.text:
                 nome_pasta = name_tag.text.strip().upper()
                 if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta: continue
 
-                cor_elemento = dict_cores_rgb.get(nome_pasta, [100, 100, 100])
+                cor_elemento = dict_cores.get(nome_pasta, '#333333')
                 
                 for placemark in folder.findall('.//Placemark'):
                     pm_name_tag = placemark.find('name')
@@ -102,24 +142,22 @@ def processar_e_salvar_kmz(arquivos):
                     
                     for ls in placemark.findall('.//LineString/coordinates'):
                         if ls.text:
-                            coords = extrair_coordenadas_pdk(ls.text)
+                            coords = extrair_coordenadas_vis(ls.text)
                             if len(coords) > 1:
-                                peso = 4 if 'PRIM' in nome_pasta else 2
                                 registros_flat.append({
                                     'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
                                     'TIPO_GEOMETRIA': 'Linha', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords, 'COR': cor_elemento, 'RAIO': 0, 'PESO': peso
+                                    'COORDS': coords, 'COR': cor_elemento
                                 })
                             
                     for pt in placemark.findall('.//Point/coordinates'):
                         if pt.text:
-                            coords = extrair_coordenadas_pdk(pt.text)
+                            coords = extrair_coordenadas_vis(pt.text)
                             if len(coords) > 0:
-                                raio = 4 if 'TRANSFORMADOR' in nome_pasta else (2 if 'POSTE' in nome_pasta else 3)
                                 registros_flat.append({
                                     'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
                                     'TIPO_GEOMETRIA': 'Ponto', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords[0], 'COR': cor_elemento, 'RAIO': raio, 'PESO': 0
+                                    'COORDS': coords[0], 'COR': cor_elemento
                                 })
         
         if registros_flat:
@@ -139,52 +177,24 @@ def carregar_banco_redes():
     if dfs: return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()
 
-
 @st.cache_data(show_spinner=False)
 def get_base_geojson():
-    def remove_accents(input_str):
-        nfkd_form = unicodedata.normalize('NFKD', str(input_str))
-        return u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
-
-    mun_to_reg = {}
-    try:
-        if os.path.exists("BASE.xlsx"):
-            df_base = pd.read_excel("BASE.xlsx")
-            if 'MunicIpio' in df_base.columns and 'Regional' in df_base.columns:
-                df_base['MunicIpio_norm'] = df_base['MunicIpio'].apply(lambda x: remove_accents(x).upper().strip())
-                mun_to_reg = dict(zip(df_base['MunicIpio_norm'], df_base['Regional'].str.upper().str.strip()))
-    except:
-        pass
-
-    # 🔥 CORREÇÕES FORÇADAS SOLICITADAS PELO USUÁRIO PARA A REGIONAL CENTRO 🔥
-    overrides_centro = [
-        'SANTA LUZIA', 
-        'CONCEICAO DO LAGO-ACU', 
-        'CONCEICAO DO LAGO ACU', 
-        'PINDARE-MIRIM', 
-        'PINDARE MIRIM', 
-        'OLHO D\'AGUA DAS CUNHAS', 
-        'OLHO DAGUA DAS CUNHAS', 
-        'GOVERNADOR LUIZ ROCHA'
-    ]
-    for mun in overrides_centro:
-        mun_to_reg[mun] = 'CENTRO'
-
+    mun_to_reg = load_base_mapping()
     url_geojson = "https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-21-mun.json"
     try:
-        resp = requests.get(url_geojson)
+        resp = requests.get(url_geojson, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
         geo_data = resp.json()
     except:
         return None
 
-    # Cores RGBA para o PyDeck
+    # Cores Exatas da sua Imagem
     reg_colors = {
-        'LESTE': [31, 119, 180],     # Azul
-        'CENTRO': [214, 39, 40],     # Vermelho
-        'NOROESTE': [188, 189, 34],  # Amarelo
-        'NORTE': [255, 127, 14],     # Laranja
-        'SUL': [143, 188, 143],      # Verde
-        'DESCONHECIDO': [200, 200, 200]
+        'LESTE': '#1f77b4',     # Azul
+        'CENTRO': '#d62728',    # Vermelho
+        'NOROESTE': '#ffed6f',  # Amarelo
+        'NORTE': '#ff7f0e',     # Laranja
+        'SUL': '#8fbc8f',       # Verde Musgo
+        'DESCONHECIDO': '#cccccc'
     }
 
     for feature in geo_data['features']:
@@ -192,48 +202,41 @@ def get_base_geojson():
         mun_name_norm = remove_accents(mun_name).upper().strip()
         reg = mun_to_reg.get(mun_name_norm, "DESCONHECIDO")
         
-        # Injetando dados compatíveis com o Tooltip do PyDeck
         feature['properties']['REGIONAL'] = reg
         feature['properties']['MUNICIPIO'] = mun_name_norm
-        feature['properties']['base_color'] = reg_colors.get(reg, [200, 200, 200])
-        feature['properties']['TIPO_REDE'] = f"📍 MUNICÍPIO: {reg}"
-        feature['properties']['NOME'] = mun_name
-        feature['properties']['ALIMENTADOR'] = "Limites Geográficos IBGE"
+        feature['properties']['fillColor'] = reg_colors.get(reg, '#cccccc')
         
     return geo_data
 
 # ==========================================
-# 2. INTERFACE DE MENU E FILTROS
+# 2. INTERFACE E FILTROS DO SISTEMA
 # ==========================================
-st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Oficial de Malha (Alta Performance)</h2>", unsafe_allow_html=True)
-st.markdown("O sistema usa **GPU e Banco de Dados** para carregar o Maranhão inteiro instantaneamente. Dica: Segure o botão **CTRL** e arraste o mouse no mapa para inclinar a câmera em 3D!")
+st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Oficial de Malha (Satélite Integrado)</h2>", unsafe_allow_html=True)
+st.markdown("O sistema cruza as regionais oficiais com a sua planilha `BASE.xlsx`. Use o zoom para ver o satélite em alta definição!")
 
 df = carregar_banco_redes()
+base_map = load_base_mapping()
 
 with st.sidebar:
-    st.markdown("### 📥 1. Upload para o Banco de Dados")
+    st.markdown("### 📥 1. Upload de Redes")
     arquivos_upados = st.file_uploader("Arraste novos KMZs aqui", type=["kmz", "kml"], accept_multiple_files=True)
-    
     if arquivos_upados:
         if st.button("💾 Processar e Salvar no Banco", type="primary", use_container_width=True):
-            with st.spinner("Decodificando, limpando lixos e gravando em disco..."):
+            with st.spinner("Lendo propriedades XML e gravando em disco..."):
                 qtd = processar_e_salvar_kmz(arquivos_upados)
             if qtd > 0:
                 st.success(f"✅ {qtd} novos Alimentadores salvos!")
                 carregar_banco_redes.clear()
                 time.sleep(1)
                 st.rerun()
-            else:
-                st.info("Os arquivos upados já existiam no banco ou não continham redes válidas.")
 
     st.markdown("---")
+    st.markdown("### 🔎 2. Pesquisas Inteligentes")
+    tab_nome, tab_coord = st.tabs(["📝 Por Nome/ID", "📍 Por Coordenada"])
     
     termo_pesquisa = ""
     busca_lat = None
     busca_lon = None
-
-    st.markdown("### 🔎 2. Pesquisas Inteligentes")
-    tab_nome, tab_coord = st.tabs(["📝 Por Nome/ID", "📍 Por Coordenada"])
     
     with tab_nome:
         termo_pesquisa = st.text_input("Nome/Num. Poste ou Trafo:", placeholder="Ex: 554930...").strip().upper()
@@ -241,7 +244,7 @@ with st.sidebar:
     with tab_coord:
         c_lat, c_lon = st.columns(2)
         with c_lat:
-            lat_input = st.text_input("Latitude:", placeholder="Ex: -5.532", help="Pode usar ponto ou vírgula")
+            lat_input = st.text_input("Latitude:", placeholder="Ex: -5.532")
         with c_lon:
             lon_input = st.text_input("Longitude:", placeholder="Ex: -47.432")
             
@@ -255,47 +258,43 @@ with st.sidebar:
                 else:
                     st.warning("⚠️ Coordenada fora do Brasil.")
             except:
-                st.warning("⚠️ Formato inválido. Digite apenas números.")
+                st.warning("⚠️ Formato inválido. Use números.")
 
     st.markdown("---")
     st.markdown("### 🔍 3. Filtros Geográficos")
-    lista_regioes = sorted(df['REGIONAL'].unique().tolist()) if not df.empty else ["SUL", "LESTE", "NORTE", "NOROESTE", "CENTRO"]
+    
+    # Lista de Regionais baseada na BASE.xlsx
+    lista_regioes = sorted(list(set(base_map.values()))) if base_map else ["CENTRO", "LESTE", "NOROESTE", "NORTE", "SUL"]
     regioes_sel = st.multiselect("📍 Regional:", lista_regioes)
-    df_filt1 = df[df['REGIONAL'].isin(regioes_sel)] if regioes_sel and not df.empty else df
     
+    # Filtra municípios da BASE.xlsx pela Regional selecionada
     lista_municipios = []
-    try:
-        df_b = pd.read_excel("BASE.xlsx")
-        lista_municipios = sorted(df_b['MunicIpio'].apply(lambda x: str(x).upper().strip()).unique().tolist())
-    except:
-        lista_municipios = sorted(df_filt1['MUNICIPIO'].unique().tolist()) if not df.empty else []
-
-    municipios_sel = st.multiselect("🏙️ Município (Foco Automático):", lista_municipios)
-    df_filt2 = df_filt1[df_filt1['MUNICIPIO'].isin(municipios_sel)] if municipios_sel and not df.empty else df_filt1
+    for mun, reg in base_map.items():
+        if not regioes_sel or reg in regioes_sel:
+            lista_municipios.append(mun)
+    lista_municipios = sorted(lista_municipios)
     
-    lista_alimentadores = sorted(df_filt2['ALIMENTADOR'].unique().tolist()) if not df.empty else []
+    municipios_sel = st.multiselect("🏙️ Município (Foco e Contorno):", lista_municipios)
+    
+    df_filt = df.copy()
+    if not df.empty:
+        if regioes_sel: df_filt = df_filt[df_filt['REGIONAL'].isin(regioes_sel)]
+        if municipios_sel: df_filt = df_filt[df_filt['MUNICIPIO'].isin(municipios_sel)]
+    
+    lista_alimentadores = sorted(df_filt['ALIMENTADOR'].unique().tolist()) if not df_filt.empty else []
     alim_sel = st.multiselect("⚡ Alimentador:", lista_alimentadores)
-    
     alimentadores_visiveis = alim_sel if alim_sel else lista_alimentadores
 
     camadas_ativas = {}
     if not df.empty:
         st.markdown("---")
         st.markdown("### 🗂️ 4. Camadas (Desempenho)")
-        
         for alim in alimentadores_visiveis:
             st.markdown(f"**{alim}**")
             lista_camadas_alim = sorted(df[df['ALIMENTADOR'] == alim]['TIPO_REDE'].unique().tolist())
-            
             camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE']
             camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
-            
-            camadas_ativas[alim] = st.multiselect(
-                "Ligado/Desligado:", 
-                lista_camadas_alim, 
-                default=camadas_default,
-                key=f"ms_{alim}"
-            )
+            camadas_ativas[alim] = st.multiselect("Visibilidade:", lista_camadas_alim, default=camadas_default, key=f"ms_{alim}")
             
         st.markdown("---")
         st.markdown("### 🗑️ Gerenciar Malha Local")
@@ -310,75 +309,90 @@ with st.sidebar:
                     time.sleep(1)
                     st.rerun()
 
-    st.markdown("---")
-    tipo_mapa = st.radio("Visual do Mapa:", ["🗺️ Satélite", "🛣️ Vetorial (Rápido)"])
-    map_style_pdk = "satellite" if "Satélite" in tipo_mapa else "road"
-
-
 # ==========================================
-# 3. MOTOR GPU / BUSCA E RENDERIZAÇÃO (PYDECK)
+# 3. CONSTRUÇÃO DO MAPA FOLIUM
 # ==========================================
-layers = []
+mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None)
 
-# --- CAMADA 1: MAPA BASE DO IBGE E CORES ---
+# Camada Híbrida do Google (Satélite + Ruas + Nomes)
+folium.TileLayer(
+    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+    attr='Google',
+    name='Satélite (Google Maps)',
+    overlay=False,
+    control=True,
+    max_zoom=20
+).add_to(mapa)
+
+folium.TileLayer(
+    tiles='CartoDB positron',
+    name='Mapa Base (Limpo)',
+    overlay=False,
+    control=True,
+    max_zoom=20
+).add_to(mapa)
+
 geo_data = get_base_geojson()
-mun_foco_lats, mun_foco_lons = [], []
-
 if geo_data:
-    for feature in geo_data['features']:
+    def style_function(feature):
         reg_mun = feature['properties'].get('MUNICIPIO', '')
         reg_name = feature['properties'].get('REGIONAL', '')
-        base_color = feature['properties']['base_color']
         
         if municipios_sel:
             if reg_mun in municipios_sel:
-                feature['properties']['fill_color'] = base_color + [180] # Opacidade forte
-                feature['properties']['elevation'] = 2000 # Elevação 3D para destacar!
-                
-                # Pega as coordenadas para dar o zoom
-                geom = feature['geometry']
-                if geom['type'] == 'Polygon':
-                    for pt in geom['coordinates'][0]:
-                        mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
-                elif geom['type'] == 'MultiPolygon':
-                    for poly in geom['coordinates']:
-                        for pt in poly[0]:
-                            mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
+                # Município Focado: Transparente com Borda Grossa Magenta (Para ver o satélite dentro)
+                return {'fillColor': 'transparent', 'color': '#FF00FF', 'weight': 4, 'fillOpacity': 0}
             else:
-                feature['properties']['fill_color'] = base_color + [0] # Invisível
-                feature['properties']['elevation'] = 0
+                return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
                 
         elif regioes_sel:
             if reg_name in regioes_sel:
-                feature['properties']['fill_color'] = base_color + [180]
-                feature['properties']['elevation'] = 1500
+                return {'fillColor': feature['properties']['fillColor'], 'color': '#000000', 'weight': 1, 'fillOpacity': 0.6}
             else:
-                feature['properties']['fill_color'] = base_color + [10]
-                feature['properties']['elevation'] = 0
-        else:
-            # Visão Padrão
-            feature['properties']['fill_color'] = base_color + [80]
-            feature['properties']['elevation'] = 0
+                return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
+        
+        # Padrão: Estado inteiro colorido
+        return {'fillColor': feature['properties']['fillColor'], 'color': '#000000', 'weight': 1, 'fillOpacity': 0.5}
 
-    layers.append(
-        pdk.Layer(
-            "GeoJsonLayer",
-            geo_data,
-            opacity=1,
-            stroked=True,
-            filled=True,
-            extruded=True,
-            wireframe=True,
-            get_elevation="properties.elevation",
-            get_fill_color="properties.fill_color",
-            get_line_color=[255, 255, 255, 100],
-            pickable=True
-        )
-    )
+    # Adiciona a camada IBGE
+    folium.GeoJson(
+        geo_data,
+        name="Divisão IBGE (Maranhão)",
+        style_function=style_function,
+        tooltip=folium.features.GeoJsonTooltip(fields=['name', 'REGIONAL'], aliases=['Município:', 'Regional:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;"),
+        zoom_on_click=False,
+        show=True
+    ).add_to(mapa)
 
-# --- CAMADA 2: REDE ELÉTRICA (KMZ) ---
-df_busca = pd.DataFrame()
-nearest_idx = None
+    # 🚀 SCRIPT NINJA: Faz a cor do estado sumir se der zoom maior que 9!
+    map_id = mapa.get_name()
+    js_zoom_hide = f"""
+    <script>
+        setTimeout(function() {{
+            var ibge_layer_{map_id} = null;
+            {map_id}.eachLayer(function(layer) {{
+                if (layer.options && layer.options.name === 'Divisão IBGE (Maranhão)') {{
+                    ibge_layer_{map_id} = layer;
+                }}
+            }});
+            {map_id}.on('zoomend', function() {{
+                if (ibge_layer_{map_id}) {{
+                    if ({map_id}.getZoom() > 9) {{
+                        if ({map_id}.hasLayer(ibge_layer_{map_id})) {{
+                            {map_id}.removeLayer(ibge_layer_{map_id});
+                        }}
+                    }} else {{
+                        if (!{map_id}.hasLayer(ibge_layer_{map_id})) {{
+                            {map_id}.addLayer(ibge_layer_{map_id});
+                        }}
+                    }}
+                }}
+            }});
+        }}, 500);
+    </script>
+    """
+    mapa.get_root().html.add_child(folium.Element(js_zoom_hide))
+
 
 if not df.empty:
     df_mapa = df.copy()
@@ -392,13 +406,14 @@ if not df.empty:
             mask_camadas = mask_camadas | ((df_mapa['ALIMENTADOR'] == alim) & (df_mapa['TIPO_REDE'].isin(camadas_ativas[alim])))
     df_mapa = df_mapa[mask_camadas]
 
-    # Processador de Buscas Exatas
+    df_busca = pd.DataFrame()
+    nearest_idx = None
+    todas_lats, todas_lons = [], []
+
     if busca_lat is not None and busca_lon is not None and not df_mapa.empty:
         def calc_min_dist(row):
-            if row['TIPO_GEOMETRIA'] == 'Ponto':
-                return haversine(busca_lat, busca_lon, row['COORDS'][1], row['COORDS'][0])
-            else:
-                return min([haversine(busca_lat, busca_lon, pt[1], pt[0]) for pt in row['COORDS']])
+            if row['TIPO_GEOMETRIA'] == 'Ponto': return haversine(busca_lat, busca_lon, row['COORDS'][0], row['COORDS'][1])
+            else: return min([haversine(busca_lat, busca_lon, pt[0], pt[1]) for pt in row['COORDS']])
         
         df_mapa['DISTANCIA_KM'] = df_mapa.apply(calc_min_dist, axis=1)
         nearest_idx = df_mapa['DISTANCIA_KM'].idxmin()
@@ -415,75 +430,99 @@ if not df.empty:
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    df_linhas = df_mapa[df_mapa['TIPO_GEOMETRIA'] == 'Linha']
-    df_pontos = df_mapa[df_mapa['TIPO_GEOMETRIA'] == 'Ponto']
-
-    if not df_linhas.empty:
-        layers.append(pdk.Layer("PathLayer", data=df_linhas, pickable=True, get_color="COR", width_scale=1, width_min_pixels=1.5, get_path="COORDS", get_width="PESO"))
+    fg_rede = folium.FeatureGroup(name="Rede Elétrica (Malha)")
     
-    if not df_pontos.empty:
-        layers.append(pdk.Layer("ScatterplotLayer", data=df_pontos, pickable=True, get_position="COORDS", get_color="COR", get_radius="RAIO", radius_scale=1, radius_min_pixels=2, radius_max_pixels=6))
-        
-    # Destaca o alvo da busca (Magenta)
-    if not df_busca.empty:
-        df_busca_linhas = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Linha']
-        df_busca_pontos = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto']
-        
-        if not df_busca_linhas.empty:
-            layers.append(pdk.Layer("PathLayer", data=df_busca_linhas, pickable=True, get_color=[255, 0, 255], width_scale=1, width_min_pixels=4, get_path="COORDS", get_width=8))
-        if not df_busca_pontos.empty:
-            layers.append(pdk.Layer("ScatterplotLayer", data=df_busca_pontos, pickable=True, get_position="COORDS", get_color=[255, 0, 255], radius_min_pixels=8, radius_max_pixels=15))
-
-# Pino Dourado de Coordenada Pesquisada
-if busca_lat is not None and busca_lon is not None:
-    target_df = pd.DataFrame([{"COORDS": [busca_lon, busca_lat], "NOME": "Sua Pesquisa GPS", "TIPO_REDE": "📍 ALVO", "ALIMENTADOR": "-"}])
-    layers.append(pdk.Layer("ScatterplotLayer", data=target_df, pickable=True, get_position="COORDS", get_color=[255, 215, 0], get_radius=15, radius_min_pixels=10, radius_max_pixels=20))
-
-# --- INTELIGÊNCIA DE CÂMERA (ZOOM E FOCO) ---
-if busca_lat is not None and busca_lon is not None:
-    view_state = pdk.ViewState(latitude=busca_lat, longitude=busca_lon, zoom=18, pitch=45)
-elif not df_busca.empty and not df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto'].empty:
-    alvo = df_busca[df_busca['TIPO_GEOMETRIA'] == 'Ponto'].iloc[0]['COORDS']
-    view_state = pdk.ViewState(latitude=alvo[1], longitude=alvo[0], zoom=18, pitch=45)
-elif mun_foco_lats and mun_foco_lons:
-    centro_lat = sum(mun_foco_lats) / len(mun_foco_lats)
-    centro_lon = sum(mun_foco_lons) / len(mun_foco_lons)
-    view_state = pdk.ViewState(latitude=centro_lat, longitude=centro_lon, zoom=10, pitch=30)
-elif not df.empty and 'df_pontos' in locals() and not df_pontos.empty:
-    centro_lon = df_pontos['COORDS'].apply(lambda x: x[0]).mean()
-    centro_lat = df_pontos['COORDS'].apply(lambda x: x[1]).mean()
-    view_state = pdk.ViewState(latitude=centro_lat, longitude=centro_lon, zoom=10, pitch=0)
-else:
-    view_state = pdk.ViewState(latitude=-5.2, longitude=-45.0, zoom=6, pitch=15)
-
-# --- CONFIGURA O TOOLTIP (CAIXA FLUTUANTE) PARA APARECER NO HOVER ---
-tooltip_html = {
-    "html": """
-    <div style='min-width: 200px;'>
-        <div style='background-color: #f1f1f1; padding: 4px; border-bottom: 2px solid #0D256C;'>
-            <b style='color: #0D256C; font-size: 14px;'>{TIPO_REDE}</b>
+    def criar_popup(row):
+        coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}" if row['TIPO_GEOMETRIA'] == 'Ponto' else "Linha de Múltiplos Pontos"
+        html_popup = f"""
+        <div style="min-width: 250px; font-family: sans-serif;">
+            <h4 style="margin-top: 0; color: {row['COR']}; border-bottom: 2px solid {row['COR']}; padding-bottom: 5px;">{row['TIPO_REDE']}</h4>
+            <table style="width:100%;">
+                <tr><td style="color: #555; padding: 2px;"><b>IDENTIFICAÇÃO:</b></td><td>{html.escape(str(row['NOME']))}</td></tr>
+                <tr><td style="color: #555; padding: 2px;"><b>ALIMENTADOR:</b></td><td>{html.escape(str(row['ALIMENTADOR']))}</td></tr>
+                <tr><td style="color: #555; padding: 2px;"><b>LOCAL:</b></td><td>{html.escape(str(row['MUNICIPIO']))} - {row['REGIONAL']}</td></tr>
+                <tr><td style="color: #555; padding: 2px;"><b>GPS:</b></td><td>{coord_txt}</td></tr>
+            </table>
         </div>
-        <div style='padding: 6px; font-size: 13px; color: #333;'>
-            <b>Identificação:</b> {NOME}<br/>
-            <b>Local/Alim:</b> {ALIMENTADOR}
-        </div>
-    </div>
-    """,
-    "style": {
-        "backgroundColor": "white",
-        "color": "black",
-        "padding": "0px",
-        "border-radius": "4px",
-        "box-shadow": "0 2px 4px rgba(0,0,0,0.3)"
-    }
-}
+        """
+        return folium.Popup(html_popup, max_width=350)
 
-r = pdk.Deck(
-    layers=layers,
-    initial_view_state=view_state,
-    map_style=map_style_pdk,
-    tooltip=tooltip_html
-)
+    for _, row in df_mapa.iterrows():
+        if row['TIPO_GEOMETRIA'] == 'Linha':
+            folium.PolyLine(
+                locations=row['COORDS'],
+                color=row['COR'],
+                weight=3 if 'PRIM' in row['TIPO_REDE'] else 2,
+                opacity=0.8,
+                popup=criar_popup(row),
+                tooltip=f"<b>{row['TIPO_REDE']}</b><br>{html.escape(str(row['NOME']))}"
+            ).add_to(fg_rede)
+            for pt in row['COORDS']: todas_lats.append(pt[0]); todas_lons.append(pt[1])
+        else:
+            folium.CircleMarker(
+                location=row['COORDS'],
+                radius=4 if 'TRANSFORMADOR' in row['TIPO_REDE'] else 2,
+                color=row['COR'],
+                fill=True,
+                fillOpacity=1.0,
+                popup=criar_popup(row),
+                tooltip=f"<b>{row['TIPO_REDE']}</b><br>{html.escape(str(row['NOME']))}"
+            ).add_to(fg_rede)
+            todas_lats.append(row['COORDS'][0]); todas_lons.append(row['COORDS'][1])
 
-# Renderiza ocupando a maior altura possível
-st.pydeck_chart(r, use_container_width=True)
+    busca_lats, busca_lons = [], []
+    for _, row in df_busca.iterrows():
+        if row['TIPO_GEOMETRIA'] == 'Linha':
+            folium.PolyLine(
+                locations=row['COORDS'],
+                color='#FF00FF', weight=8, opacity=1.0,
+                popup=criar_popup(row),
+                tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
+            ).add_to(fg_rede)
+            for pt in row['COORDS']: busca_lats.append(pt[0]); busca_lons.append(pt[1])
+        else:
+            folium.Marker(
+                location=row['COORDS'],
+                icon=folium.Icon(color='purple', icon='star'),
+                popup=criar_popup(row),
+                tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
+            ).add_to(fg_rede)
+            busca_lats.append(row['COORDS'][0]); busca_lons.append(row['COORDS'][1])
+
+    if busca_lat is not None and busca_lon is not None:
+        folium.Marker(
+            location=[busca_lat, busca_lon],
+            icon=folium.Icon(color='orange', icon='map-pin', prefix='fa'),
+            tooltip="Sua Pesquisa GPS"
+        ).add_to(fg_rede)
+
+    fg_rede.add_to(mapa)
+
+    # Lógica Automática de Foco de Câmera
+    if busca_lat is not None and busca_lon is not None:
+        mapa.fit_bounds([[busca_lat - 0.001, busca_lon - 0.001], [busca_lat + 0.001, busca_lon + 0.001]])
+    elif busca_lats and busca_lons:
+        mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]])
+    elif municipios_sel and geo_data:
+        mun_foco_lats, mun_foco_lons = [], []
+        for feature in geo_data['features']:
+            if feature['properties'].get('MUNICIPIO') in municipios_sel:
+                geom = feature['geometry']
+                if geom['type'] == 'Polygon':
+                    for pt in geom['coordinates'][0]:
+                        mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
+                elif geom['type'] == 'MultiPolygon':
+                    for poly in geom['coordinates']:
+                        for pt in poly[0]:
+                            mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
+        if mun_foco_lats and mun_foco_lons:
+            mapa.fit_bounds([[min(mun_foco_lats), min(mun_foco_lons)], [max(mun_foco_lats), max(mun_foco_lons)]])
+        elif todas_lats and todas_lons:
+            mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
+    elif todas_lats and todas_lons:
+        mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
+
+folium.LayerControl(position='topright').add_to(mapa)
+
+# Tamanho Gigante para Ocupar a Tela Inteira
+st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
