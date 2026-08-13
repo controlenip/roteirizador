@@ -310,7 +310,7 @@ with st.sidebar:
                     st.rerun()
 
 # ==========================================
-# 3. CONSTRUÇÃO DO MAPA FOLIUM
+# 3. CONSTRUÇÃO DO MAPA FOLIUM COM GEOJSON
 # ==========================================
 mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None)
 
@@ -364,7 +364,7 @@ if geo_data:
         show=True
     ).add_to(mapa)
 
-    # 🚀 SCRIPT NINJA: Faz a cor do estado sumir se der zoom maior que 9!
+    # SCRIPT NINJA: Faz a cor do estado sumir se der zoom para ver o satélite limpo!
     map_id = mapa.get_name()
     js_zoom_hide = f"""
     <script>
@@ -430,13 +430,70 @@ if not df.empty:
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    fg_rede = folium.FeatureGroup(name="Rede Elétrica (Malha)")
+    # --- OTIMIZAÇÃO MAXIMA DE DESENHO (GEOJSON NO FOLIUM) ---
+    features = []
     
-    def criar_popup(row):
+    # Roda super rápido no Python para não travar o Leaflet
+    for _, row in df_mapa.iterrows():
+        prop = {
+            "TIPO_REDE": str(row['TIPO_REDE']),
+            "NOME": str(row['NOME']),
+            "ALIMENTADOR": str(row['ALIMENTADOR']),
+            "MUNICIPIO": f"{row['MUNICIPIO']} - {row['REGIONAL']}",
+            "COR": row['COR']
+        }
+        
+        if row['TIPO_GEOMETRIA'] == 'Linha':
+            coords = [[pt[1], pt[0]] for pt in row['COORDS']] # GeoJSON inverte [Lon, Lat]
+            geom = {"type": "LineString", "coordinates": coords}
+            for pt in row['COORDS']:
+                todas_lats.append(pt[0]); todas_lons.append(pt[1])
+        else:
+            coords = [row['COORDS'][1], row['COORDS'][0]]
+            geom = {"type": "Point", "coordinates": coords}
+            todas_lats.append(row['COORDS'][0]); todas_lons.append(row['COORDS'][1])
+            
+        features.append({"type": "Feature", "geometry": geom, "properties": prop})
+
+    geojson_data = {"type": "FeatureCollection", "features": features}
+
+    def style_fn(feature):
+        cor = feature['properties']['COR']
+        tipo = feature['properties']['TIPO_REDE']
+        if feature['geometry']['type'] == 'LineString':
+            peso = 3 if 'PRIM' in tipo else 2
+            return {'color': cor, 'weight': peso, 'opacity': 0.8}
+        else:
+            raio = 4 if 'TRANSFORMADOR' in tipo else 2
+            return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 1}
+
+    if features:
+        folium.GeoJson(
+            geojson_data,
+            name="Rede Elétrica (Malha)",
+            style_function=style_fn,
+            marker=folium.CircleMarker(radius=2, fill=True, fillOpacity=1),
+            tooltip=folium.features.GeoJsonTooltip(
+                fields=['TIPO_REDE', 'NOME'],
+                aliases=['Rede:', 'Identificação:'],
+                style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"
+            ),
+            popup=folium.features.GeoJsonPopup(
+                fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO'],
+                aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:'],
+                style="font-family: sans-serif;"
+            )
+        ).add_to(mapa)
+
+    # --- CAMADA DO ITEM PESQUISADO (MAGENTA GIGANTE) ---
+    busca_lats, busca_lons = [], []
+    fg_busca = folium.FeatureGroup(name="Resultado da Pesquisa", show=True)
+    
+    for _, row in df_busca.iterrows():
         coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}" if row['TIPO_GEOMETRIA'] == 'Ponto' else "Linha de Múltiplos Pontos"
         html_popup = f"""
         <div style="min-width: 250px; font-family: sans-serif;">
-            <h4 style="margin-top: 0; color: {row['COR']}; border-bottom: 2px solid {row['COR']}; padding-bottom: 5px;">{row['TIPO_REDE']}</h4>
+            <h4 style="margin-top: 0; color: #FF00FF; border-bottom: 2px solid #FF00FF; padding-bottom: 5px;">{row['TIPO_REDE']}</h4>
             <table style="width:100%;">
                 <tr><td style="color: #555; padding: 2px;"><b>IDENTIFICAÇÃO:</b></td><td>{html.escape(str(row['NOME']))}</td></tr>
                 <tr><td style="color: #555; padding: 2px;"><b>ALIMENTADOR:</b></td><td>{html.escape(str(row['ALIMENTADOR']))}</td></tr>
@@ -445,60 +502,30 @@ if not df.empty:
             </table>
         </div>
         """
-        return folium.Popup(html_popup, max_width=350)
-
-    for _, row in df_mapa.iterrows():
+        popup = folium.Popup(html_popup, max_width=350)
+        
         if row['TIPO_GEOMETRIA'] == 'Linha':
             folium.PolyLine(
-                locations=row['COORDS'],
-                color=row['COR'],
-                weight=3 if 'PRIM' in row['TIPO_REDE'] else 2,
-                opacity=0.8,
-                popup=criar_popup(row),
-                tooltip=f"<b>{row['TIPO_REDE']}</b><br>{html.escape(str(row['NOME']))}"
-            ).add_to(fg_rede)
-            for pt in row['COORDS']: todas_lats.append(pt[0]); todas_lons.append(pt[1])
-        else:
-            folium.CircleMarker(
-                location=row['COORDS'],
-                radius=4 if 'TRANSFORMADOR' in row['TIPO_REDE'] else 2,
-                color=row['COR'],
-                fill=True,
-                fillOpacity=1.0,
-                popup=criar_popup(row),
-                tooltip=f"<b>{row['TIPO_REDE']}</b><br>{html.escape(str(row['NOME']))}"
-            ).add_to(fg_rede)
-            todas_lats.append(row['COORDS'][0]); todas_lons.append(row['COORDS'][1])
-
-    busca_lats, busca_lons = [], []
-    for _, row in df_busca.iterrows():
-        if row['TIPO_GEOMETRIA'] == 'Linha':
-            folium.PolyLine(
-                locations=row['COORDS'],
-                color='#FF00FF', weight=8, opacity=1.0,
-                popup=criar_popup(row),
+                locations=row['COORDS'], color='#FF00FF', weight=8, opacity=1.0, popup=popup,
                 tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
-            ).add_to(fg_rede)
+            ).add_to(fg_busca)
             for pt in row['COORDS']: busca_lats.append(pt[0]); busca_lons.append(pt[1])
         else:
             folium.Marker(
-                location=row['COORDS'],
-                icon=folium.Icon(color='purple', icon='star'),
-                popup=criar_popup(row),
+                location=row['COORDS'], icon=folium.Icon(color='purple', icon='star'), popup=popup,
                 tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
-            ).add_to(fg_rede)
+            ).add_to(fg_busca)
             busca_lats.append(row['COORDS'][0]); busca_lons.append(row['COORDS'][1])
 
     if busca_lat is not None and busca_lon is not None:
         folium.Marker(
-            location=[busca_lat, busca_lon],
-            icon=folium.Icon(color='orange', icon='map-pin', prefix='fa'),
+            location=[busca_lat, busca_lon], icon=folium.Icon(color='orange', icon='map-pin', prefix='fa'),
             tooltip="Sua Pesquisa GPS"
-        ).add_to(fg_rede)
+        ).add_to(fg_busca)
 
-    fg_rede.add_to(mapa)
+    fg_busca.add_to(mapa)
 
-    # Lógica Automática de Foco de Câmera
+    # --- MOVIMENTAÇÃO DE CÂMERA INTELIGENTE ---
     if busca_lat is not None and busca_lon is not None:
         mapa.fit_bounds([[busca_lat - 0.001, busca_lon - 0.001], [busca_lat + 0.001, busca_lon + 0.001]])
     elif busca_lats and busca_lons:
@@ -524,5 +551,5 @@ if not df.empty:
 
 folium.LayerControl(position='topright').add_to(mapa)
 
-# Tamanho Gigante para Ocupar a Tela Inteira
+# Renderiza em tela cheia (Ocupa o monitor inteiro)
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
