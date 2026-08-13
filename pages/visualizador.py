@@ -310,9 +310,10 @@ with st.sidebar:
                     st.rerun()
 
 # ==========================================
-# 3. CONSTRUÇÃO DO MAPA FOLIUM COM GEOJSON
+# 3. CONSTRUÇÃO DO MAPA FOLIUM (CANVAS HABILITADO)
 # ==========================================
-mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None)
+# prefer_canvas=True muda tudo de SVG para HTML5 Canvas, acelerando o desenho em até 100x!
+mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None, prefer_canvas=True)
 
 # Camada Híbrida do Google (Satélite + Ruas + Nomes)
 folium.TileLayer(
@@ -340,7 +341,7 @@ if geo_data:
         
         if municipios_sel:
             if reg_mun in municipios_sel:
-                # Município Focado: Transparente com Borda Grossa Magenta (Para ver o satélite dentro)
+                # Município Focado: Transparente com Borda Grossa Magenta
                 return {'fillColor': 'transparent', 'color': '#FF00FF', 'weight': 4, 'fillOpacity': 0}
             else:
                 return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
@@ -351,10 +352,8 @@ if geo_data:
             else:
                 return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
         
-        # Padrão: Estado inteiro colorido
         return {'fillColor': feature['properties']['fillColor'], 'color': '#000000', 'weight': 1, 'fillOpacity': 0.5}
 
-    # Adiciona a camada IBGE
     folium.GeoJson(
         geo_data,
         name="Divisão IBGE (Maranhão)",
@@ -364,7 +363,7 @@ if geo_data:
         show=True
     ).add_to(mapa)
 
-    # SCRIPT NINJA: Faz a cor do estado sumir se der zoom para ver o satélite limpo!
+    # 🚀 SCRIPT NINJA: Faz a cor do estado sumir se der zoom
     map_id = mapa.get_name()
     js_zoom_hide = f"""
     <script>
@@ -411,6 +410,7 @@ if not df.empty:
     todas_lats, todas_lons = [], []
 
     if busca_lat is not None and busca_lon is not None and not df_mapa.empty:
+        # Busca em varredura Python (no futuro pode ser otimizada por uma árvore cKDTree do Scipy)
         def calc_min_dist(row):
             if row['TIPO_GEOMETRIA'] == 'Ponto': return haversine(busca_lat, busca_lon, row['COORDS'][0], row['COORDS'][1])
             else: return min([haversine(busca_lat, busca_lon, pt[0], pt[1]) for pt in row['COORDS']])
@@ -430,21 +430,27 @@ if not df.empty:
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    # --- OTIMIZAÇÃO MAXIMA DE DESENHO (GEOJSON NO FOLIUM) ---
+    # --- RENDERIZAÇÃO DA REDE VIA GEOJSON OTIMIZADO ---
     features = []
     
-    # Roda super rápido no Python para não travar o Leaflet
     for _, row in df_mapa.iterrows():
+        # Prepara a Coordenada GPS para mostrar no pop-up
+        if row['TIPO_GEOMETRIA'] == 'Ponto':
+            coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}"
+        else:
+            coord_txt = "Linha de Múltiplos Pontos"
+            
         prop = {
             "TIPO_REDE": str(row['TIPO_REDE']),
             "NOME": str(row['NOME']),
             "ALIMENTADOR": str(row['ALIMENTADOR']),
             "MUNICIPIO": f"{row['MUNICIPIO']} - {row['REGIONAL']}",
+            "GPS": coord_txt, # <- AQUI AS COORDENADAS FORAM ADICIONADAS
             "COR": row['COR']
         }
         
         if row['TIPO_GEOMETRIA'] == 'Linha':
-            coords = [[pt[1], pt[0]] for pt in row['COORDS']] # GeoJSON inverte [Lon, Lat]
+            coords = [[pt[1], pt[0]] for pt in row['COORDS']]
             geom = {"type": "LineString", "coordinates": coords}
             for pt in row['COORDS']:
                 todas_lats.append(pt[0]); todas_lons.append(pt[1])
@@ -479,9 +485,10 @@ if not df.empty:
                 style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"
             ),
             popup=folium.features.GeoJsonPopup(
-                fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO'],
-                aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:'],
-                style="font-family: sans-serif;"
+                # LISTA ATUALIZADA DO POPUP QUE LÊ O GPS E AS INFORMAÇÕES EXATAS
+                fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO', 'GPS'],
+                aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:', 'Coordenadas (GPS):'],
+                style="font-family: sans-serif; font-size: 13px; min-width: 250px;"
             )
         ).add_to(mapa)
 
