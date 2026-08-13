@@ -135,7 +135,8 @@ def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
         'REDE SECUNDÁRIA': '#4363d8', 'REDE SECUNDARIA': '#4363d8',
         'POSTE': '#808080', 'TRANSFORMADOR': '#f58231', 
         'CHAVE': '#3cb44b', 'REGULADOR': '#911eb4', 
-        'RELIGADOR': '#46f0f0', 'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
+        'RELIGADOR': '#46f0f0', 'CAPACITOR': '#ffe119',
+        'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
     }
 
     nome_arquivo = f_name.upper().replace('.KMZ', '').replace('.KML', '')
@@ -215,7 +216,6 @@ def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
                                 'COORDS': coords[0], 'COR': cor_elemento
                             })
     
-    # 🔥 O SEGREDO: Se veio como N/A, a Inteligência cruza a coordenada com o Mapa IBGE!
     if municipio == "N/A" and primeira_coord is not None and geo_data is not None:
         mun_descob, reg_descob = get_municipio_by_coord(primeira_coord[1], primeira_coord[0], geo_data)
         if mun_descob != "N/A":
@@ -230,7 +230,7 @@ def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
     return None
 
 def processar_e_salvar_kmz_paralelo(arquivos):
-    """Executa múltiplos arquivos ao mesmo tempo usando Threads (Muito mais rápido)"""
+    """Executa múltiplos arquivos ao mesmo tempo usando Threads"""
     base_map = load_base_mapping()
     geo_data = get_base_geojson()
     novos_processados = 0
@@ -271,17 +271,35 @@ base_map = load_base_mapping()
 geo_data_ibge = get_base_geojson()
 
 with st.sidebar:
-    st.markdown("### 📥 1. Upload de Redes (Ultra-Rápido)")
-    arquivos_upados = st.file_uploader("Arraste novos KMZs aqui", type=["kmz", "kml"], accept_multiple_files=True)
+    st.markdown("### 📥 1. Upload de Redes (Em Lotes Seguros)")
+    arquivos_upados = st.file_uploader("Arraste novos KMZs aqui (Sem limite de quantidade)", type=["kmz", "kml"], accept_multiple_files=True)
+    
     if arquivos_upados:
-        if st.button("💾 Processar e Salvar no Banco", type="primary", use_container_width=True):
-            with st.spinner("Decodificando XML e rodando Multiprocessamento Paralelo..."):
-                qtd = processar_e_salvar_kmz_paralelo(arquivos_upados)
-            if qtd > 0:
-                st.success(f"✅ {qtd} novos Alimentadores salvos!")
+        if st.button(f"💾 Processar e Salvar {len(arquivos_upados)} Arquivo(s)", type="primary", use_container_width=True):
+            
+            # 🔥 TRAVA DE SEGURANÇA: Lê apenas 10 alimentadores por vez no processamento! 🔥
+            qtd_total_processados = 0
+            total_lotes = math.ceil(len(arquivos_upados) / 10.0)
+            
+            barra_progresso = st.progress(0.0)
+            texto_status = st.empty()
+            
+            for i in range(0, len(arquivos_upados), 10):
+                lote_atual = (i // 10) + 1
+                lote_arquivos = arquivos_upados[i:i+10]
+                
+                texto_status.text(f"⏳ Processando Lote {lote_atual} de {total_lotes} (10 arquivos por vez)...")
+                qtd_total_processados += processar_e_salvar_kmz_paralelo(lote_arquivos)
+                
+                barra_progresso.progress(lote_atual / total_lotes)
+
+            if qtd_total_processados > 0:
+                st.success(f"✅ {qtd_total_processados} novos Alimentadores salvos!")
                 carregar_banco_redes.clear()
-                time.sleep(1)
+                time.sleep(1.5)
                 st.rerun()
+            else:
+                st.info("Nenhum arquivo novo foi processado (já existiam no banco ou inválidos).")
 
     st.markdown("---")
     st.markdown("### 🔎 2. Pesquisas Inteligentes")
@@ -343,7 +361,7 @@ with st.sidebar:
         for alim in alimentadores_visiveis:
             st.markdown(f"**{alim}**")
             lista_camadas_alim = sorted(df[df['ALIMENTADOR'] == alim]['TIPO_REDE'].unique().tolist())
-            camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE']
+            camadas_essenciais = ['REDE PRIMÁRIA', 'REDE PRIMARIA', 'REDE SECUNDÁRIA', 'REDE SECUNDARIA', 'TRANSFORMADOR', 'POSTE', 'CAPACITOR', 'CHAVE', 'REGULADOR', 'RELIGADOR', 'SUBESTAÇÃO', 'SUBESTACAO']
             camadas_default = [c for c in lista_camadas_alim if c in camadas_essenciais]
             camadas_ativas[alim] = st.multiselect("Visibilidade:", lista_camadas_alim, default=camadas_default, key=f"ms_{alim}")
             
@@ -454,7 +472,6 @@ if not df.empty:
     nearest_idx = None
     todas_lats, todas_lons = [], []
 
-    # 🔥 MOTOR DE BUSCA CIENTÍFICA COM SCIPY CKDTREE (Ultra rápido)
     if busca_lat is not None and busca_lon is not None and not df_mapa.empty:
         def latlon_to_xyz(lat, lon):
             R = 6371.0
@@ -492,7 +509,6 @@ if not df.empty:
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    # Renderiza GeoJSON
     features = []
     for _, row in df_mapa.iterrows():
         coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}" if row['TIPO_GEOMETRIA'] == 'Ponto' else "Linha de Múltiplos Pontos"
@@ -514,14 +530,21 @@ if not df.empty:
 
     if features:
         geojson_data = {"type": "FeatureCollection", "features": features}
+        
+        # 🔥 AQUI ESTÁ A CORREÇÃO DOS TAMANHOS DOS MARCADORES DE 2 E 4 PARA 4 E 7 🔥
         def style_fn(feature):
             cor = feature['properties']['COR']
             tipo = feature['properties']['TIPO_REDE']
-            if feature['geometry']['type'] == 'LineString': return {'color': cor, 'weight': 3 if 'PRIM' in tipo else 2, 'opacity': 0.8}
-            else: return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': 4 if 'TRANSFORMADOR' in tipo else 2, 'weight': 1}
+            if feature['geometry']['type'] == 'LineString': 
+                return {'color': cor, 'weight': 3 if 'PRIM' in tipo else 2, 'opacity': 0.8}
+            else: 
+                raio = 4
+                if 'POSTE' in tipo: raio = 4
+                elif any(x in tipo for x in ['TRANSFORMADOR', 'CHAVE', 'REGULADOR', 'RELIGADOR', 'SUBESTA', 'CAPACITOR']): raio = 7
+                return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 1}
 
         folium.GeoJson(
-            geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=2, fill=True, fillOpacity=1),
+            geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=4, fill=True, fillOpacity=1),
             tooltip=folium.features.GeoJsonTooltip(fields=['TIPO_REDE', 'NOME'], aliases=['Rede:', 'Identificação:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"),
             popup=folium.features.GeoJsonPopup(fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO', 'GPS'], aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:', 'Coordenadas:'], style="font-family: sans-serif; font-size: 13px; min-width: 250px;")
         ).add_to(mapa)
