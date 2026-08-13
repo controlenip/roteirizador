@@ -12,6 +12,8 @@ import unicodedata
 import folium
 from streamlit_folium import st_folium
 import html
+from concurrent.futures import ThreadPoolExecutor
+from scipy.spatial import cKDTree
 
 st.set_page_config(page_title="Visualizador de Malha", page_icon="🗺️", layout="wide")
 
@@ -19,7 +21,7 @@ if not os.path.exists("database/redes"):
     os.makedirs("database/redes", exist_ok=True)
 
 # ==========================================
-# 1. FUNÇÕES BASE E PLANILHA
+# 1. FUNÇÕES BASE, PLANILHA E GEOLOCALIZAÇÃO
 # ==========================================
 def remove_accents(input_str):
     nfkd_form = unicodedata.normalize('NFKD', str(input_str))
@@ -40,7 +42,6 @@ def load_base_mapping():
     except:
         pass
     
-    # Forçar Overrides (Correções Manuais solicitadas)
     overrides_centro = [
         'SANTA LUZIA', 'CONCEICAO DO LAGO-ACU', 'CONCEICAO DO LAGO ACU', 
         'PINDARE-MIRIM', 'PINDARE MIRIM', 'OLHO DAGUA DAS CUNHAS', 
@@ -50,6 +51,59 @@ def load_base_mapping():
         mun_to_reg[mun] = 'CENTRO'
         
     return mun_to_reg
+
+@st.cache_data(show_spinner=False)
+def get_base_geojson():
+    mun_to_reg = load_base_mapping()
+    url_geojson = "https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-21-mun.json"
+    try:
+        resp = requests.get(url_geojson, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        geo_data = resp.json()
+    except:
+        return None
+
+    reg_colors = {
+        'LESTE': '#1f77b4', 'CENTRO': '#d62728', 'NOROESTE': '#ffed6f', 
+        'NORTE': '#ff7f0e', 'SUL': '#8fbc8f', 'DESCONHECIDO': '#cccccc'
+    }
+
+    for feature in geo_data['features']:
+        mun_name = feature['properties']['name']
+        mun_name_norm = remove_accents(mun_name).upper().strip()
+        reg = mun_to_reg.get(mun_name_norm, "DESCONHECIDO")
+        
+        feature['properties']['REGIONAL'] = reg
+        feature['properties']['MUNICIPIO'] = mun_name_norm
+        feature['properties']['fillColor'] = reg_colors.get(reg, '#cccccc')
+        
+    return geo_data
+
+def is_point_in_polygon(lon, lat, polygon):
+    """Algoritmo de Ray Casting para descobrir se a coordenada está dentro da cidade"""
+    inside = False
+    for i in range(len(polygon)):
+        p1x, p1y = polygon[i]
+        p2x, p2y = polygon[(i + 1) % len(polygon)]
+        if ((p1y > lat) != (p2y > lat)) and (lon < (p2x - p1x) * (lat - p1y) / (p2y - p1y + 1e-9) + p1x):
+            inside = not inside
+    return inside
+
+def get_municipio_by_coord(lon, lat, geo_data):
+    """Descobre o município cruzando a coordenada GPS com a fronteira do IBGE"""
+    if not geo_data: return "N/A", "N/A"
+    for feature in geo_data['features']:
+        geom = feature['geometry']
+        mun = feature['properties'].get('MUNICIPIO', 'N/A')
+        reg = feature['properties'].get('REGIONAL', 'N/A')
+        
+        if geom['type'] == 'Polygon':
+            for ring in geom['coordinates']:
+                if is_point_in_polygon(lon, lat, ring): return mun, reg
+        elif geom['type'] == 'MultiPolygon':
+            for poly in geom['coordinates']:
+                for ring in poly:
+                    if is_point_in_polygon(lon, lat, ring): return mun, reg
+    return "N/A", "N/A"
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -74,8 +128,8 @@ def extrair_coordenadas_vis(texto_coords):
                 continue
     return pontos
 
-def processar_e_salvar_kmz(arquivos):
-    base_map = load_base_mapping()
+def processar_um_kmz(f_name, f_bytes, base_map, geo_data):
+    """Função isolada para permitir o processamento paralelo rápido"""
     dict_cores = {
         'REDE PRIMÁRIA': '#e6194b', 'REDE PRIMARIA': '#e6194b',
         'REDE SECUNDÁRIA': '#4363d8', 'REDE SECUNDARIA': '#4363d8',
@@ -84,87 +138,115 @@ def processar_e_salvar_kmz(arquivos):
         'RELIGADOR': '#46f0f0', 'SUBESTAÇÃO': '#000000', 'SUBESTACAO': '#000000'
     }
 
-    novos_processados = 0
-    for f in arquivos:
-        nome_arquivo = f.name.upper().replace('.KMZ', '').replace('.KML', '')
-        caminho_db = f"database/redes/{nome_arquivo}.pkl"
+    nome_arquivo = f_name.upper().replace('.KMZ', '').replace('.KML', '')
+    caminho_db = f"database/redes/{nome_arquivo}.pkl"
+    
+    if os.path.exists(caminho_db): return None
         
-        if os.path.exists(caminho_db):
-            continue
+    conteudo_kml = ""
+    if f_name.lower().endswith('.kmz'):
+        try:
+            with zipfile.ZipFile(io.BytesIO(f_bytes), 'r') as z:
+                for item in z.namelist():
+                    if item.lower().endswith('.kml'):
+                        conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
+                        break
+        except Exception: return None
+    else:
+        try: conteudo_kml = f_bytes.decode('utf-8', errors='ignore')
+        except: return None
+    
+    conteudo_kml = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', conteudo_kml)
+    try: root = ET.fromstring(conteudo_kml)
+    except Exception: return None
+
+    municipio = "N/A"
+    regional = "N/A"
+    
+    mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
+    if mun_match: 
+        municipio = mun_match.group(1).strip().upper()
+        mun_norm = remove_accents(municipio)
+        if mun_norm in base_map:
+            regional = base_map[mun_norm]
+
+    if regional == "N/A":
+        reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
+        if reg_match: regional = reg_match.group(1).strip().upper()
+
+    if regional == "N/A":
+        sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
+        if sigla_match: regional = sigla_match.group(1)
+
+    registros_flat = []
+    primeira_coord = None
+    
+    for folder in root.findall('.//Folder'):
+        name_tag = folder.find('name')
+        if name_tag is not None and name_tag.text:
+            nome_pasta = name_tag.text.strip().upper()
+            if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta: continue
+
+            cor_elemento = dict_cores.get(nome_pasta, '#333333')
             
-        conteudo_kml = ""
-        if f.name.lower().endswith('.kmz'):
-            try:
-                with zipfile.ZipFile(io.BytesIO(f.getvalue()), 'r') as z:
-                    for item in z.namelist():
-                        if item.lower().endswith('.kml'):
-                            conteudo_kml = z.read(item).decode('utf-8', errors='ignore')
-                            break
-            except Exception: continue
-        else:
-            try: conteudo_kml = f.getvalue().decode('utf-8', errors='ignore')
-            except: continue
-        
-        conteudo_kml = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', conteudo_kml)
-        try: root = ET.fromstring(conteudo_kml)
-        except Exception: continue 
-
-        municipio = "N/A"
-        regional = "N/A"
-        
-        mun_match = re.search(r'name=["\'](?:MUNICIPIO|CIDADE)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-        if mun_match: 
-            municipio = mun_match.group(1).strip().upper()
-            mun_norm = remove_accents(municipio)
-            if mun_norm in base_map:
-                regional = base_map[mun_norm]
-
-        if regional == "N/A":
-            reg_match = re.search(r'name=["\'](?:REGIONAL|REGIAO)["\'][^>]*>(.*?)</', conteudo_kml, re.IGNORECASE)
-            if reg_match: regional = reg_match.group(1).strip().upper()
-
-        if regional == "N/A":
-            sigla_match = re.search(r'\[([A-Z]{3})\]', nome_arquivo)
-            if sigla_match: regional = sigla_match.group(1)
-
-        registros_flat = []
-        for folder in root.findall('.//Folder'):
-            name_tag = folder.find('name')
-            if name_tag is not None and name_tag.text:
-                nome_pasta = name_tag.text.strip().upper()
-                if "CEMAR" in nome_pasta or nome_arquivo in nome_pasta: continue
-
-                cor_elemento = dict_cores.get(nome_pasta, '#333333')
+            for placemark in folder.findall('.//Placemark'):
+                pm_name_tag = placemark.find('name')
+                nome_elemento = pm_name_tag.text.strip() if pm_name_tag is not None and pm_name_tag.text else "S/N"
                 
-                for placemark in folder.findall('.//Placemark'):
-                    pm_name_tag = placemark.find('name')
-                    nome_elemento = pm_name_tag.text.strip() if pm_name_tag is not None and pm_name_tag.text else "S/N"
-                    
-                    for ls in placemark.findall('.//LineString/coordinates'):
-                        if ls.text:
-                            coords = extrair_coordenadas_vis(ls.text)
-                            if len(coords) > 1:
-                                registros_flat.append({
-                                    'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
-                                    'TIPO_GEOMETRIA': 'Linha', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords, 'COR': cor_elemento
-                                })
-                            
-                    for pt in placemark.findall('.//Point/coordinates'):
-                        if pt.text:
-                            coords = extrair_coordenadas_vis(pt.text)
-                            if len(coords) > 0:
-                                registros_flat.append({
-                                    'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
-                                    'TIPO_GEOMETRIA': 'Ponto', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
-                                    'COORDS': coords[0], 'COR': cor_elemento
-                                })
+                for ls in placemark.findall('.//LineString/coordinates'):
+                    if ls.text:
+                        coords = extrair_coordenadas_vis(ls.text)
+                        if len(coords) > 1:
+                            if not primeira_coord: primeira_coord = coords[0]
+                            registros_flat.append({
+                                'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
+                                'TIPO_GEOMETRIA': 'Linha', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
+                                'COORDS': coords, 'COR': cor_elemento
+                            })
+                        
+                for pt in placemark.findall('.//Point/coordinates'):
+                    if pt.text:
+                        coords = extrair_coordenadas_vis(pt.text)
+                        if len(coords) > 0:
+                            if not primeira_coord: primeira_coord = coords[0]
+                            registros_flat.append({
+                                'ALIMENTADOR': nome_arquivo, 'REGIONAL': regional, 'MUNICIPIO': municipio,
+                                'TIPO_GEOMETRIA': 'Ponto', 'TIPO_REDE': nome_pasta, 'NOME': nome_elemento,
+                                'COORDS': coords[0], 'COR': cor_elemento
+                            })
+    
+    # 🔥 O SEGREDO: Se veio como N/A, a Inteligência cruza a coordenada com o Mapa IBGE!
+    if municipio == "N/A" and primeira_coord is not None and geo_data is not None:
+        mun_descob, reg_descob = get_municipio_by_coord(primeira_coord[1], primeira_coord[0], geo_data)
+        if mun_descob != "N/A":
+            municipio = mun_descob
+            regional = reg_descob if reg_descob != "N/A" else regional
+            for r in registros_flat:
+                r['MUNICIPIO'] = municipio
+                r['REGIONAL'] = regional
+
+    if registros_flat:
+        return (caminho_db, pd.DataFrame(registros_flat))
+    return None
+
+def processar_e_salvar_kmz_paralelo(arquivos):
+    """Executa múltiplos arquivos ao mesmo tempo usando Threads (Muito mais rápido)"""
+    base_map = load_base_mapping()
+    geo_data = get_base_geojson()
+    novos_processados = 0
+    
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
+        for f in arquivos:
+            futures.append(executor.submit(processar_um_kmz, f.name, f.getvalue(), base_map, geo_data))
         
-        if registros_flat:
-            df_alimentador = pd.DataFrame(registros_flat)
-            df_alimentador.to_pickle(caminho_db)
-            novos_processados += 1
-            
+        for future in futures:
+            resultado = future.result()
+            if resultado:
+                caminho_db, df_alimentador = resultado
+                df_alimentador.to_pickle(caminho_db)
+                novos_processados += 1
+                
     return novos_processados
 
 @st.cache_data(show_spinner=False)
@@ -177,53 +259,24 @@ def carregar_banco_redes():
     if dfs: return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
-def get_base_geojson():
-    mun_to_reg = load_base_mapping()
-    url_geojson = "https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-21-mun.json"
-    try:
-        resp = requests.get(url_geojson, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        geo_data = resp.json()
-    except:
-        return None
-
-    # Cores Exatas da sua Imagem
-    reg_colors = {
-        'LESTE': '#1f77b4',     # Azul
-        'CENTRO': '#d62728',    # Vermelho
-        'NOROESTE': '#ffed6f',  # Amarelo
-        'NORTE': '#ff7f0e',     # Laranja
-        'SUL': '#8fbc8f',       # Verde Musgo
-        'DESCONHECIDO': '#cccccc'
-    }
-
-    for feature in geo_data['features']:
-        mun_name = feature['properties']['name']
-        mun_name_norm = remove_accents(mun_name).upper().strip()
-        reg = mun_to_reg.get(mun_name_norm, "DESCONHECIDO")
-        
-        feature['properties']['REGIONAL'] = reg
-        feature['properties']['MUNICIPIO'] = mun_name_norm
-        feature['properties']['fillColor'] = reg_colors.get(reg, '#cccccc')
-        
-    return geo_data
 
 # ==========================================
 # 2. INTERFACE E FILTROS DO SISTEMA
 # ==========================================
 st.markdown("<h2 style='color: #0D256C;'>🗺️ Visualizador Oficial de Malha (Satélite Integrado)</h2>", unsafe_allow_html=True)
-st.markdown("O sistema cruza as regionais oficiais com a sua planilha `BASE.xlsx`. Use o zoom para ver o satélite em alta definição!")
+st.markdown("O sistema usa **Inteligência Espacial** para descobrir o município e Scipy para pesquisa instantânea de coordenadas!")
 
 df = carregar_banco_redes()
 base_map = load_base_mapping()
+geo_data_ibge = get_base_geojson()
 
 with st.sidebar:
-    st.markdown("### 📥 1. Upload de Redes")
+    st.markdown("### 📥 1. Upload de Redes (Ultra-Rápido)")
     arquivos_upados = st.file_uploader("Arraste novos KMZs aqui", type=["kmz", "kml"], accept_multiple_files=True)
     if arquivos_upados:
         if st.button("💾 Processar e Salvar no Banco", type="primary", use_container_width=True):
-            with st.spinner("Lendo propriedades XML e gravando em disco..."):
-                qtd = processar_e_salvar_kmz(arquivos_upados)
+            with st.spinner("Decodificando XML e rodando Multiprocessamento Paralelo..."):
+                qtd = processar_e_salvar_kmz_paralelo(arquivos_upados)
             if qtd > 0:
                 st.success(f"✅ {qtd} novos Alimentadores salvos!")
                 carregar_banco_redes.clear()
@@ -263,11 +316,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔍 3. Filtros Geográficos")
     
-    # Lista de Regionais baseada na BASE.xlsx
     lista_regioes = sorted(list(set(base_map.values()))) if base_map else ["CENTRO", "LESTE", "NOROESTE", "NORTE", "SUL"]
     regioes_sel = st.multiselect("📍 Regional:", lista_regioes)
     
-    # Filtra municípios da BASE.xlsx pela Regional selecionada
     lista_municipios = []
     for mun, reg in base_map.items():
         if not regioes_sel or reg in regioes_sel:
@@ -310,12 +361,10 @@ with st.sidebar:
                     st.rerun()
 
 # ==========================================
-# 3. CONSTRUÇÃO DO MAPA FOLIUM (CANVAS HABILITADO)
+# 3. CONSTRUÇÃO DO MAPA FOLIUM
 # ==========================================
-# prefer_canvas=True muda tudo de SVG para HTML5 Canvas, acelerando o desenho em até 100x!
 mapa = folium.Map(location=[-5.2, -45.0], zoom_start=6, tiles=None, prefer_canvas=True)
 
-# Camada Híbrida do Google (Satélite + Ruas + Nomes)
 folium.TileLayer(
     tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
     attr='Google',
@@ -333,19 +382,16 @@ folium.TileLayer(
     max_zoom=20
 ).add_to(mapa)
 
-geo_data = get_base_geojson()
-if geo_data:
+if geo_data_ibge:
     def style_function(feature):
         reg_mun = feature['properties'].get('MUNICIPIO', '')
         reg_name = feature['properties'].get('REGIONAL', '')
         
         if municipios_sel:
             if reg_mun in municipios_sel:
-                # Município Focado: Transparente com Borda Grossa Magenta
                 return {'fillColor': 'transparent', 'color': '#FF00FF', 'weight': 4, 'fillOpacity': 0}
             else:
                 return {'fillColor': 'transparent', 'color': 'transparent', 'weight': 0}
-                
         elif regioes_sel:
             if reg_name in regioes_sel:
                 return {'fillColor': feature['properties']['fillColor'], 'color': '#000000', 'weight': 1, 'fillOpacity': 0.6}
@@ -355,7 +401,7 @@ if geo_data:
         return {'fillColor': feature['properties']['fillColor'], 'color': '#000000', 'weight': 1, 'fillOpacity': 0.5}
 
     folium.GeoJson(
-        geo_data,
+        geo_data_ibge,
         name="Divisão IBGE (Maranhão)",
         style_function=style_function,
         tooltip=folium.features.GeoJsonTooltip(fields=['name', 'REGIONAL'], aliases=['Município:', 'Regional:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 10px;"),
@@ -363,7 +409,6 @@ if geo_data:
         show=True
     ).add_to(mapa)
 
-    # 🚀 SCRIPT NINJA: Faz a cor do estado sumir se der zoom
     map_id = mapa.get_name()
     js_zoom_hide = f"""
     <script>
@@ -409,51 +454,57 @@ if not df.empty:
     nearest_idx = None
     todas_lats, todas_lons = [], []
 
+    # 🔥 MOTOR DE BUSCA CIENTÍFICA COM SCIPY CKDTREE (Ultra rápido)
     if busca_lat is not None and busca_lon is not None and not df_mapa.empty:
-        # Busca em varredura Python (no futuro pode ser otimizada por uma árvore cKDTree do Scipy)
-        def calc_min_dist(row):
-            if row['TIPO_GEOMETRIA'] == 'Ponto': return haversine(busca_lat, busca_lon, row['COORDS'][0], row['COORDS'][1])
-            else: return min([haversine(busca_lat, busca_lon, pt[0], pt[1]) for pt in row['COORDS']])
-        
-        df_mapa['DISTANCIA_KM'] = df_mapa.apply(calc_min_dist, axis=1)
-        nearest_idx = df_mapa['DISTANCIA_KM'].idxmin()
-        dist_metros = df_mapa.loc[nearest_idx, 'DISTANCIA_KM'] * 1000
-        
-        elem_prox = df_mapa.loc[nearest_idx]
-        st.sidebar.success(f"🎯 **Alvo mais próximo:** {elem_prox['TIPO_REDE']} ({elem_prox['NOME']}) a {dist_metros:.1f} metros.")
-        
-        df_busca = df_mapa.loc[[nearest_idx]]
-        df_mapa = df_mapa.drop(nearest_idx)
+        def latlon_to_xyz(lat, lon):
+            R = 6371.0
+            lat_rad, lon_rad = math.radians(lat), math.radians(lon)
+            return R * math.cos(lat_rad) * math.cos(lon_rad), R * math.cos(lat_rad) * math.sin(lon_rad), R * math.sin(lat_rad)
+
+        pts, indices = [], []
+        for idx, row in df_mapa.iterrows():
+            if row['TIPO_GEOMETRIA'] == 'Ponto':
+                pts.append(latlon_to_xyz(row['COORDS'][0], row['COORDS'][1]))
+                indices.append(idx)
+            else:
+                for pt in row['COORDS']:
+                    pts.append(latlon_to_xyz(pt[0], pt[1]))
+                    indices.append(idx)
+                    
+        if pts:
+            tree = cKDTree(pts)
+            target_xyz = latlon_to_xyz(busca_lat, busca_lon)
+            dist_3d, min_idx_in_pts = tree.query(target_xyz)
+            nearest_idx = indices[min_idx_in_pts]
+            
+            elem_prox = df_mapa.loc[nearest_idx]
+            if elem_prox['TIPO_GEOMETRIA'] == 'Ponto':
+                dist_metros = haversine(busca_lat, busca_lon, elem_prox['COORDS'][0], elem_prox['COORDS'][1]) * 1000
+            else:
+                dist_metros = min([haversine(busca_lat, busca_lon, pt[0], pt[1]) for pt in elem_prox['COORDS']]) * 1000
+            
+            st.sidebar.success(f"🎯 **Alvo mais próximo:** {elem_prox['TIPO_REDE']} ({elem_prox['NOME']}) a {dist_metros:.1f} metros.")
+            df_busca = df_mapa.loc[[nearest_idx]]
+            df_mapa = df_mapa.drop(nearest_idx)
 
     elif termo_pesquisa != "":
         mask_nome = df_mapa['NOME'].astype(str).str.contains(termo_pesquisa, case=False, na=False)
         df_busca = df_mapa[mask_nome]
         df_mapa = df_mapa[~mask_nome]
 
-    # --- RENDERIZAÇÃO DA REDE VIA GEOJSON OTIMIZADO ---
+    # Renderiza GeoJSON
     features = []
-    
     for _, row in df_mapa.iterrows():
-        # Prepara a Coordenada GPS para mostrar no pop-up
-        if row['TIPO_GEOMETRIA'] == 'Ponto':
-            coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}"
-        else:
-            coord_txt = "Linha de Múltiplos Pontos"
-            
+        coord_txt = f"{row['COORDS'][0]:.5f}, {row['COORDS'][1]:.5f}" if row['TIPO_GEOMETRIA'] == 'Ponto' else "Linha de Múltiplos Pontos"
         prop = {
-            "TIPO_REDE": str(row['TIPO_REDE']),
-            "NOME": str(row['NOME']),
-            "ALIMENTADOR": str(row['ALIMENTADOR']),
-            "MUNICIPIO": f"{row['MUNICIPIO']} - {row['REGIONAL']}",
-            "GPS": coord_txt, # <- AQUI AS COORDENADAS FORAM ADICIONADAS
-            "COR": row['COR']
+            "TIPO_REDE": str(row['TIPO_REDE']), "NOME": str(row['NOME']), "ALIMENTADOR": str(row['ALIMENTADOR']),
+            "MUNICIPIO": f"{row['MUNICIPIO']} - {row['REGIONAL']}", "GPS": coord_txt, "COR": row['COR']
         }
         
         if row['TIPO_GEOMETRIA'] == 'Linha':
             coords = [[pt[1], pt[0]] for pt in row['COORDS']]
             geom = {"type": "LineString", "coordinates": coords}
-            for pt in row['COORDS']:
-                todas_lats.append(pt[0]); todas_lons.append(pt[1])
+            for pt in row['COORDS']: todas_lats.append(pt[0]); todas_lons.append(pt[1])
         else:
             coords = [row['COORDS'][1], row['COORDS'][0]]
             geom = {"type": "Point", "coordinates": coords}
@@ -461,38 +512,20 @@ if not df.empty:
             
         features.append({"type": "Feature", "geometry": geom, "properties": prop})
 
-    geojson_data = {"type": "FeatureCollection", "features": features}
-
-    def style_fn(feature):
-        cor = feature['properties']['COR']
-        tipo = feature['properties']['TIPO_REDE']
-        if feature['geometry']['type'] == 'LineString':
-            peso = 3 if 'PRIM' in tipo else 2
-            return {'color': cor, 'weight': peso, 'opacity': 0.8}
-        else:
-            raio = 4 if 'TRANSFORMADOR' in tipo else 2
-            return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': raio, 'weight': 1}
-
     if features:
+        geojson_data = {"type": "FeatureCollection", "features": features}
+        def style_fn(feature):
+            cor = feature['properties']['COR']
+            tipo = feature['properties']['TIPO_REDE']
+            if feature['geometry']['type'] == 'LineString': return {'color': cor, 'weight': 3 if 'PRIM' in tipo else 2, 'opacity': 0.8}
+            else: return {'color': cor, 'fillColor': cor, 'fillOpacity': 1.0, 'radius': 4 if 'TRANSFORMADOR' in tipo else 2, 'weight': 1}
+
         folium.GeoJson(
-            geojson_data,
-            name="Rede Elétrica (Malha)",
-            style_function=style_fn,
-            marker=folium.CircleMarker(radius=2, fill=True, fillOpacity=1),
-            tooltip=folium.features.GeoJsonTooltip(
-                fields=['TIPO_REDE', 'NOME'],
-                aliases=['Rede:', 'Identificação:'],
-                style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"
-            ),
-            popup=folium.features.GeoJsonPopup(
-                # LISTA ATUALIZADA DO POPUP QUE LÊ O GPS E AS INFORMAÇÕES EXATAS
-                fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO', 'GPS'],
-                aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:', 'Coordenadas (GPS):'],
-                style="font-family: sans-serif; font-size: 13px; min-width: 250px;"
-            )
+            geojson_data, name="Rede Elétrica", style_function=style_fn, marker=folium.CircleMarker(radius=2, fill=True, fillOpacity=1),
+            tooltip=folium.features.GeoJsonTooltip(fields=['TIPO_REDE', 'NOME'], aliases=['Rede:', 'Identificação:'], style="background-color: white; color: #333; font-family: arial; font-size: 12px; padding: 5px;"),
+            popup=folium.features.GeoJsonPopup(fields=['TIPO_REDE', 'NOME', 'ALIMENTADOR', 'MUNICIPIO', 'GPS'], aliases=['Rede:', 'Identificação:', 'Alimentador:', 'Localização:', 'Coordenadas:'], style="font-family: sans-serif; font-size: 13px; min-width: 250px;")
         ).add_to(mapa)
 
-    # --- CAMADA DO ITEM PESQUISADO (MAGENTA GIGANTE) ---
     busca_lats, busca_lons = [], []
     fg_busca = folium.FeatureGroup(name="Resultado da Pesquisa", show=True)
     
@@ -512,51 +545,32 @@ if not df.empty:
         popup = folium.Popup(html_popup, max_width=350)
         
         if row['TIPO_GEOMETRIA'] == 'Linha':
-            folium.PolyLine(
-                locations=row['COORDS'], color='#FF00FF', weight=8, opacity=1.0, popup=popup,
-                tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
-            ).add_to(fg_busca)
+            folium.PolyLine(locations=row['COORDS'], color='#FF00FF', weight=8, opacity=1.0, popup=popup, tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}").add_to(fg_busca)
             for pt in row['COORDS']: busca_lats.append(pt[0]); busca_lons.append(pt[1])
         else:
-            folium.Marker(
-                location=row['COORDS'], icon=folium.Icon(color='purple', icon='star'), popup=popup,
-                tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}"
-            ).add_to(fg_busca)
+            folium.Marker(location=row['COORDS'], icon=folium.Icon(color='purple', icon='star'), popup=popup, tooltip=f"ALVO ENCONTRADO: {html.escape(str(row['NOME']))}").add_to(fg_busca)
             busca_lats.append(row['COORDS'][0]); busca_lons.append(row['COORDS'][1])
 
     if busca_lat is not None and busca_lon is not None:
-        folium.Marker(
-            location=[busca_lat, busca_lon], icon=folium.Icon(color='orange', icon='map-pin', prefix='fa'),
-            tooltip="Sua Pesquisa GPS"
-        ).add_to(fg_busca)
+        folium.Marker(location=[busca_lat, busca_lon], icon=folium.Icon(color='orange', icon='map-pin', prefix='fa'), tooltip="Sua Pesquisa GPS").add_to(fg_busca)
 
     fg_busca.add_to(mapa)
 
-    # --- MOVIMENTAÇÃO DE CÂMERA INTELIGENTE ---
-    if busca_lat is not None and busca_lon is not None:
-        mapa.fit_bounds([[busca_lat - 0.001, busca_lon - 0.001], [busca_lat + 0.001, busca_lon + 0.001]])
-    elif busca_lats and busca_lons:
-        mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]])
-    elif municipios_sel and geo_data:
+    if busca_lat is not None and busca_lon is not None: mapa.fit_bounds([[busca_lat - 0.001, busca_lon - 0.001], [busca_lat + 0.001, busca_lon + 0.001]])
+    elif busca_lats and busca_lons: mapa.fit_bounds([[min(busca_lats), min(busca_lons)], [max(busca_lats), max(busca_lons)]])
+    elif municipios_sel and geo_data_ibge:
         mun_foco_lats, mun_foco_lons = [], []
-        for feature in geo_data['features']:
+        for feature in geo_data_ibge['features']:
             if feature['properties'].get('MUNICIPIO') in municipios_sel:
                 geom = feature['geometry']
                 if geom['type'] == 'Polygon':
-                    for pt in geom['coordinates'][0]:
-                        mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
+                    for pt in geom['coordinates'][0]: mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
                 elif geom['type'] == 'MultiPolygon':
                     for poly in geom['coordinates']:
-                        for pt in poly[0]:
-                            mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
-        if mun_foco_lats and mun_foco_lons:
-            mapa.fit_bounds([[min(mun_foco_lats), min(mun_foco_lons)], [max(mun_foco_lats), max(mun_foco_lons)]])
-        elif todas_lats and todas_lons:
-            mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
-    elif todas_lats and todas_lons:
-        mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
+                        for pt in poly[0]: mun_foco_lats.append(pt[1]); mun_foco_lons.append(pt[0])
+        if mun_foco_lats and mun_foco_lons: mapa.fit_bounds([[min(mun_foco_lats), min(mun_foco_lons)], [max(mun_foco_lats), max(mun_foco_lons)]])
+        elif todas_lats and todas_lons: mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
+    elif todas_lats and todas_lons: mapa.fit_bounds([[min(todas_lats), min(todas_lons)], [max(todas_lats), max(todas_lons)]])
 
 folium.LayerControl(position='topright').add_to(mapa)
-
-# Renderiza em tela cheia (Ocupa o monitor inteiro)
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
