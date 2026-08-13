@@ -702,3 +702,4 @@ if mostrar_uc_municipal:
 
 folium.LayerControl(position='topright').add_to(mapa)
 st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
+
