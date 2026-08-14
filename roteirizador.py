@@ -1081,14 +1081,12 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
-                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO - ORDEM SOLICITADA
                 cols_desejadas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
 
                 cols_padrao = [c for c in cols_desejadas if c in todas_cols_limpas]
                 
                 colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
                 
-                # Força a ordem exata baseada na lista desejada pelo usuário
                 reference_order = cols_desejadas + [c for c in todas_cols_limpas if c not in cols_desejadas]
                 colunas_exibir.sort(key=lambda x: reference_order.index(x) if x in reference_order else 999)
                 
@@ -1371,6 +1369,7 @@ def app_roteirizador():
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                                 'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                                 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                                 'hora_inicio': lunch_start, 'hora_fim': lunch_end,
                                 'viagem_min': 0.0, 'dist_km': 0.0
@@ -1400,6 +1399,7 @@ def app_roteirizador():
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                                 'lat_atual': base_lat, 'lon_atual': base_lon,
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                                 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                                 'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                                 'viagem_min': viagem_ret, 'dist_km': dist_ret
@@ -1437,6 +1437,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                             'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
                             'viagem_min': viagem_min, 'dist_km': viagem_km
@@ -1459,6 +1460,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': base_lat, 'lon_atual': base_lon,
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                             'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                             'viagem_min': viagem_ret, 'dist_km': dist_ret
@@ -1478,7 +1480,7 @@ def app_roteirizador():
                     ordem_global = 1
                     for item, (geom, dur_sec) in zip(rotas_flat, geoms_and_durs):
                         periodo_val = item['semana'] if cfg['tipo_periodo'] == "Semana" else item['dia']
-                        dia_nome_str = cfg['dias_selecionados'][item['dia_semana_idx'] - 1] if cfg['tipo_periodo'] == "Semana" else f"Dia {item['dia']}"
+                        dia_nome_str = item['dia_semana_nome'] if cfg['tipo_periodo'] == "Semana" else f"Dia {item['dia']}"
                         
                         if item['is_lunch']:
                             routed_data_final.append({
@@ -1629,8 +1631,8 @@ def app_roteirizador():
                     
                     dias_unicos = df_base_real['DIA_MES'].nunique() if 'DIA_MES' in df_base_real.columns else df_base_real['DIA'].nunique()
                     semanas_unicas = df_base_real['SEMANA'].nunique()
-                    postes_por_dia = round(qtd_postes_min_sum / dias_unicos, 1) if dias_unicos > 0 else 0
-                    postes_por_semana = round(qtd_postes_min_sum / semanas_unicas, 1) if semanas_unicas > 0 else 0
+                    postes_por_dia = int(round(qtd_postes_min_sum / dias_unicos)) if dias_unicos > 0 else 0
+                    postes_por_semana = int(round(qtd_postes_min_sum / semanas_unicas)) if semanas_unicas > 0 else 0
                     
                     resumo_levantadores.append({
                         'LEVANTADOR': base, 'TIPO EQUIPE': tipo_eq, 'OBRAS COMUNS': qtd_comum,
@@ -1643,7 +1645,7 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
-                # LISTA DE EXPURGO PARA EXCEL E KML
+                # LISTA DE EXPURGO PARA EXCEL E KML (Remoção total exigida pelo usuário)
                 cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
                 cols_to_drop_kml = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']
                 
