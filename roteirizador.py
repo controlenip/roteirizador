@@ -596,9 +596,10 @@ def app_roteirizador():
                 st.markdown("### 📁 2. Upload de Demandas (Obras)")
                 with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
                 with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
-                with st.container(border=True): status_file = st.file_uploader("3️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
+                with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
+                with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
                 with st.container(border=True):
-                    rede_files = st.file_uploader("4️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
+                    rede_files = st.file_uploader("5️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
                     vao_medio_postes = st.slider("📏 Vão entre Postes (Metros)", min_value=20, max_value=100, value=60, step=1, help="Distância padrão entre postes para calcular os postes previstos.")
                     st.caption("⚡ A IA varrerá as redes e transformadores nestes mapas e guiará o técnico no KML final ignorando outros componentes.")
 
@@ -662,7 +663,7 @@ def app_roteirizador():
                 
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
-                if not task_files and not saneamento_files: 
+                if not task_files and not saneamento_files and not generica_files: 
                     st.info("Aguardando upload de obras para iniciar o roteamento.")
                     return
 
@@ -696,13 +697,35 @@ def app_roteirizador():
                                         break
                             dfs.append(df_temp)
 
+                    if generica_files:
+                        for f in generica_files:
+                            if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
+                            else: df_temp = ler_planilha_cached(f.getvalue())
+                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
+                            df_temp.columns = normalize_cols(df_temp.columns)
+                            df_temp['_ORIGEM_BASE'] = 'GENERICA'
+                            if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
+                                st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
+                                continue
+                            if 'PROTOCOLO' not in df_temp.columns:
+                                id_cols = ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS', 'ID', 'CODIGO', 'CHAMADO', 'CHAVE']
+                                found_id = False
+                                for c in id_cols:
+                                    if c in df_temp.columns:
+                                        df_temp['PROTOCOLO'] = df_temp[c]
+                                        found_id = True
+                                        break
+                                if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
+                            dfs.append(df_temp)
+
                     if not dfs: return
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
                     total_obras_inicial = len(df_tasks)
                     cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
                     cols_orig_san = st.session_state.get('colunas_originais_san', [])
-                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san))
+                    cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
+                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
                     
                     for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                         if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
@@ -723,6 +746,7 @@ def app_roteirizador():
             st.markdown("---")
             has_levantamento = 'LEVANTAMENTO' in df_tasks['_ORIGEM_BASE'].values
             has_saneamento = 'SANEAMENTO' in df_tasks['_ORIGEM_BASE'].values
+            has_generica = 'GENERICA' in df_tasks['_ORIGEM_BASE'].values
             df_list = []
             
             if has_levantamento:
@@ -770,6 +794,29 @@ def app_roteirizador():
                     df_san = df_tasks[df_tasks['_ORIGEM_BASE'] == 'SANEAMENTO'].copy()
                     df_san['PRIORIDADE'] = 'Não'
                     df_list.append(df_san)
+
+            if has_generica:
+                with st.expander("🛠️ 4C. Filtros Iniciais - Base GENÉRICA", expanded=True):
+                    df_gen = df_tasks[df_tasks['_ORIGEM_BASE'] == 'GENERICA'].copy()
+                    st.info("💡 A base Genérica é flexível. O sistema tenta adivinhar a prioridade, mas você pode alterar as regras abaixo.")
+                    col_c1, col_c2 = st.columns(2)
+                    colunas_validas = [c for c in df_gen.columns if not c.startswith('_')]
+                    idx_default = 0
+                    if 'TIPO NOTA' in colunas_validas: idx_default = colunas_validas.index('TIPO NOTA') + 1
+                    coluna_prio = col_c1.selectbox("📌 1. Qual coluna define a prioridade?", ["Nenhuma"] + colunas_validas, index=idx_default, key='prio_col_gen')
+                    
+                    if coluna_prio != "Nenhuma":
+                        valores_unicos = [str(x).strip() for x in df_gen[coluna_prio].unique() if pd.notna(x) and str(x).lower() != 'nan']
+                        default_prio = []
+                        if coluna_prio == 'TIPO NOTA': default_prio = [x for x in valores_unicos if x in TIPOS_PRIORITARIOS]
+                        valores_prio = col_c2.multiselect(f"🚨 2. Definir Obras PRIORITÁRIAS em '{coluna_prio}':", valores_unicos, default=default_prio, key='prio_val_gen')
+                        if valores_prio: df_gen['PRIORIDADE'] = df_gen[coluna_prio].astype(str).apply(lambda x: 'Sim' if x.strip() in valores_prio else 'Não')
+                        else: df_gen['PRIORIDADE'] = 'Não'
+                        st.session_state.col_prioridade_gen = coluna_prio
+                    else:
+                        df_gen['PRIORIDADE'] = 'Não'
+                        st.session_state.col_prioridade_gen = "Nenhuma"
+                    df_list.append(df_gen)
 
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
@@ -916,7 +963,8 @@ def app_roteirizador():
                     return
                 bases_records = todas_bases_records 
 
-            if has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
+            if has_generica: col_prioridade = st.session_state.get('col_prioridade_gen', "Nenhuma")
+            elif has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
             else: col_prioridade = "Nenhuma"
 
         else:
@@ -1383,6 +1431,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                             'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
                             'viagem_min': viagem_min, 'dist_km': viagem_km
@@ -1405,6 +1454,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': base_lat, 'lon_atual': base_lon,
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                             'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                             'viagem_min': viagem_ret, 'dist_km': dist_ret
@@ -1520,14 +1570,12 @@ def app_roteirizador():
         
         buf_zip_xl = io.BytesIO()
         buf_zip_kml = io.BytesIO()
-        buf_zip_csv = io.BytesIO() 
         
         tipo_periodo_atual = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Dia')
         
         try:
             with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, \
-                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml, \
-                 zipfile.ZipFile(buf_zip_csv, 'w', zipfile.ZIP_DEFLATED) as zip_csv:
+                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml:
                  
                 def update_ui(msg):
                     nonlocal current_step
