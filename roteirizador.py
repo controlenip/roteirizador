@@ -13,6 +13,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import os
 import base64
+import gc
 
 # ==========================================
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA
@@ -371,7 +372,7 @@ def app_roteirizador():
                     
                     extra_rows_list = []
                     for c in colunas_exibir:
-                        if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'SEMANA']:
+                        if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
                             val_html = formata_campo_html(r.get(c, ''))
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
                     
@@ -382,10 +383,6 @@ def app_roteirizador():
                     rede_lon = r.get('LONGITUDE_REDE')
                     if pd.notna(rede_lat) and pd.notna(rede_lon):
                         extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Coord. da Rede:</td><td style='padding:3px 6px; color:#e83e8c; font-weight:bold;'>{rede_lat:.6f}, {rede_lon:.6f}</td></tr>")
-                    
-                    postes_prev = r.get('POSTES PREVISTOS')
-                    if pd.notna(postes_prev):
-                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Postes Previstos:</td><td style='padding:3px 6px; color:#e67e22; font-weight:bold;'>{int(postes_prev)} UN</td></tr>")
 
                     extra_rows = "".join(extra_rows_list)
 
@@ -398,7 +395,6 @@ def app_roteirizador():
                             <table style="width:100%; border-collapse:collapse;">
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Protocolo:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{r.get('ORDEM', 0)} ({r.get('NOME_DIA', f'Dia {r.get("DIA", 0)}')})</td></tr>
-                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Horário:</td><td style="padding:3px 6px; color:#333;">{r.get('HORA_INICIO', '')} às {r.get('HORA_FIM', '')}</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox} KM</td></tr>
                                 {extra_rows}
@@ -635,7 +631,6 @@ def app_roteirizador():
                             levs_temp_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs_temp, default=opcoes_levs_temp)
                             if levs_temp_selecionados:
                                 df_bases_temp = df_bases_temp_full[df_bases_temp_full['LEVANTADOR'].isin(levs_temp_selecionados)].copy()
-                                # 🔴 CORREÇÃO DO BUG DAS EQUIPES DE APOIO APLICADA AQUI 🔴
                                 if 'LATITUDE' in df_bases_temp.columns and 'LONGITUDE' in df_bases_temp.columns:
                                     df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
                                     df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -826,7 +821,6 @@ def app_roteirizador():
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
 
-            # 🔴 CORREÇÃO DA FALHA DO KEYERROR APLICADA AQUI 🔴
             if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
                 st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'. Verifique o cabeçalho dos arquivos enviados e certifique-se de que o sistema de mapeamento não foi comprometido na origem.")
                 st.stop()
@@ -1083,12 +1077,13 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
+                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO
                 if modo_operacao == "1":
                     if has_generica and not has_levantamento and not has_saneamento: cols_desejadas = todas_cols_limpas
                     elif has_saneamento and not has_levantamento: cols_desejadas = ['NOTA', 'CONTA CONTRATO', 'STATUS', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDEREÇO', 'BAIRRO', 'PONTO REFERÊNCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'TEL FIXO', 'TEL MÓVEL']
-                    else: cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS']
+                    else: cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
                 else:
-                    cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'PRIORIDADE', 'REGIONAL']
+                    cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'PRIORIDADE', 'REGIONAL', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
 
                 cols_padrao = [c for c in normalize_cols(cols_desejadas) if c in todas_cols]
                 colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
@@ -1226,7 +1221,7 @@ def app_roteirizador():
                             mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
                             mun_limpo = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) else 'DESCONHECIDO'
                             o['MUN_LIMPO_CALC'] = mun_limpo
-                            if mun_limpo not in mun_groups: mun_groups[mun_groups] = []
+                            if mun_limpo not in mun_groups: mun_groups[mun_limpo] = []
                             mun_groups[mun_limpo].append(o)
                             
                         for mun, obs in mun_groups.items():
@@ -1611,8 +1606,13 @@ def app_roteirizador():
                 csv_bytes = gerar_csv_autocad_proj(df_routed)
                 zip_csv.writestr(f"DADOS_PROJ_PLUS - {data_atual_formatada}.csv", csv_bytes)
                 
+                # CÓDIGO ATUALIZADO: Remoção de horários antes da geração do KML e configuração de colunas
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
-                kml_geral_str = gerar_kml_agrupado(df_routed, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", st.session_state.colunas_exibir, bases_unicas, tipo_periodo_atual)
+                cols_to_drop_kml = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']
+                df_routed_kml = df_routed.drop(columns=cols_to_drop_kml, errors='ignore')
+                colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_drop_kml]
+                
+                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 for base_nome in bases_unicas:
@@ -1624,7 +1624,8 @@ def app_roteirizador():
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev, st.session_state.col_prioridade, st.session_state.colunas_originais))
                     
                     update_ui(f"Traçando Mapa KML individual para: {base_nome}...")
-                    kml_lev_str = gerar_kml_agrupado(df_lev, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", st.session_state.colunas_exibir, bases_unicas, tipo_periodo_atual)
+                    df_lev_kml = df_lev.drop(columns=cols_to_drop_kml, errors='ignore')
+                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
