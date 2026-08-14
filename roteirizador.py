@@ -41,8 +41,7 @@ from modules.routing_engine import (
 )
 from modules.export_utils import (
     identificar_icone_folium, renderizar_painel_lateral, 
-    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado,
-    gerar_csv_autocad_proj
+    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado
 )
 
 LOGO_PATH = "assets/LOGO_NIP.png"
@@ -73,7 +72,6 @@ def limpar_roteirizador():
     st.session_state.colunas_originais = []
     if 'bytes_zip_xl' in st.session_state: del st.session_state['bytes_zip_xl']
     if 'bytes_zip_kml' in st.session_state: del st.session_state['bytes_zip_kml']
-    if 'bytes_zip_csv' in st.session_state: del st.session_state['bytes_zip_csv']
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -186,13 +184,11 @@ def app_roteirizador():
         data_atual_formatada = datetime.now().strftime("%d.%m.%Y")
         bytes_zip_xl = st.session_state.get('bytes_zip_xl', b"")
         bytes_zip_kml = st.session_state.get('bytes_zip_kml', b"")
-        bytes_zip_csv = st.session_state.get('bytes_zip_csv', b"")
         
         botoes_desabilitados = not is_done or st.session_state.df_routed.empty
         
         st.download_button("🌐 1. Baixar Planilhas (ZIP)", data=bytes_zip_xl if bytes_zip_xl else b"vazio", file_name=f"Planilhas_Equipes - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         st.download_button("🗺️ 2. Baixar Mapas (KML)", data=bytes_zip_kml if bytes_zip_kml else b"vazio", file_name=f"Mapas_Rotas - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
-        st.download_button("📐 3. Exportar Topologia (CSV Proj+)", data=bytes_zip_csv if bytes_zip_csv else b"vazio", file_name=f"Dados_ProjPlus - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
             limpar_roteirizador()
@@ -1676,13 +1672,13 @@ def app_roteirizador():
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
                 # LISTA DE EXPURGO DE DADOS INTERNOS PARA EXCEL E KML
-                cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
+                cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
                 cols_to_hide_popup = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'BASE_ATRIBUIDA', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 cols_to_drop_kml_df = ['_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 
                 # EXCEL DEMANDA GERAL
                 update_ui("Gerando Arquivo Excel de Demanda Geral...")
-                df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns], errors='ignore')
+                df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns and c != 'BASE_ATRIBUIDA'], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_demanda_geral.columns:
                         df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
@@ -1692,7 +1688,6 @@ def app_roteirizador():
                         
                 cols_list_geral = df_demanda_geral.columns.tolist()
                 
-                # Forçar a coluna BASE_ATRIBUIDA (Levantador Responsável) para a primeira posição
                 if 'BASE_ATRIBUIDA' in cols_list_geral:
                     cols_list_geral.remove('BASE_ATRIBUIDA')
                     cols_list_geral.insert(0, 'BASE_ATRIBUIDA')
@@ -1718,7 +1713,7 @@ def app_roteirizador():
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
-                # LIMPEZA COM REGEX NO KML GERAL (HORÁRIO E CASINHA BASE)
+                kml_geral_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 kml_geral_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
@@ -1728,7 +1723,7 @@ def app_roteirizador():
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
                     update_ui(f"Formatando arquivo individual para: {base_nome}...")
-                    df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
+                    df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
                             df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
@@ -1753,7 +1748,7 @@ def app_roteirizador():
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
-                    # LIMPEZA COM REGEX NO KML INDIVIDUAL (CASINHA BASE)
+                    kml_lev_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     kml_lev_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
