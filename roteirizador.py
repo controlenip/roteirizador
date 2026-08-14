@@ -78,6 +78,23 @@ def limpar_roteirizador():
     tentar_rerun()
 
 # ==========================================
+# FUNÇÃO AUXILIAR DE FORMATAÇÃO
+# ==========================================
+def formatar_valor_coluna(col_name, val):
+    if pd.isna(val) or val == '' or val == '-':
+        return '-'
+    try:
+        val_float = float(val)
+        if 'DISTANCIA' in col_name.upper():
+            return f"{val_float:.2f} Metros"
+        elif 'POSTE PREVISTO' in col_name.upper() or 'POSTES PREVISTOS' in col_name.upper():
+            return f"{int(round(val_float))}"
+        else:
+            return formata_campo_html(val)
+    except ValueError:
+        return formata_campo_html(val)
+
+# ==========================================
 # 3. LÓGICA DO ROTEIRIZADOR
 # ==========================================
 def app_roteirizador():
@@ -368,21 +385,12 @@ def app_roteirizador():
                         pop_prio_txt = "🚨 OBRA PRIORITÁRIA" if r.get('PRIORIDADE') == "Sim" else "📍 Atendimento Padrão"
                     
                     dist_prox = r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)
-                    dist_rede = r.get('DISTANCIA_REDE_METROS')
                     
                     extra_rows_list = []
                     for c in colunas_exibir:
                         if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
-                            val_html = formata_campo_html(r.get(c, ''))
+                            val_html = formatar_valor_coluna(c, r.get(c, ''))
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
-                    
-                    if pd.notna(dist_rede):
-                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Rede Mais Próxima:</td><td style='padding:3px 6px; color:#17a2b8; font-weight:bold;'>{dist_rede:.1f} Metros</td></tr>")
-                    
-                    rede_lat = r.get('LATITUDE_REDE')
-                    rede_lon = r.get('LONGITUDE_REDE')
-                    if pd.notna(rede_lat) and pd.notna(rede_lon):
-                        extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555;'>Coord. da Rede:</td><td style='padding:3px 6px; color:#e83e8c; font-weight:bold;'>{rede_lat:.6f}, {rede_lon:.6f}</td></tr>")
 
                     extra_rows = "".join(extra_rows_list)
 
@@ -1077,7 +1085,6 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
-                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO
                 if modo_operacao == "1":
                     if has_generica and not has_levantamento and not has_saneamento: cols_desejadas = todas_cols_limpas
                     elif has_saneamento and not has_levantamento: cols_desejadas = ['NOTA', 'CONTA CONTRATO', 'STATUS', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDEREÇO', 'BAIRRO', 'PONTO REFERÊNCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'TEL FIXO', 'TEL MÓVEL']
@@ -1542,7 +1549,7 @@ def app_roteirizador():
         
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
-        total_steps = len(bases_unicas) * 2 + 3 
+        total_steps = len(bases_unicas) * 2 + 4  # Adicionado passo extra
         current_step = 0
         
         start_time = time.time()
@@ -1591,7 +1598,7 @@ def app_roteirizador():
                     qtd_comum = len(df_base_real[df_base_real['PRIORIDADE'] == 'Não']) if 'PRIORIDADE' in df_base_real.columns else len(df_base_real)
                     qtd_prio = len(df_base_real[df_base_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_base_real.columns else 0
                     qtd_super = len(df_base_real[df_base_real['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in df_base_real.columns else 0
-                    qtd_postes = int(df_base_real['POSTES PREVISTOS'].sum()) if 'POSTES PREVISTOS' in df_base_real.columns else 0
+                    qtd_postes = int(df_base_real['POSTES PREVISTOS BT'].sum() + df_base_real['POSTES PREVISTOS MT'].sum()) if 'POSTES PREVISTOS BT' in df_base_real.columns and 'POSTES PREVISTOS MT' in df_base_real.columns else (int(df_base_real['POSTES PREVISTOS'].sum()) if 'POSTES PREVISTOS' in df_base_real.columns else 0)
                     
                     resumo_levantadores.append({
                         'LEVANTADOR': base, 'TIPO EQUIPE': tipo_eq, 'OBRAS COMUNS': qtd_comum,
@@ -1602,14 +1609,32 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
+                # ADIÇÃO DO ARQUIVO EXCEL "DEMANDA_GERAL" COM ARREDONDAMENTO
+                update_ui("Gerando Arquivo Excel de Demanda Geral...")
+                df_demanda_geral = df_routed.copy()
+                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                    if col in df_demanda_geral.columns:
+                        df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
+                for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
+                    if col in df_demanda_geral.columns:
+                        df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round(2)
+                
+                zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, st.session_state.colunas_originais))
+                
                 update_ui("Gerando Arquivo de Topologia (Proj+/AutoCAD)...")
                 csv_bytes = gerar_csv_autocad_proj(df_routed)
                 zip_csv.writestr(f"DADOS_PROJ_PLUS - {data_atual_formatada}.csv", csv_bytes)
                 
-                # CÓDIGO ATUALIZADO: Remoção de horários antes da geração do KML e configuração de colunas
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 cols_to_drop_kml = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']
                 df_routed_kml = df_routed.drop(columns=cols_to_drop_kml, errors='ignore')
+                
+                # Arredondamento para o KML Geral
+                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                    if col in df_routed_kml.columns:
+                        df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
+                
+                # Formatação de Distância para o KML Geral é tratada pelo formatar_valor_coluna durante a geração
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_drop_kml]
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
@@ -1620,11 +1645,20 @@ def app_roteirizador():
                     nome_seguro = re.sub(r'_+', '_', nome_seguro)
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
+                    # Arredondamento para os Excels Individuais
+                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                        if col in df_lev.columns:
+                            df_lev[col] = pd.to_numeric(df_lev[col], errors='coerce').round().fillna(0).astype(int)
+                    for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
+                        if col in df_lev.columns:
+                            df_lev[col] = pd.to_numeric(df_lev[col], errors='coerce').round(2)
+                            
                     update_ui(f"Formatando arquivo individual para: {base_nome}...")
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev, st.session_state.col_prioridade, st.session_state.colunas_originais))
                     
                     update_ui(f"Traçando Mapa KML individual para: {base_nome}...")
                     df_lev_kml = df_lev.drop(columns=cols_to_drop_kml, errors='ignore')
+                    
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
