@@ -386,13 +386,11 @@ def app_roteirizador():
                     
                     extra_rows_list = []
                     for c in colunas_exibir:
-                        if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
+                        if c.upper() not in ['NOME_DIA', 'DIA_MES', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
                             val_html = formatar_valor_coluna(c, r.get(c, ''))
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
 
                     extra_rows = "".join(extra_rows_list)
-
-                    prot_html = formata_campo_html(r.get('PROTOCOLO', 'N/A'))
                     dia_mes_str = f" - {r.get('DIA_MES', '')}" if r.get('DIA_MES') else ""
 
                     popup_html = f"""
@@ -400,10 +398,10 @@ def app_roteirizador():
                         <div style="background:{pop_header_bg}; color:{pop_header_color}; padding:8px 10px; font-size:13px; font-weight:bold;">{pop_prio_txt}</div>
                         <div style="padding:10px; background:#fafafa; font-size:12px;">
                             <table style="width:100%; border-collapse:collapse;">
-                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Protocolo:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
-                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{r.get('ORDEM', 0)} ({r.get('NOME_DIA', f'Dia {r.get("DIA", 0)}')}{dia_mes_str})</td></tr>
+                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem Logística:</td><td style="padding:3px 6px; color:#333;"><b>{r.get('ORDEM', 0)}</b> ({r.get('NOME_DIA', f'Dia {r.get("DIA", 0)}')}{dia_mes_str})</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox} KM</td></tr>
+                                <tr><td colspan="2"><hr style="margin: 5px 0; border: 0; border-top: 1px solid #ddd;"></td></tr>
                                 {extra_rows}
                             </table>
                         </div>
@@ -1083,16 +1081,19 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
-                if modo_operacao == "1":
-                    if has_generica and not has_levantamento and not has_saneamento: cols_desejadas = todas_cols_limpas
-                    elif has_saneamento and not has_levantamento: cols_desejadas = ['NOTA', 'CONTA CONTRATO', 'STATUS', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDEREÇO', 'BAIRRO', 'PONTO REFERÊNCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'TEL FIXO', 'TEL MÓVEL']
-                    else: cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
-                else:
-                    cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'PRIORIDADE', 'REGIONAL', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
+                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO
+                cols_base_usuario = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
+                cols_metricas = ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
+                cols_desejadas = cols_base_usuario + cols_metricas
 
-                cols_padrao = [c for c in normalize_cols(cols_desejadas) if c in todas_cols]
-                # Adiciona DIA_MES por padrão na exibição se NOME_DIA estiver oculto internamente
-                colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas + ['DIA_MES'], default=cols_padrao + ['DIA_MES'])
+                cols_padrao = [c for c in cols_desejadas if c in todas_cols_limpas]
+                
+                colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
+                
+                # Força a ordem exata baseada na lista desejada pelo usuário
+                reference_order = cols_desejadas + [c for c in todas_cols_limpas if c not in cols_desejadas]
+                colunas_exibir.sort(key=lambda x: reference_order.index(x))
+                
                 st.info("⚡ **Deduplicação Ativa:** Obras num raio de 5 metros foram transformadas em Super Pontos para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
