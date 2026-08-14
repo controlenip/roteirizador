@@ -162,7 +162,8 @@ def app_roteirizador():
                     st.warning("⚠️ Selecione pelo menos 1 dia da semana para o cálculo.")
                 else:
                     st.caption(f"ℹ️ Cada semana terá **{len(dias_semana_selecionados)} dias** alocados.")
-                
+            
+            data_inicio_roteiro = st.date_input("📅 Data de Início do Roteiro:", value=datetime.today(), disabled=is_locked)
             obras_por_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
             limite_periodos = st.number_input(f"Limite total de {tipo_periodo_clean}s", min_value=1, value=5, step=1, disabled=is_locked)
             tempo_medio_obra = 1.5
@@ -352,9 +353,6 @@ def app_roteirizador():
             idx_cor = lista_bases_mapa.index(base_nome)
             cor_rota = cores_folium[idx_cor % len(cores_folium)]
             df_base_rota = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome]
-            base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base_nome), None)
-            b_lat, b_lon = float(str(base_ref['LATITUDE']).replace(',','.')), float(str(base_ref['LONGITUDE']).replace(',','.'))
-            folium.Marker([b_lat, b_lon], icon=folium.Icon(color='black', icon='home', prefix='fa'), tooltip=f"Base: {base_nome}").add_to(mapa)
             
             fg_linhas = folium.FeatureGroup(name=f"Rota: {base_nome}", show=False)
             
@@ -388,13 +386,14 @@ def app_roteirizador():
                     
                     extra_rows_list = []
                     for c in colunas_exibir:
-                        if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
+                        if c.upper() not in ['PROTOCOLO', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']:
                             val_html = formatar_valor_coluna(c, r.get(c, ''))
                             extra_rows_list.append(f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>")
 
                     extra_rows = "".join(extra_rows_list)
 
                     prot_html = formata_campo_html(r.get('PROTOCOLO', 'N/A'))
+                    dia_mes_str = f" - {r.get('DIA_MES', '')}" if r.get('DIA_MES') else ""
 
                     popup_html = f"""
                     <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
@@ -402,7 +401,7 @@ def app_roteirizador():
                         <div style="padding:10px; background:#fafafa; font-size:12px;">
                             <table style="width:100%; border-collapse:collapse;">
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Protocolo:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
-                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{r.get('ORDEM', 0)} ({r.get('NOME_DIA', f'Dia {r.get("DIA", 0)}')})</td></tr>
+                                <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{r.get('ORDEM', 0)} ({r.get('NOME_DIA', f'Dia {r.get("DIA", 0)}')}{dia_mes_str})</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM</td></tr>
                                 <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox} KM</td></tr>
                                 {extra_rows}
@@ -421,14 +420,13 @@ def app_roteirizador():
 
         with tab_dados:
             st.markdown("#### Detalhamento de Rotas")
-            df_display = st.session_state.df_routed.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE'], errors='ignore')
+            df_display = st.session_state.df_routed.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore')
             
             df_editado_ui = st.data_editor(
                 df_display, use_container_width=True, height=400,
                 column_config={ 
                     "LATITUDE": st.column_config.NumberColumn(disabled=True), "LONGITUDE": st.column_config.NumberColumn(disabled=True),
                     "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.ProgressColumn("Dist. Anterior (KM)", format="%.2f", min_value=0, max_value=30), 
-                    "TEMPO_VIAGEM_MINUTOS": st.column_config.ProgressColumn("Tempo de Viagem (Min)", format="%.1f", min_value=0, max_value=60),
                     "LINK_NAVEGACAO_OFFLINE": st.column_config.LinkColumn("Link GPS", display_text="📍 Abrir no Maps")
                 }
             )
@@ -1093,7 +1091,8 @@ def app_roteirizador():
                     cols_desejadas = ['PROTOCOLO', 'NOTA', 'CONTA CONTRATO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'STATUS', 'PRIORIDADE', 'REGIONAL', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
 
                 cols_padrao = [c for c in normalize_cols(cols_desejadas) if c in todas_cols]
-                colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
+                # Adiciona DIA_MES por padrão na exibição se NOME_DIA estiver oculto internamente
+                colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas + ['DIA_MES'], default=cols_padrao + ['DIA_MES'])
                 st.info("⚡ **Deduplicação Ativa:** Obras num raio de 5 metros foram transformadas em Super Pontos para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
@@ -1138,7 +1137,8 @@ def app_roteirizador():
                         'is_lista_continua': True if modo_operacao == "2" else False,
                         'dias_selecionados': dias_semana_selecionados,
                         'url_osrm_base': url_osrm_base,
-                        'tracado_real': tracado_real
+                        'tracado_real': tracado_real,
+                        'data_inicio': data_inicio_roteiro
                     },
                     'b_names': list(set([b['LEVANTADOR'] for b in bases_records])),
                     'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
@@ -1174,6 +1174,24 @@ def app_roteirizador():
         status_text = st.empty()
         timer_placeholder = st.empty()
         
+        # LOGICA DO CALENDARIO
+        agora_dt = datetime.combine(cfg['data_inicio'], datetime.min.time())
+        data_base_inicio = agora_dt.replace(hour=8, minute=0, second=0, microsecond=0)
+        data_base_almoco = agora_dt.replace(hour=12, minute=0, second=0, microsecond=0)
+        
+        def get_workday_date(start_dt, dia_abs, valid_days_list):
+            pt_to_idx = {"Segunda": 0, "Terça": 1, "Quarta": 2, "Quinta": 3, "Sexta": 4, "Sábado": 5, "Domingo": 6}
+            allowed = [pt_to_idx[d] for d in valid_days_list] if valid_days_list else [0,1,2,3,4]
+            curr = start_dt
+            while curr.weekday() not in allowed:
+                curr += pd.Timedelta(days=1)
+            count = 1
+            while count < dia_abs:
+                curr += pd.Timedelta(days=1)
+                if curr.weekday() in allowed:
+                    count += 1
+            return curr
+
         try:
             tempo_processamento = 0.0
             routed_data_final = []
@@ -1313,14 +1331,12 @@ def app_roteirizador():
                     obras_no_periodo_macro = 0
                     mun_anterior = None
                     
-                    agora_dt = datetime.now()
-                    data_base_inicio = agora_dt.replace(hour=8, minute=0, second=0, microsecond=0)
-                    data_base_almoco = agora_dt.replace(hour=12, minute=0, second=0, microsecond=0)
-                    
                     def iniciar_dia(dia_abs):
+                        data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
                         return {
                             'lat': base_lat, 'lon': base_lon,
-                            'time': data_base_inicio + pd.Timedelta(days=dia_abs - 1),
+                            'time': data_atual,
+                            'date_obj': data_atual,
                             'obras_hoje': 0, 'prio_hoje': 0, 'km_hoje': 0.0, 'lunch': False
                         }
                         
@@ -1349,13 +1365,14 @@ def app_roteirizador():
                         chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                         
                         if chegada_prevista.hour >= 12 and not estado['lunch']:
-                            lunch_start = max(estado['time'], data_base_almoco + pd.Timedelta(days=dia_absoluto - 1))
+                            lunch_start = max(estado['time'], estado['date_obj'].replace(hour=12))
                             lunch_end = lunch_start + pd.Timedelta(hours=1)
                             rotas_flat.append({
                                 'obra': None, 'is_lunch': True, 'is_retorno': False,
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                                 'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                                 'hora_inicio': lunch_start, 'hora_fim': lunch_end,
                                 'viagem_min': 0.0, 'dist_km': 0.0
                             })
@@ -1384,6 +1401,7 @@ def app_roteirizador():
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                                 'lat_atual': base_lat, 'lon_atual': base_lon,
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                                 'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                                 'viagem_min': viagem_ret, 'dist_km': dist_ret
                             })
@@ -1420,6 +1438,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
                             'viagem_min': viagem_min, 'dist_km': viagem_km
                         })
@@ -1441,6 +1460,7 @@ def app_roteirizador():
                             'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                             'lat_atual': base_lat, 'lon_atual': base_lon,
                             'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                             'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                             'viagem_min': viagem_ret, 'dist_km': dist_ret
                         })
@@ -1466,9 +1486,8 @@ def app_roteirizador():
                                 'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO DA EQUIPE', 
                                 'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
                                 'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                                'NOME_DIA': dia_nome_str,
-                                'SEMANA': item['semana'],
-                                'DIA': item['dia'], 
+                                'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
+                                'SEMANA': item['semana'], 'DIA': item['dia'], 
                                 'PERIODO': periodo_val,
                                 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'TEMPO_VIAGEM_MINUTOS': 0.0,
                                 'ROTA_GEOMETRIA': geom,
@@ -1482,9 +1501,8 @@ def app_roteirizador():
                                 'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 
                                 'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
                                 'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                                'NOME_DIA': dia_nome_str,
-                                'SEMANA': item['semana'],
-                                'DIA': item['dia'], 
+                                'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
+                                'SEMANA': item['semana'], 'DIA': item['dia'], 
                                 'PERIODO': periodo_val,
                                 'DISTANCIA_PONTO_ANTERIOR_KM': round(item['dist_km'], 2), 
                                 'TEMPO_VIAGEM_MINUTOS': round(item['viagem_min'], 1),
@@ -1498,6 +1516,7 @@ def app_roteirizador():
                             obra = item['obra']
                             obra['ORDEM'] = ordem_global
                             obra['NOME_DIA'] = dia_nome_str
+                            obra['DIA_MES'] = item['dia_mes']
                             obra['SEMANA'] = item['semana']
                             obra['DIA'] = item['dia']
                             obra['PERIODO'] = periodo_val
@@ -1549,7 +1568,7 @@ def app_roteirizador():
         
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
-        total_steps = len(bases_unicas) * 2 + 4  # Adicionado passo extra
+        total_steps = len(bases_unicas) * 2 + 4
         current_step = 0
         
         start_time = time.time()
@@ -1598,26 +1617,53 @@ def app_roteirizador():
                     qtd_comum = len(df_base_real[df_base_real['PRIORIDADE'] == 'Não']) if 'PRIORIDADE' in df_base_real.columns else len(df_base_real)
                     qtd_prio = len(df_base_real[df_base_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_base_real.columns else 0
                     qtd_super = len(df_base_real[df_base_real['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in df_base_real.columns else 0
-                    qtd_postes = int(df_base_real['POSTES PREVISTOS BT'].sum() + df_base_real['POSTES PREVISTOS MT'].sum()) if 'POSTES PREVISTOS BT' in df_base_real.columns and 'POSTES PREVISTOS MT' in df_base_real.columns else (int(df_base_real['POSTES PREVISTOS'].sum()) if 'POSTES PREVISTOS' in df_base_real.columns else 0)
+                    
+                    # LOGICA DE POSTES MENOR (MIN)
+                    p_bt = pd.to_numeric(df_base_real['POSTE PREVISTO BT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO BT' in df_base_real.columns else pd.Series(dtype=float)
+                    p_mt = pd.to_numeric(df_base_real['POSTE PREVISTO MT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO MT' in df_base_real.columns else pd.Series(dtype=float)
+                    if not p_bt.empty or not p_mt.empty:
+                        poste_min_series = pd.concat([p_bt, p_mt], axis=1).min(axis=1).fillna(0).round().astype(int)
+                    else:
+                        poste_min_series = pd.to_numeric(df_base_real['POSTES PREVISTOS'], errors='coerce').fillna(0).round().astype(int) if 'POSTES PREVISTOS' in df_base_real.columns else pd.Series([0]*len(df_base_real))
+                        
+                    qtd_postes_min_sum = int(poste_min_series.sum())
+                    
+                    dias_unicos = df_base_real['DIA_MES'].nunique() if 'DIA_MES' in df_base_real.columns else df_base_real['DIA'].nunique()
+                    semanas_unicas = df_base_real['SEMANA'].nunique()
+                    postes_por_dia = round(qtd_postes_min_sum / dias_unicos, 1) if dias_unicos > 0 else 0
+                    postes_por_semana = round(qtd_postes_min_sum / semanas_unicas, 1) if semanas_unicas > 0 else 0
                     
                     resumo_levantadores.append({
                         'LEVANTADOR': base, 'TIPO EQUIPE': tipo_eq, 'OBRAS COMUNS': qtd_comum,
                         'OBRAS PRIORITARIAS': qtd_prio, 'SUPER PONTOS': qtd_super, 'TOTAL OBRAS': qtd_comum + qtd_prio,
-                        'POSTES PREVISTOS TOTAIS': qtd_postes,
+                        'POSTES PREVISTOS TOTAIS': qtd_postes_min_sum,
+                        'POSTES PREVISTOS / DIA': postes_por_dia,
+                        'POSTES PREVISTOS / SEMANA': postes_por_semana,
                         'KM TOTAL PREVISTO': round(df_base['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
                     })
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
-                # ADIÇÃO DO ARQUIVO EXCEL "DEMANDA_GERAL" COM ARREDONDAMENTO
+                # LISTA DE EXPURGO PARA EXCEL E KML
+                cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
+                cols_to_drop_kml = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']
+                
+                # EXCEL DEMANDA GERAL
                 update_ui("Gerando Arquivo Excel de Demanda Geral...")
-                df_demanda_geral = df_routed.copy()
+                df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_demanda_geral.columns:
                         df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
                 for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
                     if col in df_demanda_geral.columns:
                         df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round(2)
+                        
+                cols_list_geral = df_demanda_geral.columns.tolist()
+                if 'NOME_DIA' in cols_list_geral and 'DIA_MES' in cols_list_geral:
+                    cols_list_geral.remove('DIA_MES')
+                    idx = cols_list_geral.index('NOME_DIA')
+                    cols_list_geral.insert(idx + 1, 'DIA_MES')
+                    df_demanda_geral = df_demanda_geral[cols_list_geral]
                 
                 zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, st.session_state.colunas_originais))
                 
@@ -1625,19 +1671,20 @@ def app_roteirizador():
                 csv_bytes = gerar_csv_autocad_proj(df_routed)
                 zip_csv.writestr(f"DADOS_PROJ_PLUS - {data_atual_formatada}.csv", csv_bytes)
                 
+                # KML GERAL
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
-                cols_to_drop_kml = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT']
                 df_routed_kml = df_routed.drop(columns=cols_to_drop_kml, errors='ignore')
-                
-                # Arredondamento para o KML Geral
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_routed_kml.columns:
                         df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
                 
-                # Formatação de Distância para o KML Geral é tratada pelo formatar_valor_coluna durante a geração
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_drop_kml]
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                
+                # LIMPEZA COM REGEX NO KML GERAL (HORÁRIO E CASINHA BASE)
+                kml_geral_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 for base_nome in bases_unicas:
@@ -1645,21 +1692,35 @@ def app_roteirizador():
                     nome_seguro = re.sub(r'_+', '_', nome_seguro)
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
-                    # Arredondamento para os Excels Individuais
-                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
-                        if col in df_lev.columns:
-                            df_lev[col] = pd.to_numeric(df_lev[col], errors='coerce').round().fillna(0).astype(int)
-                    for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
-                        if col in df_lev.columns:
-                            df_lev[col] = pd.to_numeric(df_lev[col], errors='coerce').round(2)
-                            
                     update_ui(f"Formatando arquivo individual para: {base_nome}...")
-                    zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev, st.session_state.col_prioridade, st.session_state.colunas_originais))
+                    df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns], errors='ignore')
+                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                        if col in df_lev_xl.columns:
+                            df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
+                    for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
+                        if col in df_lev_xl.columns:
+                            df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round(2)
+                            
+                    cols_list_lev = df_lev_xl.columns.tolist()
+                    if 'NOME_DIA' in cols_list_lev and 'DIA_MES' in cols_list_lev:
+                        cols_list_lev.remove('DIA_MES')
+                        idx_l = cols_list_lev.index('NOME_DIA')
+                        cols_list_lev.insert(idx_l + 1, 'DIA_MES')
+                        df_lev_xl = df_lev_xl[cols_list_lev]
+
+                    zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, st.session_state.colunas_originais))
                     
                     update_ui(f"Traçando Mapa KML individual para: {base_nome}...")
                     df_lev_kml = df_lev.drop(columns=cols_to_drop_kml, errors='ignore')
-                    
+                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                        if col in df_lev_kml.columns:
+                            df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
+                            
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    
+                    # LIMPEZA COM REGEX NO KML INDIVIDUAL (HORÁRIO E CASINHA BASE)
+                    kml_lev_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
