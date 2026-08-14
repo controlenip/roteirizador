@@ -635,7 +635,8 @@ def app_roteirizador():
                             levs_temp_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs_temp, default=opcoes_levs_temp)
                             if levs_temp_selecionados:
                                 df_bases_temp = df_bases_temp_full[df_bases_temp_full['LEVANTADOR'].isin(levs_temp_selecionados)].copy()
-                                if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases_temp.columns:
+                                # 🔴 CORREÇÃO DO BUG DAS EQUIPES DE APOIO APLICADA AQUI 🔴
+                                if 'LATITUDE' in df_bases_temp.columns and 'LONGITUDE' in df_bases_temp.columns:
                                     df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
                                     df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
                                 elif 'RESIDENCIA' in df_bases_temp.columns or 'MUNICIPIO' in df_bases_temp.columns:
@@ -824,6 +825,11 @@ def app_roteirizador():
 
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
+
+            # 🔴 CORREÇÃO DA FALHA DO KEYERROR APLICADA AQUI 🔴
+            if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
+                st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'. Verifique o cabeçalho dos arquivos enviados e certifique-se de que o sistema de mapeamento não foi comprometido na origem.")
+                st.stop()
 
             df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -1187,7 +1193,7 @@ def app_roteirizador():
                         est_rem = avg * restantes
                         m, s = divmod(int(est_rem), 60)
                         h, m = divmod(m, 60)
-                        time_str = f"{h:02d}h {m:02d}m {s:02d}s" if h > 0 else f"{m:02d}m {s:02d}s"
+                        time_str = f"{h:02d}h {m:02d}s" if h > 0 else f"{m:02d}m {s:02d}s"
                         
                         st.markdown("### ⏱️ Tempo Restante Estimado")
                         st.markdown(f"""
@@ -1220,7 +1226,7 @@ def app_roteirizador():
                             mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
                             mun_limpo = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) else 'DESCONHECIDO'
                             o['MUN_LIMPO_CALC'] = mun_limpo
-                            if mun_limpo not in mun_groups: mun_groups[mun_limpo] = []
+                            if mun_limpo not in mun_groups: mun_groups[mun_groups] = []
                             mun_groups[mun_limpo].append(o)
                             
                         for mun, obs in mun_groups.items():
