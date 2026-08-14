@@ -844,7 +844,7 @@ def app_roteirizador():
             erros_nome += drop_mask.sum()
             df_tasks = df_tasks[~drop_mask]
 
-            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False)
+            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=100, agrupar_por_levantador=False)
             if qtd_condensada > 0: st.toast(f"✅ Inteligência condensou {qtd_condensada} obras repetidas no mesmo endereço em 'Super Pontos'.")
 
             st.markdown("#### 📊 Raio-X da Base de Dados Carregada")
@@ -1034,7 +1034,7 @@ def app_roteirizador():
                 lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
                 df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
 
-                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=True)
+                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=100, agrupar_por_levantador=True)
                 if qtd_condensada > 0: st.toast(f"✅ {qtd_condensada} obras repetidas no mesmo endereço viraram 'Super Pontos'.")
                 
                 if 'PRIORIDADE' not in df_tasks.columns:
@@ -1081,10 +1081,8 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_')]
                 
-                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO
-                cols_base_usuario = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
-                cols_metricas = ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
-                cols_desejadas = cols_base_usuario + cols_metricas
+                # ADIÇÃO DAS NOVAS COLUNAS NA CONFIGURAÇÃO PADRÃO - ORDEM SOLICITADA
+                cols_desejadas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
 
                 cols_padrao = [c for c in cols_desejadas if c in todas_cols_limpas]
                 
@@ -1092,9 +1090,9 @@ def app_roteirizador():
                 
                 # Força a ordem exata baseada na lista desejada pelo usuário
                 reference_order = cols_desejadas + [c for c in todas_cols_limpas if c not in cols_desejadas]
-                colunas_exibir.sort(key=lambda x: reference_order.index(x))
+                colunas_exibir.sort(key=lambda x: reference_order.index(x) if x in reference_order else 999)
                 
-                st.info("⚡ **Deduplicação Ativa:** Obras num raio de 5 metros foram transformadas em Super Pontos para otimização.")
+                st.info("⚡ **Deduplicação Ativa:** Obras num raio de 100 metros foram transformadas em Super Pontos para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
                 tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
