@@ -892,7 +892,6 @@ def app_roteirizador():
                 dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
                 max_capacity = obras_por_dia * dias_multiplier * limite_periodos
 
-                # LÓGICA REESCRITA COM FALLBACK DE 100KM PARA PREENCHIMENTO DE METAS
                 def assign_load_balanced_strict_and_fallback(df_sub_prio, df_sub_comum, allowed_bases):
                     if df_sub_prio.empty and df_sub_comum.empty: return pd.DataFrame(), pd.DataFrame()
                     
@@ -939,7 +938,7 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
-                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas)
+                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -952,7 +951,7 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
-                        best_dist_fb = 100.0 # TRAVA MAXIMA DE 100KM
+                        best_dist_fb = 100.0 # TRAVA MAXIMA DE 100KM EM LINHA RETA
                         
                         if pd.notna(lat) and pd.notna(lon):
                             for b in valid_bases_fallback:
@@ -978,9 +977,8 @@ def app_roteirizador():
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
+                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
-                tot_unallocated = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
-                st.session_state.tot_obras_nao_alocadas = tot_unallocated
                 tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
@@ -1347,7 +1345,6 @@ def app_roteirizador():
                     semana_atual = 1
                     dia_da_semana = 1
                     obras_no_periodo_macro = 0
-                    mun_anterior = None
                     
                     def iniciar_dia(dia_abs):
                         data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
@@ -1361,7 +1358,6 @@ def app_roteirizador():
                     estado = iniciar_dia(dia_absoluto)
                     
                     for obra in ordered_tasks:
-                        mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
@@ -1407,8 +1403,6 @@ def app_roteirizador():
                         
                         if obras_no_periodo_macro >= limite_diario_atual:
                             virar_dia = True
-                        elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
-                            virar_dia = True 
                                 
                         if virar_dia:
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1468,7 +1462,6 @@ def app_roteirizador():
                         estado['prio_hoje'] = prio_acumulada 
                         estado['km_hoje'] += viagem_km
                         obras_no_periodo_macro += qtd_real
-                        mun_anterior = mun_atual 
 
                     if estado['obras_hoje'] > 0:
                         dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1591,7 +1584,7 @@ def app_roteirizador():
         
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
-        total_steps = len(bases_unicas) * 2 + 4
+        total_steps = len(bases_unicas) * 2 + 3
         current_step = 0
         
         start_time = time.time()
@@ -1681,6 +1674,7 @@ def app_roteirizador():
                         
                 cols_list_geral = df_demanda_geral.columns.tolist()
                 
+                # Forçar a coluna BASE_ATRIBUIDA (Levantador Responsável) para a primeira posição (Index 0)
                 if 'BASE_ATRIBUIDA' in cols_list_geral:
                     cols_list_geral.remove('BASE_ATRIBUIDA')
                     cols_list_geral.insert(0, 'BASE_ATRIBUIDA')
@@ -1693,7 +1687,9 @@ def app_roteirizador():
                 df_demanda_geral = df_demanda_geral[cols_list_geral]
                 df_demanda_geral = df_demanda_geral.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
                 
-                zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, st.session_state.colunas_originais))
+                # Criamos um "colunas originais temporário" com o Levantador Responsavel em primeiro, pra função respeitar a ordem
+                cols_originais_hack = ['LEVANTADOR_RESPONSAVEL'] + [c for c in st.session_state.colunas_originais if c != 'LEVANTADOR_RESPONSAVEL']
+                zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, cols_originais_hack))
                 
                 # KML GERAL
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
@@ -1706,8 +1702,9 @@ def app_roteirizador():
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
-                kml_geral_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_geral_str, flags=re.IGNORECASE)
-                kml_geral_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                # LIMPEZA COM REGEX NO KML GERAL (HORÁRIO E CASINHA BASE)
+                kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!</tr>).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 for base_nome in bases_unicas:
@@ -1741,8 +1738,9 @@ def app_roteirizador():
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
-                    kml_lev_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_lev_str, flags=re.IGNORECASE)
-                    kml_lev_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    # LIMPEZA COM REGEX NO KML INDIVIDUAL (HORÁRIO E CASINHA BASE)
+                    kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!</tr>).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
