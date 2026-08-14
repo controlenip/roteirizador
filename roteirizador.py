@@ -41,7 +41,8 @@ from modules.routing_engine import (
 )
 from modules.export_utils import (
     identificar_icone_folium, renderizar_painel_lateral, 
-    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado
+    gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado,
+    gerar_csv_autocad_proj
 )
 
 LOGO_PATH = "assets/LOGO_NIP.png"
@@ -72,6 +73,7 @@ def limpar_roteirizador():
     st.session_state.colunas_originais = []
     if 'bytes_zip_xl' in st.session_state: del st.session_state['bytes_zip_xl']
     if 'bytes_zip_kml' in st.session_state: del st.session_state['bytes_zip_kml']
+    if 'bytes_zip_csv' in st.session_state: del st.session_state['bytes_zip_csv']
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -810,7 +812,7 @@ def app_roteirizador():
                         default_prio = []
                         if coluna_prio == 'TIPO NOTA': default_prio = [x for x in valores_unicos if x in TIPOS_PRIORITARIOS]
                         valores_prio = col_c2.multiselect(f"🚨 2. Definir Obras PRIORITÁRIAS em '{coluna_prio}':", valores_unicos, default=default_prio, key='prio_val_gen')
-                        if valores_prio: df_gen['PRIORIDADE'] = df_gen[coluna_prio].astype(str).apply(lambda x: 'Sim' if x.strip() in valores_prio else 'Não')
+                        if valores_prio: df_gen['PRIORIDADE'] = df_gen[coluna_prio].astype(str).apply(lambda x: 'Sim' if str(x).strip() in valores_prio else 'Não')
                         else: df_gen['PRIORIDADE'] = 'Não'
                         st.session_state.col_prioridade_gen = coluna_prio
                     else:
@@ -951,7 +953,9 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
-                        best_dist_fb = 100.0 # TRAVA MAXIMA DE 100KM EM LINHA RETA
+                        
+                        # ORDENAR EQUIPES PELA COTA MAIS OCIOSA (PARA EQUILIBRAR AS OBRAS!)
+                        valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
                             for b in valid_bases_fallback:
@@ -960,9 +964,9 @@ def app_roteirizador():
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                        if d <= best_dist_fb:
-                                            best_dist_fb = d
+                                        if d <= 100.0:  # TRAVA MAXIMA DE 100KM EM LINHA RETA
                                             best_base_fb = b_name
+                                            break # Encontrou o técnico mais ocioso dentro de 100km. Para a busca!
                                             
                         if best_base_fb:
                             base_counts[best_base_fb] += qtd_real
@@ -977,8 +981,9 @@ def app_roteirizador():
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
-                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
+                tot_unallocated = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
+                st.session_state.tot_obras_nao_alocadas = tot_unallocated
                 tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
@@ -1628,10 +1633,13 @@ def app_roteirizador():
                     df_base_real = df_base[~df_base['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     base_ref = next((b for b in st.session_state.bases_records if b['LEVANTADOR'] == base), None)
                     tipo_eq = base_ref.get('TIPO_EQUIPE', 'PRINCIPAL') if base_ref else 'DESCONHECIDO'
-                    qtd_comum = len(df_base_real[df_base_real['PRIORIDADE'] == 'Não']) if 'PRIORIDADE' in df_base_real.columns else len(df_base_real)
-                    qtd_prio = len(df_base_real[df_base_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_base_real.columns else 0
+                    
+                    # LOGICA EXATA DO RELATORIO PARA AS CONTAGENS:
+                    qtd_comum = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Não'].iterrows())
+                    qtd_prio = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Sim'].iterrows())
                     qtd_super = len(df_base_real[df_base_real['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in df_base_real.columns else 0
                     
+                    # LOGICA DE POSTES MENOR (MIN)
                     p_bt = pd.to_numeric(df_base_real['POSTE PREVISTO BT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO BT' in df_base_real.columns else pd.Series(dtype=float)
                     p_mt = pd.to_numeric(df_base_real['POSTE PREVISTO MT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO MT' in df_base_real.columns else pd.Series(dtype=float)
                     if not p_bt.empty or not p_mt.empty:
