@@ -281,8 +281,8 @@ def app_roteirizador():
                 <div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                     <h3 style="margin-top: 0; color: #856404; display: flex; align-items: center;"><span style="font-size: 24px; margin-right: 10px;">⚠️</span> Quadro de Aviso: Quantidade de Obras Limitada pelo Estoque</h3>
                     <p style="font-size: 16px;">Você configurou o sistema para roteirizar <b>{meta_global_exata} obras</b> no total <i>({obras_dia_meta} obras/dia × {dias_multiplicador * limite_periodos_meta} dias × {tot_equipes_cadastradas} equipes)</i>.</p>
-                    <p style="font-size: 16px;">No entanto, <b>não havia obras suficientes nos municípios que cada levantador atende</b>. O algoritmo roteirizou a quantidade máxima encontrada e compatível: <b>{tot_obras_reais} obras</b>. <br>
-                    <span style="color: #d9534f; font-weight: bold; font-size: 18px;">❌ Faltaram {obras_faltantes} obras para atingir a meta escolhida.</span></p>
+                    <p style="font-size: 16px;">No entanto, <b>não havia obras suficientes nos municípios e raio de 100km</b>. O algoritmo roteirizou a quantidade máxima encontrada e compatível: <b>{tot_obras_reais} obras</b>. <br>
+                    <span style="color: #d9534f; font-weight: bold; font-size: 18px;">❌ Faltaram {obras_faltantes} obras para atingir a meta global escolhida.</span></p>
                     <hr style="border-top: 1px solid #ffeeba; margin: 15px 0;">
                     <h4 style="margin-bottom: 10px; color: #856404;">🔍 Resumo do Cenário:</h4>
                     <ul style="font-size: 14px; line-height: 1.6;">
@@ -459,7 +459,7 @@ def app_roteirizador():
             if roteirizar_tudo_meta:
                 st.info("O modo 'Lista Contínua Direta' foi utilizado. Nenhuma equipe teve limite de obras ou dias; os roteiros foram criados para abraçar 100% da planilha fornecida.")
             else:
-                st.info("Abaixo estão os levantadores que não atingiram a quantidade de obras solicitada porque o estoque de notas da sua cidade de atuação esgotou na planilha.")
+                st.info("Abaixo estão os levantadores que não atingiram a quantidade de obras solicitada porque o estoque de notas da sua cidade de atuação esgotou na planilha e num raio de 100km.")
             
             max_v = int(meta_exata_por_equipe) if not roteirizar_tudo_meta else int(max(df_relatorio["Roteirizadas"].max(), 1))
             st.dataframe(
@@ -529,7 +529,7 @@ def app_roteirizador():
         )
 
         if "Tático" in modo_selecionado:
-            st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis, agrupando-as pela melhor rota geográfica.")
+            st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis, agrupando-as pela melhor rota geográfica e acionando o raio de 100km caso falte obras na cidade base.")
             modo_operacao = "1"
         else:
             st.info("💡 **Como funciona a Lista Contínua:** O sistema respeita estritamente a coluna 'LEVANTADOR' da sua planilha. A IA apenas calcula as distâncias e roteiriza 100% da lista de cada técnico, gerando quantos dias forem necessários.")
@@ -892,99 +892,92 @@ def app_roteirizador():
                 dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
                 max_capacity = obras_por_dia * dias_multiplier * limite_periodos
 
-                def assign_load_balanced(df_sub, allowed_bases, is_prio=False):
-                    if df_sub.empty or not allowed_bases: return pd.DataFrame(), df_sub.copy()
-                    df_sub = df_sub.sort_values(by=['LATITUDE', 'LONGITUDE'])
-                    assigned_rows = []
-                    unassigned_rows = []
-                    valid_bases_cache = {}
+                # LÓGICA REESCRITA COM FALLBACK DE 100KM PARA PREENCHIMENTO DE METAS
+                def assign_load_balanced_strict_and_fallback(df_sub_prio, df_sub_comum, allowed_bases):
+                    if df_sub_prio.empty and df_sub_comum.empty: return pd.DataFrame(), pd.DataFrame()
+                    
+                    assigned_tasks = []
+                    unassigned_tasks = []
+                    
+                    df_combinado = pd.concat([df_sub_prio, df_sub_comum], ignore_index=True)
+                    df_combinado = df_combinado.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                    
+                    lista_obras = df_combinado.to_dict('records')
                     
                     # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
-                    for idx, row in df_sub.iterrows():
+                    for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
                         mun_str = str(row.get('MUN_LIMPO', ''))
+                        is_prio = row.get('PRIORIDADE') == 'Sim'
                         
-                        precisa_4x4 = False
-                        if 'TIPO VEICULO' in row and str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4':
-                            precisa_4x4 = True
-                            
-                        if mun_str not in valid_bases_cache:
-                            if tipo_atribuicao == "Por Municípios Atendidos (Lê texto da planilha)":
-                                valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
-                                valid_bases_cache[mun_str] = [b for b in allowed_bases if b['LEVANTADOR'] in valid_names]
-                            else:
-                                valid_bases_cache[mun_str] = allowed_bases
-                                
-                        valid_bases = valid_bases_cache[mun_str]
+                        precisa_4x4 = str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4'
+                        valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
+                        valid_bases = [b for b in allowed_bases if b['LEVANTADOR'] in valid_names]
+                        
                         if precisa_4x4:
                             valid_bases = [b for b in valid_bases if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base = None
                         best_dist = float('inf')
+                        
                         if pd.notna(lat) and pd.notna(lon):
                             for b in valid_bases:
                                 b_name = b['LEVANTADOR']
-                                if base_counts[b_name] < max_capacity:
+                                if base_counts[b_name] + qtd_real <= max_capacity:
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
                                         if d < best_dist:
-                                            best_dist = d; best_base = b_name
+                                            best_dist = d
+                                            best_base = b_name
+                                            
                         if best_base:
                             base_counts[best_base] += qtd_real
                             row['BASE_ATRIBUIDA'] = best_base
-                            assigned_rows.append(row)
+                            assigned_tasks.append(row)
+                        else:
+                            unassigned_tasks.append(row)
+                            
+                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas)
+                    still_unassigned = []
+                    for row in unassigned_tasks:
+                        qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
+                        lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
+                        
+                        precisa_4x4 = str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4'
+                        valid_bases_fallback = allowed_bases
+                        
+                        if precisa_4x4:
+                            valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
+                            
+                        best_base_fb = None
+                        best_dist_fb = 100.0 # TRAVA MAXIMA DE 100KM
+                        
+                        if pd.notna(lat) and pd.notna(lon):
+                            for b in valid_bases_fallback:
+                                b_name = b['LEVANTADOR']
+                                if base_counts[b_name] + qtd_real <= max_capacity:
+                                    b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
+                                    if pd.notna(b_lat) and pd.notna(b_lon):
+                                        d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
+                                        if d <= best_dist_fb:
+                                            best_dist_fb = d
+                                            best_base_fb = b_name
+                                            
+                        if best_base_fb:
+                            base_counts[best_base_fb] += qtd_real
+                            row['BASE_ATRIBUIDA'] = best_base_fb
+                            assigned_tasks.append(row)
                         else:
                             row['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
-                            unassigned_rows.append(row)
-                    
-                    # PASSO 2: REABASTECIMENTO POR PROXIMIDADE (ATÉ 100KM) PARA OBRAS QUE SOBRARAM
-                    if unassigned_rows:
-                        df_unassigned = pd.DataFrame(unassigned_rows)
-                        still_unassigned = []
-                        for idx, row in df_unassigned.iterrows():
-                            qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
-                            lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-                            
-                            best_base_fallback = None
-                            best_dist_fallback = 100.0  # Limite máximo de 100km
-                            
-                            if pd.notna(lat) and pd.notna(lon):
-                                for b in allowed_bases:
-                                    b_name = b['LEVANTADOR']
-                                    if base_counts[b_name] < max_capacity: # Se o técnico ainda tiver espaço na cota
-                                        b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
-                                        if pd.notna(b_lat) and pd.notna(b_lon):
-                                            d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                            if d < best_dist_fallback:
-                                                best_dist_fallback = d
-                                                best_base_fallback = b_name
-                            
-                            if best_base_fallback:
-                                base_counts[best_base_fallback] += qtd_real
-                                row['BASE_ATRIBUIDA'] = best_base_fallback
-                                assigned_rows.append(row)
-                            else:
-                                still_unassigned.append(row)
-                                
-                        return pd.DataFrame(assigned_rows), pd.DataFrame(still_unassigned)
+                            still_unassigned.append(row)
 
-                    return pd.DataFrame(assigned_rows), pd.DataFrame(unassigned_rows)
+                    return pd.DataFrame(assigned_tasks), pd.DataFrame(still_unassigned)
 
-                df_prio_alocadas, df_prio_restante = assign_load_balanced(df_prio_e_agregadas, bases_principais_records, is_prio=True)
-                df_comum_alocadas_princ, df_comum_restante = assign_load_balanced(df_comum_puro, bases_principais_records, is_prio=False)
+                df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
-                if not df_comum_restante.empty and bases_temporarias_records:
-                    df_comum_alocadas_temp, df_comum_restante_final = assign_load_balanced(df_comum_restante, bases_temporarias_records, is_prio=False)
-                else:
-                    df_comum_alocadas_temp = pd.DataFrame()
-                    df_comum_restante_final = df_comum_restante
-                    
-                df_tasks = pd.concat([df_prio_alocadas, df_prio_restante, df_comum_alocadas_princ, df_comum_alocadas_temp, df_comum_restante_final])
-                df_tasks = df_tasks.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
-                df_unallocated = df_tasks[df_tasks['BASE_ATRIBUIDA'] == "NÃO ALOCADO"]
-                df_tasks_alocadas = df_tasks[df_tasks['BASE_ATRIBUIDA'] != "NÃO ALOCADO"].copy()
+                df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
 
                 tot_unallocated = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
                 st.session_state.tot_obras_nao_alocadas = tot_unallocated
@@ -1598,7 +1591,7 @@ def app_roteirizador():
         
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
-        total_steps = len(bases_unicas) * 2 + 3
+        total_steps = len(bases_unicas) * 2 + 4
         current_step = 0
         
         start_time = time.time()
@@ -1672,7 +1665,7 @@ def app_roteirizador():
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
                 # LISTA DE EXPURGO DE DADOS INTERNOS PARA EXCEL E KML
-                cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
+                cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
                 cols_to_hide_popup = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'BASE_ATRIBUIDA', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 cols_to_drop_kml_df = ['_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 
@@ -1713,7 +1706,7 @@ def app_roteirizador():
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
-                kml_geral_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_geral_str, flags=re.IGNORECASE)
                 kml_geral_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
@@ -1723,7 +1716,7 @@ def app_roteirizador():
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
                     update_ui(f"Formatando arquivo individual para: {base_nome}...")
-                    df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns], errors='ignore')
+                    df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
                             df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
@@ -1748,7 +1741,7 @@ def app_roteirizador():
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
-                    kml_lev_str = re.sub(r'<tr>\s*<td[^>]*>Horário:</td>\s*<td[^>]*>.*?</td>\s*</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_lev_str, flags=re.IGNORECASE)
                     kml_lev_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
