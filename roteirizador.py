@@ -72,11 +72,12 @@ def limpar_roteirizador():
     st.session_state.colunas_originais = []
     if 'bytes_zip_xl' in st.session_state: del st.session_state['bytes_zip_xl']
     if 'bytes_zip_kml' in st.session_state: del st.session_state['bytes_zip_kml']
+    if 'bytes_zip_gpx' in st.session_state: del st.session_state['bytes_zip_gpx']
     ler_planilha_cached.clear()
     tentar_rerun()
 
 # ==========================================
-# FUNÇÃO AUXILIAR DE FORMATAÇÃO
+# FUNÇÕES AUXILIARES E NOVAS FERRAMENTAS
 # ==========================================
 def formatar_valor_coluna(col_name, val):
     if pd.isna(val) or val == '' or val == '-':
@@ -91,6 +92,96 @@ def formatar_valor_coluna(col_name, val):
             return formata_campo_html(val)
     except ValueError:
         return formata_campo_html(val)
+
+def gerar_gpx_simples(df_kml, nome_rota):
+    gpx = ['<?xml version="1.0" encoding="UTF-8"?>']
+    gpx.append('<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">')
+    gpx.append(f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>')
+    
+    # Waypoints (Obras)
+    for idx, row in df_kml.iterrows():
+        if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        lat = row.get('LATITUDE')
+        lon = row.get('LONGITUDE')
+        nome = str(row.get('PROTOCOLO', 'Ponto'))
+        if pd.notna(lat) and pd.notna(lon):
+            gpx.append(f'  <wpt lat="{lat}" lon="{lon}">')
+            gpx.append(f'    <name>{html.escape(nome)}</name>')
+            gpx.append(f'  </wpt>')
+            
+    # Tracks (Traçado da Rota)
+    if 'ROTA_GEOMETRIA' in df_kml.columns:
+        gpx.append('  <trk>')
+        gpx.append(f'    <name>Traçado - {html.escape(str(nome_rota))}</name>')
+        gpx.append('    <trkseg>')
+        for idx, row in df_kml.iterrows():
+            geom = row.get('ROTA_GEOMETRIA')
+            if isinstance(geom, list):
+                for lon, lat in geom:
+                    gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
+        gpx.append('    </trkseg>')
+        gpx.append('  </trk>')
+        
+    gpx.append('</gpx>')
+    return "\n".join(gpx)
+
+def get_convex_hull(points):
+    points = list(set(points))
+    if len(points) <= 2:
+        return points
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    points.sort()
+    lower = []
+    for p in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper
+    if hull and hull[0] != hull[-1]:
+        hull.append(hull[0])
+    return hull
+
+def hex_to_kml_color(hex_str, alpha="44"):
+    hex_str = hex_str.lstrip('#')
+    r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+    return f"{alpha}{b}{g}{r}"
+
+def inject_kml_polygon(kml_str, df_pontos, nome_poligono, color_hex_poly, color_hex_line):
+    coords = df_pontos[['LONGITUDE', 'LATITUDE']].dropna().values.tolist()
+    coords = [tuple(x) for x in coords]
+    if len(coords) < 3:
+        return kml_str 
+        
+    hull = get_convex_hull(coords)
+    if not hull: return kml_str
+    
+    coord_str = " ".join([f"{lon},{lat},0" for lon, lat in hull])
+    
+    polygon_kml = f"""
+    <Placemark>
+      <name>Cerca Virtual - {html.escape(str(nome_poligono))}</name>
+      <Style>
+        <LineStyle><color>{color_hex_line}</color><width>3</width></LineStyle>
+        <PolyStyle><color>{color_hex_poly}</color></PolyStyle>
+      </Style>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              {coord_str}
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    """
+    return kml_str.replace("</Document>", f"{polygon_kml}\n</Document>")
 
 # ==========================================
 # 3. LÓGICA DO ROTEIRIZADOR
@@ -184,11 +275,13 @@ def app_roteirizador():
         data_atual_formatada = datetime.now().strftime("%d.%m.%Y")
         bytes_zip_xl = st.session_state.get('bytes_zip_xl', b"")
         bytes_zip_kml = st.session_state.get('bytes_zip_kml', b"")
+        bytes_zip_gpx = st.session_state.get('bytes_zip_gpx', b"")
         
         botoes_desabilitados = not is_done or st.session_state.df_routed.empty
         
         st.download_button("🌐 1. Baixar Planilhas (ZIP)", data=bytes_zip_xl if bytes_zip_xl else b"vazio", file_name=f"Planilhas_Equipes - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         st.download_button("🗺️ 2. Baixar Mapas (KML)", data=bytes_zip_kml if bytes_zip_kml else b"vazio", file_name=f"Mapas_Rotas - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
+        st.download_button("🛰️ 3. Baixar GPS Offline (GPX)", data=bytes_zip_gpx if bytes_zip_gpx else b"vazio", file_name=f"GPS_Offline_GPX - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
             limpar_roteirizador()
@@ -596,9 +689,10 @@ def app_roteirizador():
                 st.markdown("### 📁 2. Upload de Demandas (Obras)")
                 with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
                 with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
-                with st.container(border=True): status_file = st.file_uploader("3️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
+                with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
+                with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
                 with st.container(border=True):
-                    rede_files = st.file_uploader("4️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
+                    rede_files = st.file_uploader("5️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
                     vao_medio_postes = st.slider("📏 Vão entre Postes (Metros)", min_value=20, max_value=100, value=60, step=1, help="Distância padrão entre postes para calcular os postes previstos.")
                     st.caption("⚡ A IA varrerá as redes e transformadores nestes mapas e guiará o técnico no KML final ignorando outros componentes.")
 
@@ -662,7 +756,7 @@ def app_roteirizador():
                 
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
-                if not task_files and not saneamento_files: 
+                if not task_files and not saneamento_files and not generica_files: 
                     st.info("Aguardando upload de obras para iniciar o roteamento.")
                     return
 
@@ -696,13 +790,35 @@ def app_roteirizador():
                                         break
                             dfs.append(df_temp)
 
+                    if generica_files:
+                        for f in generica_files:
+                            if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
+                            else: df_temp = ler_planilha_cached(f.getvalue())
+                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
+                            df_temp.columns = normalize_cols(df_temp.columns)
+                            df_temp['_ORIGEM_BASE'] = 'GENERICA'
+                            if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
+                                st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
+                                continue
+                            if 'PROTOCOLO' not in df_temp.columns:
+                                id_cols = ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS', 'ID', 'CODIGO', 'CHAMADO', 'CHAVE']
+                                found_id = False
+                                for c in id_cols:
+                                    if c in df_temp.columns:
+                                        df_temp['PROTOCOLO'] = df_temp[c]
+                                        found_id = True
+                                        break
+                                if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
+                            dfs.append(df_temp)
+                            
                     if not dfs: return
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
                     total_obras_inicial = len(df_tasks)
                     cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
                     cols_orig_san = st.session_state.get('colunas_originais_san', [])
-                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san))
+                    cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
+                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
                     
                     for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                         if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
@@ -723,6 +839,7 @@ def app_roteirizador():
             st.markdown("---")
             has_levantamento = 'LEVANTAMENTO' in df_tasks['_ORIGEM_BASE'].values
             has_saneamento = 'SANEAMENTO' in df_tasks['_ORIGEM_BASE'].values
+            has_generica = 'GENERICA' in df_tasks['_ORIGEM_BASE'].values
             df_list = []
             
             if has_levantamento:
@@ -770,6 +887,30 @@ def app_roteirizador():
                     df_san = df_tasks[df_tasks['_ORIGEM_BASE'] == 'SANEAMENTO'].copy()
                     df_san['PRIORIDADE'] = 'Não'
                     df_list.append(df_san)
+
+            if has_generica:
+                with st.expander("🛠️ 4C. Filtros Iniciais - Base GENÉRICA", expanded=True):
+                    df_gen = df_tasks[df_tasks['_ORIGEM_BASE'] == 'GENERICA'].copy()
+                    st.info("💡 A base Genérica é flexível. O sistema tenta adivinhar a prioridade, mas você pode alterar as regras abaixo.")
+                    col_c1, col_c2 = st.columns(2)
+                    colunas_validas = [c for c in df_gen.columns if not c.startswith('_')]
+                    idx_default = 0
+                    if 'TIPO NOTA' in colunas_validas: idx_default = colunas_validas.index('TIPO NOTA') + 1
+                    coluna_prio = col_c1.selectbox("📌 1. Qual coluna define a prioridade?", ["Nenhuma"] + colunas_validas, index=idx_default, key='prio_col_gen')
+                    
+                    if coluna_prio != "Nenhuma":
+                        df_gen[coluna_prio] = df_gen[coluna_prio].fillna('SEM TIPO').astype(str).str.strip()
+                        valores_unicos = [x for x in df_gen[coluna_prio].unique() if str(x).lower() != 'nan']
+                        default_prio = []
+                        if coluna_prio == 'TIPO NOTA': default_prio = [x for x in valores_unicos if x in TIPOS_PRIORITARIOS]
+                        valores_prio = col_c2.multiselect(f"🚨 2. Definir Obras PRIORITÁRIAS em '{coluna_prio}':", valores_unicos, default=default_prio, key='prio_val_gen')
+                        if valores_prio: df_gen['PRIORIDADE'] = df_gen[coluna_prio].apply(lambda x: 'Sim' if str(x).strip() in valores_prio else 'Não')
+                        else: df_gen['PRIORIDADE'] = 'Não'
+                        st.session_state.col_prioridade_gen = coluna_prio
+                    else:
+                        df_gen['PRIORIDADE'] = 'Não'
+                        st.session_state.col_prioridade_gen = "Nenhuma"
+                    df_list.append(df_gen)
 
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
@@ -942,7 +1083,8 @@ def app_roteirizador():
                     return
                 bases_records = todas_bases_records 
 
-            if has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
+            if has_generica: col_prioridade = st.session_state.get('col_prioridade_gen', "Nenhuma")
+            elif has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
             else: col_prioridade = "Nenhuma"
 
         else:
@@ -1548,12 +1690,14 @@ def app_roteirizador():
         
         buf_zip_xl = io.BytesIO()
         buf_zip_kml = io.BytesIO()
+        buf_zip_gpx = io.BytesIO()
         
         tipo_periodo_atual = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Dia')
         
         try:
             with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, \
-                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml:
+                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml, \
+                 zipfile.ZipFile(buf_zip_gpx, 'w', zipfile.ZIP_DEFLATED) as zip_gpx:
                  
                 def update_ui(msg):
                     nonlocal current_step
@@ -1586,12 +1730,10 @@ def app_roteirizador():
                     base_ref = next((b for b in st.session_state.bases_records if b['LEVANTADOR'] == base), None)
                     tipo_eq = base_ref.get('TIPO_EQUIPE', 'PRINCIPAL') if base_ref else 'DESCONHECIDO'
                     
-                    # LOGICA EXATA DO RELATORIO PARA AS CONTAGENS:
                     qtd_comum = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Não'].iterrows())
                     qtd_prio = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Sim'].iterrows())
                     qtd_super = len(df_base_real[df_base_real['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in df_base_real.columns else 0
                     
-                    # LOGICA DE POSTES MENOR (MIN)
                     p_bt = pd.to_numeric(df_base_real['POSTE PREVISTO BT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO BT' in df_base_real.columns else pd.Series(dtype=float)
                     p_mt = pd.to_numeric(df_base_real['POSTE PREVISTO MT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO MT' in df_base_real.columns else pd.Series(dtype=float)
                     if not p_bt.empty or not p_mt.empty:
@@ -1617,13 +1759,11 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
-                # LISTA DE EXPURGO DE DADOS INTERNOS PARA EXCEL E KML
                 cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE']
                 cols_to_hide_popup = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'BASE_ATRIBUIDA', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 cols_to_drop_kml_df = ['_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS']
                 
-                # EXCEL DEMANDA GERAL
-                update_ui("Gerando Arquivo Excel de Demanda Geral...")
+                update_ui("Gerando Arquivo Excel de Demanda Geral e Pacote GPX Offline...")
                 df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns and c != 'BASE_ATRIBUIDA'], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_demanda_geral.columns:
@@ -1634,7 +1774,6 @@ def app_roteirizador():
                         
                 cols_list_geral = df_demanda_geral.columns.tolist()
                 
-                # Forçar a coluna BASE_ATRIBUIDA (Levantador Responsável) para a primeira posição (Index 0)
                 if 'BASE_ATRIBUIDA' in cols_list_geral:
                     cols_list_geral.remove('BASE_ATRIBUIDA')
                     cols_list_geral.insert(0, 'BASE_ATRIBUIDA')
@@ -1647,12 +1786,10 @@ def app_roteirizador():
                 df_demanda_geral = df_demanda_geral[cols_list_geral]
                 df_demanda_geral = df_demanda_geral.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
                 
-                # Criamos um "colunas originais temporário" com o Levantador Responsavel em primeiro, pra função respeitar a ordem
                 cols_originais_hack = ['LEVANTADOR_RESPONSAVEL'] + [c for c in st.session_state.colunas_originais if c != 'LEVANTADOR_RESPONSAVEL']
                 zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, cols_originais_hack))
                 
-                # KML GERAL
-                update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
+                update_ui("Gerando Mapa KML Consolidado de todas as rotas com Cercas Virtuais...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_routed_kml.columns:
@@ -1660,20 +1797,33 @@ def app_roteirizador():
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                # MANDAMOS A LISTA DE BASES PARA NÃO TRAVAR O MOTOR EXTERNO, E DEPOIS CORTAMOS COM REGEX
+                # ENVIA A BASE NORMALMENTE PARA NAO TRAVAR AS LINHAS DE ROTA
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
-                # LIMPEZA COM REGEX SUPER RAPIDA PRA TIRAR O HORARIO E A CASINHA BASE
-                kml_geral_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
-                kml_geral_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                # ADICIONANDO CERCAS VIRTUAIS (POLÍGONOS) NO KML GERAL
+                cores_poly = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#ff9800', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548']
+                for i, b_nome in enumerate(bases_unicas):
+                    df_poly = df_routed_kml[(df_routed_kml['BASE_ATRIBUIDA'] == b_nome) & (~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
+                    cor_hex = cores_poly[i % len(cores_poly)]
+                    cor_line = hex_to_kml_color(cor_hex, "ff")
+                    cor_poly_fill = hex_to_kml_color(cor_hex, "33") # 33 é opacidade (levemente transparente)
+                    kml_geral_str = inject_kml_polygon(kml_geral_str, df_poly, b_nome, cor_poly_fill, cor_line)
+                
+                # LIMPEZA COM REGEX: APAGA HORÁRIO E A CASINHA DA BASE
+                kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!</tr>).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
-                for base_nome in bases_unicas:
+                # GERAR GPX GERAL
+                gpx_geral_str = gerar_gpx_simples(df_routed_kml, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}")
+                zip_gpx.writestr(f"GPS_ROTA_TOTAL - {data_atual_formatada}.gpx", gpx_geral_str.encode('utf-8'))
+                
+                for i, base_nome in enumerate(bases_unicas):
                     nome_seguro = re.sub(r'[^A-Za-z0-9_ ]', '', str(base_nome)).replace(" ", "_").upper()
                     nome_seguro = re.sub(r'_+', '_', nome_seguro)
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
-                    update_ui(f"Formatando arquivo individual para: {base_nome}...")
+                    update_ui(f"Formatando e desenhando Cerca Virtual para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
@@ -1691,7 +1841,6 @@ def app_roteirizador():
 
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, st.session_state.colunas_originais))
                     
-                    update_ui(f"Traçando Mapa KML individual para: {base_nome}...")
                     df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_kml.columns:
@@ -1699,13 +1848,25 @@ def app_roteirizador():
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
+                    # ADICIONANDO CERCA VIRTUAL INDIVIDUAL
+                    cor_hex = cores_poly[i % len(cores_poly)]
+                    cor_line = hex_to_kml_color(cor_hex, "ff")
+                    cor_poly_fill = hex_to_kml_color(cor_hex, "33")
+                    df_poly_ind = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                    kml_lev_str = inject_kml_polygon(kml_lev_str, df_poly_ind, base_nome, cor_poly_fill, cor_line)
+                    
                     # LIMPEZA COM REGEX NO KML INDIVIDUAL (HORÁRIO E CASINHA BASE)
-                    kml_lev_str = re.sub(r'<tr[^>]*>\s*<td[^>]*>Horário:</td>.*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
-                    kml_lev_str = re.sub(r'<Placemark>\s*<name>BASE:.*?</Point>\s*</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!</tr>).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
+                    
+                    # GERAR GPX INDIVIDUAL
+                    gpx_lev_str = gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}")
+                    zip_gpx.writestr(f"GPS_ROTA_{nome_seguro} - {data_atual_formatada}.gpx", gpx_lev_str.encode('utf-8'))
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
             st.session_state.bytes_zip_kml = buf_zip_kml.getvalue()
+            st.session_state.bytes_zip_gpx = buf_zip_gpx.getvalue()
             
             status_text.success("✅ Pacotes gerados com sucesso! (Rotas extraídas integralmente para KML).")
             time.sleep(1.5)
