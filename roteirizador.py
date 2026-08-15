@@ -132,71 +132,6 @@ def gerar_gpx_simples(df_kml, nome_rota):
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
-def get_convex_hull(points):
-    points = list(set(points))
-    if len(points) <= 2:
-        return points
-    def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-    points.sort()
-    lower = []
-    for p in points:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
-            lower.pop()
-        lower.append(p)
-    upper = []
-    for p in reversed(points):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
-            upper.pop()
-        upper.append(p)
-    hull = lower[:-1] + upper
-    if hull and hull[0] != hull[-1]:
-        hull.append(hull[0])
-    return hull
-
-def hex_to_kml_color(hex_str, alpha="44"):
-    hex_str = hex_str.lstrip('#')
-    r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
-    return f"{alpha}{b}{g}{r}"
-
-def hex_to_kml_color_contrast(hex_str, alpha="ff"):
-    hex_str = hex_str.lstrip('#')
-    r = 255 - int(hex_str[0:2], 16)
-    g = 255 - int(hex_str[2:4], 16)
-    b = 255 - int(hex_str[4:6], 16)
-    return f"{alpha}{b:02x}{g:02x}{r:02x}"
-
-def inject_kml_polygon(kml_str, df_pontos, nome_poligono, color_hex_poly, color_hex_line):
-    coords = df_pontos[['LONGITUDE', 'LATITUDE']].dropna().values.tolist()
-    coords = [tuple(x) for x in coords]
-    if len(coords) < 3:
-        return kml_str 
-        
-    hull = get_convex_hull(coords)
-    if not hull: return kml_str
-    
-    coord_str = " ".join([f"{lon},{lat},0" for lon, lat in hull])
-    
-    polygon_kml = f"""
-    <Placemark>
-      <name>Cerca Virtual - {html.escape(str(nome_poligono))}</name>
-      <Style>
-        <LineStyle><color>{color_hex_line}</color><width>5</width></LineStyle>
-        <PolyStyle><color>{color_hex_poly}</color></PolyStyle>
-      </Style>
-      <Polygon>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>
-              {coord_str}
-            </coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-      </Polygon>
-    </Placemark>
-    """
-    return kml_str.replace("</Document>", f"{polygon_kml}\n</Document>")
-
 # ==========================================
 # 3. LÓGICA DO ROTEIRIZADOR
 # ==========================================
@@ -741,7 +676,7 @@ def app_roteirizador():
                                 if 'LATITUDE' in df_bases_temp.columns and 'LONGITUDE' in df_bases_temp.columns:
                                     df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
                                     df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                                elif 'RESIDENCIA' in df_bases.columns or 'MUNICIPIO' in df_bases_temp.columns:
+                                elif 'RESIDENCIA' in df_bases_temp.columns or 'MUNICIPIO' in df_bases_temp.columns:
                                     col_ref_temp = 'RESIDENCIA' if 'RESIDENCIA' in df_bases_temp.columns else 'MUNICIPIO'
                                     muns_unicos_temp = df_bases_temp[col_ref_temp].dropna().unique()
                                     mapa_coords_temp = {}
@@ -1332,6 +1267,8 @@ def app_roteirizador():
                 texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
                 status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
                 
+                time.sleep(0.05)
+                
                 with timer_placeholder.container():
                     if b_idx > 0:
                         avg = tempo_processamento / b_idx
@@ -1512,12 +1449,7 @@ def app_roteirizador():
                         if prio_acumulada > 3: limite_diario_atual += 10 
                         
                         if obras_no_periodo_macro >= limite_diario_atual:
-                            if not is_lista_continua:
-                                # Na atribuição global, verifica se o próximo ponto não está isolado (+100km)
-                                if viagem_km_reta > 100.0:
-                                    virar_dia = True
-                            else:
-                                virar_dia = True
+                            virar_dia = True
                                 
                         if virar_dia:
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1601,12 +1533,11 @@ def app_roteirizador():
                             geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
                             geoms_and_durs.append((geom, dur_sec))
                     else:
-                        # CARREGAMENTO PROGRESSIVO DE RUAS PARA EVITAR TIMEOUT OOM
                         total_r = len(rotas_flat)
                         for i, item in enumerate(rotas_flat):
                             if i % 10 == 0:
-                                status_text.info(f"🛣️ Mapeando ruas e contornos para **{b_name}**... (Curva {i}/{total_r})")
-                            time.sleep(0.3)
+                                status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{total_r})")
+                            time.sleep(0.5)
                             try:
                                 geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
                             except Exception:
@@ -1698,7 +1629,7 @@ def app_roteirizador():
 
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
-        st.markdown("A inteligência já finalizou as rotas. Compilando os dados e construindo os polígonos no mapa para o download...")
+        st.markdown("A inteligência já finalizou as rotas. Compilando os dados para o download...")
         
         if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
             
@@ -1817,7 +1748,7 @@ def app_roteirizador():
                 cols_originais_hack = ['LEVANTADOR_RESPONSAVEL'] + [c for c in st.session_state.colunas_originais if c != 'LEVANTADOR_RESPONSAVEL']
                 zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, cols_originais_hack))
                 
-                update_ui("Gerando Mapa KML Consolidado de todas as rotas com Cercas Virtuais...")
+                update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_routed_kml.columns:
@@ -1827,16 +1758,8 @@ def app_roteirizador():
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
-                cores_poly = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#ff9800', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548']
-                for i, b_nome in enumerate(bases_unicas):
-                    df_poly = df_routed_kml[(df_routed_kml['BASE_ATRIBUIDA'] == b_nome) & (~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
-                    cor_hex = cores_poly[i % len(cores_poly)]
-                    cor_line = hex_to_kml_color_contrast(cor_hex, "ff") 
-                    cor_poly_fill = hex_to_kml_color(cor_hex, "33") 
-                    kml_geral_str = inject_kml_polygon(kml_geral_str, df_poly, b_nome, cor_poly_fill, cor_line)
-                
-                kml_geral_str = re.sub(r'<tr[^>]*>[\s\S]*?Horário:[\s\S]*?</tr>', '', kml_geral_str, flags=re.IGNORECASE)
-                kml_geral_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                kml_geral_str = re.sub(r'<Placemark>(?:(?!<Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 gpx_geral_str = gerar_gpx_simples(df_routed_kml, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}")
@@ -1847,7 +1770,7 @@ def app_roteirizador():
                     nome_seguro = re.sub(r'_+', '_', nome_seguro)
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
-                    update_ui(f"Formatando e desenhando Cerca Virtual para: {base_nome}...")
+                    update_ui(f"Formatando e desenhando rotas para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
@@ -1872,14 +1795,8 @@ def app_roteirizador():
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
-                    cor_hex = cores_poly[i % len(cores_poly)]
-                    cor_line = hex_to_kml_color_contrast(cor_hex, "ff")
-                    cor_poly_fill = hex_to_kml_color(cor_hex, "33")
-                    df_poly_ind = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-                    kml_lev_str = inject_kml_polygon(kml_lev_str, df_poly_ind, base_nome, cor_poly_fill, cor_line)
-                    
-                    kml_lev_str = re.sub(r'<tr[^>]*>[\s\S]*?Horário:[\s\S]*?</tr>', '', kml_lev_str, flags=re.IGNORECASE)
-                    kml_lev_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_lev_str = re.sub(r'<Placemark>(?:(?!<Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
                     gpx_lev_str = gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}")
