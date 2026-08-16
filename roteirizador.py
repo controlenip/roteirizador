@@ -1265,14 +1265,46 @@ def app_roteirizador():
                     count += 1
             return curr
 
+        # SISTEMA DE CRONÔMETRO DUPLO EM TEMPO REAL
+        global_start_time = time.time()
+        
+        def update_running_timer(b_index, inner_idx, inner_total):
+            elapsed = time.time() - global_start_time
+            fraction = (b_index + (inner_idx / max(1, inner_total))) / max(1, total_equipes)
+            
+            if fraction > 0.02: 
+                est_total = elapsed / fraction
+                rem = max(0, est_total - elapsed)
+                r_m, r_s = divmod(int(rem), 60)
+                r_str = f"{r_m:02d}m {r_s:02d}s"
+            else:
+                r_str = "Calculando..."
+                
+            e_m, e_s = divmod(int(elapsed), 60)
+            e_str = f"{e_m:02d}m {e_s:02d}s"
+            
+            html_timer = f"""
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
+                    <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_str}</div>
+                </div>
+                <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
+                    <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
+                </div>
+            </div>
+            """
+            timer_placeholder.markdown(html_timer, unsafe_allow_html=True)
+
         try:
-            tempo_processamento = 0.0
             routed_data_final = []
             df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
             unvisited = state['unvisited']
             
             for b_idx, b_name in enumerate(b_names):
-                start_iter = time.time()
+                update_running_timer(b_idx, 0, 1)
+                
                 progresso = b_idx / total_equipes if total_equipes > 0 else 1.0
                 progress_bar.progress(progresso)
                 
@@ -1280,31 +1312,6 @@ def app_roteirizador():
                 status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
                 
                 time.sleep(0.05)
-                
-                with timer_placeholder.container():
-                    if b_idx > 0:
-                        avg = tempo_processamento / b_idx
-                        restantes = total_equipes - b_idx
-                        est_rem = avg * restantes
-                        m, s = divmod(int(est_rem), 60)
-                        h, m = divmod(m, 60)
-                        time_str = f"{h:02d}h {m:02d}s" if h > 0 else f"{m:02d}m {s:02d}s"
-                        
-                        st.markdown("### ⏱️ Tempo Restante Estimado")
-                        st.markdown(f"""
-                        <div style="padding: 0.75rem 1rem; border-radius: 0.5rem; background-color: rgba(85, 185, 41, 0.15); color: #2e7d32; border: 1px solid rgba(85, 185, 41, 0.3); display: flex; align-items: center;">
-                            <span style="font-size:1.5rem; margin-right:12px;">⏳</span> 
-                            <strong style="font-size:1.2rem;">{time_str}</strong>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown("### ⏱️ Tempo Restante Estimado")
-                        st.markdown(f"""
-                        <div style="padding: 0.75rem 1rem; border-radius: 0.5rem; background-color: rgba(13, 37, 108, 0.12); color: #0D256C; border: 1px solid rgba(13, 37, 108, 0.25); display: flex; align-items: center;">
-                            <span style="font-size:1.2rem; margin-right:10px;">🔄</span> 
-                            <span>Calculando estimativa...</span>
-                        </div>
-                        """, unsafe_allow_html=True)
 
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
                 if pd.isna(base_ref.get('LATITUDE')): continue
@@ -1404,6 +1411,7 @@ def app_roteirizador():
                     semana_atual = 1
                     dia_da_semana = 1
                     obras_no_periodo_macro = 0
+                    mun_anterior = None
                     
                     def iniciar_dia(dia_abs):
                         data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
@@ -1417,6 +1425,7 @@ def app_roteirizador():
                     estado = iniciar_dia(dia_absoluto)
                     
                     for obra in ordered_tasks:
+                        mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
@@ -1461,11 +1470,10 @@ def app_roteirizador():
                         if prio_acumulada > 3: limite_diario_atual += 10 
                         
                         if obras_no_periodo_macro >= limite_diario_atual:
-                            if not is_lista_continua:
-                                if viagem_km_reta > 100.0:
-                                    virar_dia = True
-                            else:
-                                virar_dia = True
+                            virar_dia = True
+                        elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
+                            if viagem_km_reta > 100.0:
+                                virar_dia = True 
                                 
                         if virar_dia:
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1525,6 +1533,7 @@ def app_roteirizador():
                         estado['prio_hoje'] = prio_acumulada 
                         estado['km_hoje'] += viagem_km
                         obras_no_periodo_macro += qtd_real
+                        mun_anterior = mun_atual 
 
                     if estado['obras_hoje'] > 0:
                         dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1543,7 +1552,10 @@ def app_roteirizador():
 
                     geoms_and_durs = []
                     if not cfg.get('tracado_real', False):
-                        for item in rotas_flat:
+                        total_r = len(rotas_flat)
+                        for i, item in enumerate(rotas_flat):
+                            if i % 100 == 0: 
+                                update_running_timer(b_idx, i, total_r)
                             dist_m = item['dist_km'] * 1000
                             dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
                             geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
@@ -1551,8 +1563,11 @@ def app_roteirizador():
                     else:
                         total_r = len(rotas_flat)
                         for i, item in enumerate(rotas_flat):
-                            if i % 10 == 0:
+                            if i % 5 == 0:
                                 status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{total_r})")
+                            
+                            # CRONÔMETRO ATUALIZADO A CADA TRECHO DA RUA
+                            update_running_timer(b_idx, i, total_r)
                             time.sleep(0.5)
                             try:
                                 geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
@@ -1620,7 +1635,6 @@ def app_roteirizador():
                             routed_data_final.append(obra)
                         ordem_global += 1
 
-                tempo_processamento += (time.time() - start_iter)
                 gc.collect() 
                 
             status_text.success("✅ Matrizes Resolvidas! Preparando empacotamento...")
@@ -1683,19 +1697,24 @@ def app_roteirizador():
                     
                     elapsed = time.time() - start_time
                     avg_time = elapsed / current_step if current_step > 0 else 0
-                    rem_time = avg_time * (total_steps - current_step)
+                    rem_time = max(0, avg_time * (total_steps - current_step))
                     
-                    m, s = divmod(int(rem_time), 60)
-                    time_str = f"{m:02d}m {s:02d}s"
+                    e_m, e_s = divmod(int(elapsed), 60)
+                    r_m, r_s = divmod(int(rem_time), 60)
                     
-                    with timer_placeholder.container():
-                        st.markdown("### ⏱️ Tempo Restante Estimado")
-                        st.markdown(f'''
-                        <div style="padding: 0.75rem 1rem; border-radius: 0.5rem; background-color: rgba(85, 185, 41, 0.15); color: #2e7d32; border: 1px solid rgba(85, 185, 41, 0.3); display: flex; align-items: center;">
-                            <span style="font-size:1.5rem; margin-right:12px;">🗂️</span> 
-                            <strong style="font-size:1.2rem;">{time_str}</strong>
+                    html_timer = f"""
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
+                            <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
                         </div>
-                        ''', unsafe_allow_html=True)
+                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🗂️ Empacotando (Restante)</div>
+                            <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_m:02d}m {r_s:02d}s</div>
+                        </div>
+                    </div>
+                    """
+                    timer_placeholder.markdown(html_timer, unsafe_allow_html=True)
 
                 update_ui("Gerando Painel de Resumo Operacional...")
                 resumo_levantadores = []
