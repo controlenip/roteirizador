@@ -114,7 +114,6 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
-    
     middle_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end]
     
     final_cols = []
@@ -1026,7 +1025,7 @@ def app_roteirizador():
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                        if d <= 100.0:  # TRAVA MAXIMA DE 100KM EM LINHA RETA
+                                        if d <= 100.0: 
                                             best_base_fb = b_name
                                             break
                                             
@@ -1220,16 +1219,6 @@ def app_roteirizador():
                 }
                 st.session_state.vrp_status = "RUNNING"
                 tentar_rerun()
-
-    def fetch_geom_wrapper(item):
-        time.sleep(0.8) 
-        try:
-            geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-            return geom, dur_sec
-        except Exception:
-            coords = np.array([[item['lat_ant'], item['lon_ant']], [item['lat_atual'], item['lon_atual']]])
-            dist_m = calcular_matriz_distancias_numpy(coords)[0][1]
-            return [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]], (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
 
     if status_exec in ["RUNNING"]:
         state = st.session_state.vrp_state
@@ -1467,10 +1456,8 @@ def app_roteirizador():
                     virar_dia = False
                     limite_diario_atual = cfg['obras_por_dia']
                     
-                    # REGRA ABSOLUTA DE CORTE: Se a meta é 6, a 7ª vira o dia independente da cidade
                     if estado['obras_hoje'] > 0 and (estado['obras_hoje'] + qtd_real > limite_diario_atual):
                         virar_dia = True
-                    # REGRA DE FALLBACK (100km): Se mudou de município antes de bater a cota, avalia a distância
                     elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
                         if viagem_km_reta > 100.0:
                             virar_dia = True 
@@ -1793,7 +1780,7 @@ def app_roteirizador():
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                kml_geral_str = gerar_kml_agrupado(df_routed_kml, [], f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
@@ -1822,7 +1809,7 @@ def app_roteirizador():
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, [], f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
