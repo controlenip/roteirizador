@@ -71,6 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
+    # Resetando as variáveis de tempo para o relógio
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -113,6 +114,7 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
+    
     middle_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end]
     
     final_cols = []
@@ -966,6 +968,7 @@ def app_roteirizador():
                     
                     lista_obras = df_combinado.to_dict('records')
                     
+                    # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -1000,6 +1003,7 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
+                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -1012,6 +1016,7 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
+                        
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1021,7 +1026,7 @@ def app_roteirizador():
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                        if d <= 100.0: 
+                                        if d <= 100.0:  # TRAVA MAXIMA DE 100KM EM LINHA RETA
                                             best_base_fb = b_name
                                             break
                                             
@@ -1291,7 +1296,6 @@ def app_roteirizador():
             texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
             status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
             
-            # STATE MACHINE - IMPEDE O TIMEOUT DA APLICAÇÃO AO PARAR O PROCESSAMENTO E "RESPIRAR"
             if 'current_rotas_flat' not in state:
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 unvisited = state['unvisited']
@@ -1463,9 +1467,10 @@ def app_roteirizador():
                     virar_dia = False
                     limite_diario_atual = cfg['obras_por_dia']
                     
-                    # CORRECAO DA REGRA 6 POR DIA ESTABILIZADA:
+                    # REGRA ABSOLUTA DE CORTE: Se a meta é 6, a 7ª vira o dia independente da cidade
                     if estado['obras_hoje'] > 0 and (estado['obras_hoje'] + qtd_real > limite_diario_atual):
                         virar_dia = True
+                    # REGRA DE FALLBACK (100km): Se mudou de município antes de bater a cota, avalia a distância
                     elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
                         if viagem_km_reta > 100.0:
                             virar_dia = True 
@@ -1550,7 +1555,6 @@ def app_roteirizador():
                 osrm_idx = state['current_osrm_idx']
                 geoms_and_durs = state['current_geoms']
                 
-                # BATCHING OSRM TO PREVENT SERVER TIMEOUT AND KEEP CLOCK ALIVE
                 batch_size = 30 if cfg.get('tracado_real', False) else len(rotas_flat)
                 end_idx = min(osrm_idx + batch_size, len(rotas_flat))
                 
@@ -1582,7 +1586,6 @@ def app_roteirizador():
                     tentar_rerun()
                     return
                 
-                # FINAL ASSEMBLY AFTER BATCHING
                 routed_data_final_team = []
                 ordem_global = 1
                 dias_pt = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
@@ -1642,7 +1645,6 @@ def app_roteirizador():
                         routed_data_final_team.append(obra)
                     ordem_global += 1
 
-                # LIMPEZA DO ESTADO E AVANÇO
                 state['routed_data'].extend(routed_data_final_team)
                 del state['current_rotas_flat']
                 del state['current_osrm_idx']
