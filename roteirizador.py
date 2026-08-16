@@ -153,7 +153,80 @@ def gerar_gpx_simples(df_kml, nome_rota):
     return "\n".join(gpx)
 
 # ==========================================
-# 3. LÓGICA DO ROTEIRIZADOR (MOTOR PRINCIPAL)
+# 4. CONTEÚDO DA PÁGINA FAQ (MANUAL COMPLETO)
+# ==========================================
+def renderizar_faq():
+    st.markdown("<h1 class='brand-title' style='margin-bottom: 20px;'>📖 Central de Ajuda e Manual de Operação</h1>", unsafe_allow_html=True)
+    
+    st.markdown("""
+    Bem-vindo ao manual do **Roteirizador NIP v2.0**. Esta página detalha como o Cérebro Logístico (IA) toma decisões, os filtros ocultos e o fluxo de todos os dados do sistema.
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 1. As Duas Estratégias de Despacho (Modos)")
+    
+    col_faq1, col_faq2 = st.columns(2)
+    with col_faq1:
+        st.markdown("""
+        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
+            <h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático (IA Automática)</h4>
+            <b>A IA no Comando:</b> Você sobe a planilha de técnicos e joga milhares de obras brutas. O sistema lê onde cada técnico atua, calcula todas as distâncias cruzadas e distribui as obras do zero de forma otimizada.<br><br>
+            <b>A Regra dos 100km (Pulo Logístico):</b> Se o técnico terminar a cota do município dele antes de bater a meta diária, a IA usa o "radar" de 100km em linha reta para acionar e agrupar obras ociosas de cidades vizinhas no mesmo dia, garantindo produtividade máxima.
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_faq2:
+        st.markdown("""
+        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #55B929; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'>
+            <h4 style='color: #2e7d32; margin-top: 0;'>♾️ 2. Lista Contínua (Técnico Fixo)</h4>
+            <b>O Usuário no Comando:</b> A IA respeita estritamente o que você definiu. Sua planilha já deve ter a coluna <b>LEVANTADOR</b> preenchida.<br><br>
+            <b>Processamento Contínuo:</b> A ferramenta ignora as travas de fim de expediente e desenha o caminho mais curto para conectar 100% da lista do profissional. Nenhuma nota é transferida de um técnico para outro, independentemente da distância ou tempo.
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 2. Regras de Atribuição Territorial (Exclusivo Modo Tático)")
+    st.markdown("No Modo 1, você precisará dizer como o sistema deve cruzar a localização das obras com os técnicos disponíveis:")
+    st.info("""
+    * **Por Municípios Atendidos (Lê texto):** A regra mais restrita. O sistema varre a coluna `MUNICIPIO` ou `RESIDENCIA` da planilha do Levantador. A IA **só entrega obras daquelas cidades** específicas (ex: se ele atende Raposa e Paço do Lumiar, ele só recebe obras dessas duas, salvo o uso do raio de 100km num momento de ociosidade).
+    * **Por Proximidade Geográfica (Ignora texto):** A IA cega a leitura de nomes de cidades. Ela converte as bases em Lat/Lon e roteiriza por gravidade física. A obra vai puramente para quem for o técnico mais próximo geograficamente naquele eixo.
+    """)
+
+    st.markdown("---")
+    st.markdown("### 3. Filtros Inteligentes e Travas de Segurança")
+    
+    c_flt1, c_flt2 = st.columns(2)
+    with c_flt1:
+        st.markdown("**🛡️ Ignorar Coordenada (Obras já Despachadas)**")
+        st.markdown("Existe um checkbox chamado *Filtro: Ignorar obras já despachadas*. Se ativado, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha qualquer coisa escrita ali (que não seja vazia/NaN) será sumariamente ignorada do roteamento. Isso previne retrabalho cego.")
+        
+        st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
+        st.markdown("Se o sistema encontrar 4 notas fiscais cujas coordenadas estejam sobrepostas num raio de até 100 metros (indicando a mesma rua ou condomínio), ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML.")
+    with c_flt2:
+        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
+        st.markdown("O sistema exige urgência por três fontes simultâneas. Basta a obra cumprir **UM** destes requisitos para furar a fila do roteiro e ficar vermelha:")
+        st.markdown("1. O que você **selecionar manualmente** na tela de 'Filtros Dinâmicos' (ex: escolher tipos CCF, DIF).")
+        st.markdown("2. Status de **'CORREÇÃO DE LEVANTAMENTO'** detectado automaticamente na coluna `STATUS LIST`.")
+        st.markdown("3. Se o Excel possuir a coluna nativa chamada **`PRIORIDADE`**, qualquer linha onde não esteja vazio, '0' ou 'Não' força a prioridade imediata da obra.")
+
+    st.markdown("---")
+    st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
+    st.markdown("""
+    * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o "Dia 2" (Terça-Feira), garantindo que as metas programadas não estourem.
+    * **Cálculo da Malha (Postes Previstos):** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma. Se ambas falharem, ele puxa a coluna global `POSTES PREVISTOS`.
+    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Massa" das obras de um técnico. Se essa mancha roxa de trabalho ficar concentrada a mais de **60 km** de distância da coordenada de residência base dele, a aba gerencial vai piscar sugerindo Hospedagem, com um botão direto para pesquisa de pousadas.
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
+    st.info("""
+    * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas 15 segundos!
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. Possui o nome da equipe travado na primeira coluna, seguido da Ordem (1, 2, 3...) e os dias processados. Além disso, passa por uma limpeza pesada retirando cálculos matemáticos internos.
+    * **Pacote KML e GPX:** O KML roda em Google Earth (limpo de caixas de textos desnecessárias via Regex). O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
+    """)
+
+# ==========================================
+# 5. LÓGICA DO ROTEIRIZADOR (MOTOR PRINCIPAL)
 # ==========================================
 def app_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
@@ -1854,28 +1927,25 @@ def app_roteirizador():
             return
 
 # ==========================================
-# 4. CONTEÚDO DA PÁGINA FAQ
+# 4. CONTEÚDO DA PÁGINA FAQ (MANUAL COMPLETO)
 # ==========================================
 def renderizar_faq():
-    st.markdown("<h1 class='brand-title' style='margin-bottom: 30px;'>📖 Central de Ajuda e FAQ</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='brand-title' style='margin-bottom: 20px;'>📖 Central de Ajuda e Manual de Operação</h1>", unsafe_allow_html=True)
     
     st.markdown("""
-    Bem-vindo ao manual oficial do **Roteirizador NIP v2.0**. Abaixo você encontrará explicações detalhadas sobre como o "Cérebro" do sistema funciona, as diferenças cruciais entre os modos de operação, e o que cada arquivo faz.
-    
-    ---
+    Bem-vindo ao manual do **Roteirizador NIP v2.0**. Esta página detalha como o Cérebro Logístico (IA) toma decisões, os filtros ocultos e o fluxo de todos os dados do sistema.
     """)
     
-    st.markdown("### 1. A Grande Diferença: Modos de Roteirização")
-    st.markdown("A ferramenta oferece duas formas fundamentais de trabalhar. Entender a diferença entre elas é a chave para o sucesso logístico:")
+    st.markdown("---")
+    st.markdown("### 1. As Duas Estratégias de Despacho (Modos)")
     
     col_faq1, col_faq2 = st.columns(2)
     with col_faq1:
         st.markdown("""
-        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'>
+        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
             <h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático (IA Automática)</h4>
-            <b>Como funciona:</b> A Inteligência Artificial assume o controle total da logística. Você insere uma base com "N" técnicos e joga milhares de obras genéricas no sistema. A IA cruza a localização dos técnicos com a localização das obras e <b>decide sozinha quem vai fazer o quê</b>, buscando a rota mais curta e barata.<br><br>
-            <b>Limites e Regras:</b> Respeita rigorosamente a meta diária (ex: 6 obras/dia).<br><br>
-            <b>A Regra dos 100km:</b> Se um técnico atende a cidade de São Luís e as obras lá acabam, a IA não deixa ele ocioso. Ela ativa o radar de 100km e "puxa" obras de cidades vizinhas (ex: Raposa) para completar o dia de trabalho dele, tudo de forma automática.
+            <b>A IA no Comando:</b> Você sobe a planilha de técnicos e joga milhares de obras brutas. O sistema lê onde cada técnico atua, calcula todas as distâncias cruzadas e distribui as obras do zero de forma otimizada.<br><br>
+            <b>A Regra dos 100km (Pulo Logístico):</b> Se o técnico terminar a cota do município dele antes de bater a meta diária, a IA usa o "radar" de 100km em linha reta para acionar e agrupar obras ociosas de cidades vizinhas no mesmo dia, garantindo produtividade máxima.
         </div>
         """, unsafe_allow_html=True)
         
@@ -1883,54 +1953,54 @@ def renderizar_faq():
         st.markdown("""
         <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #55B929; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'>
             <h4 style='color: #2e7d32; margin-top: 0;'>♾️ 2. Lista Contínua (Técnico Fixo)</h4>
-            <b>Como funciona:</b> Você é quem manda! O sistema ignora a criatividade de distribuição da IA e atua apenas como um "Calculador de Rotas". Ele exige que sua planilha já possua a coluna <b>LEVANTADOR</b> preenchida para cada obra.<br><br>
-            <b>Limites e Regras:</b> Não há limite de obras por dia nem de semanas. O sistema vai pegar o bloco de obras do <i>João</i>, criar o KML e desenhar a melhor rota para ele visitar 100% daquela lista, custe o que custar.<br><br>
-            <b>Bloqueio de Troca:</b> A IA jamais passará uma obra do <i>João</i> para a <i>Maria</i> neste modo, mesmo que a Maria esteja mais perto. É o modo perfeito de usar quando a área técnica já fechou a distribuição dos pacotes.
+            <b>O Usuário no Comando:</b> A IA respeita estritamente o que você definiu. Sua planilha já deve ter a coluna <b>LEVANTADOR</b> preenchida.<br><br>
+            <b>Processamento Contínuo:</b> A ferramenta ignora as travas de fim de expediente e desenha o caminho mais curto para conectar 100% da lista do profissional. Nenhuma nota é transferida de um técnico para outro, independentemente da distância ou tempo.
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<br><hr><br>", unsafe_allow_html=True)
-    
-    st.markdown("### 2. O que enviar para a máquina? (Arquivos de Upload)")
-    st.markdown("O Roteirizador é flexível, mas possui regras de leitura para as planilhas:")
-    
-    st.markdown("""
-    *   **👥 Planilhas de Equipes (Principais e Temporários):** Usadas *apenas no Planejamento Tático*. A planilha precisa ter uma coluna chamada **`LEVANTADOR`** (ou NOME, TECNICO) e as colunas de **`LATITUDE` / `LONGITUDE`** (ou `MUNICIPIO` para o sistema descobrir as coordenadas base do profissional).
-    *   **📁 Base Levantamento:** Planilha bruta com as notas. O sistema vai ler a aba de `STATUS LIST` e só deixará passar as obras que estiverem com status iniciais de operação ou as temidas **"Correções de Levantamento"** (que ganham prioridade máxima imediata).
-    *   **📁 Base Saneamento:** Planilha que costuma vir pré-aprovada e com postes definidos. O sistema aprova 100% das linhas que caem aqui (não filtra status).
-    *   **📁 Base Genérica / Livre:** Pode ser qualquer CSV ou Excel do mundo, desde que contenha `LATITUDE` e `LONGITUDE`. Excelente para projetos ad-hoc.
-    *   **🔄 Planilha de Status (SharePoint):** Se você inserir este arquivo junto, a IA varre suas obras base e "mata" (ignora) todas aquelas que constarem como já concluídas no SharePoint mais recente, evitando despachar a mesma obra duas vezes.
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 2. Regras de Atribuição Territorial (Exclusivo Modo Tático)")
+    st.markdown("No Modo 1, você precisará dizer como o sistema deve cruzar a localização das obras com os técnicos disponíveis:")
+    st.info("""
+    * **Por Municípios Atendidos (Lê texto):** A regra mais restrita. O sistema varre a coluna `MUNICIPIO` ou `RESIDENCIA` da planilha do Levantador. A IA **só entrega obras daquelas cidades** específicas (ex: se ele atende Raposa e Paço do Lumiar, ele só recebe obras dessas duas, salvo o uso do raio de 100km num momento de ociosidade).
+    * **Por Proximidade Geográfica (Ignora texto):** A IA cega a leitura de nomes de cidades. Ela converte as bases em Lat/Lon e roteiriza por gravidade física. A obra vai puramente para quem for o técnico mais próximo geograficamente naquele eixo.
     """)
 
-    st.markdown("<br><hr><br>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("### 3. Filtros Inteligentes e Travas de Segurança")
     
-    st.markdown("### 3. O que sai da máquina? (Arquivos de Download)")
-    st.markdown("Após a Inteligência trabalhar, você baixará três pacotes na barra lateral:")
+    c_flt1, c_flt2 = st.columns(2)
+    with c_flt1:
+        st.markdown("**🛡️ Ignorar Coordenada (Obras já Despachadas)**")
+        st.markdown("Existe um checkbox chamado *Filtro: Ignorar obras já despachadas*. Se ativado, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha qualquer coisa escrita ali (que não seja vazia/NaN) será sumariamente ignorada do roteamento. Isso previne retrabalho cego.")
+        
+        st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
+        st.markdown("Se o sistema encontrar 4 notas fiscais cujas coordenadas estejam sobrepostas num raio de até 100 metros (indicando a mesma rua ou condomínio), ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML.")
+    with c_flt2:
+        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
+        st.markdown("O sistema exige urgência por três fontes simultâneas. Basta a obra cumprir **UM** destes requisitos para furar a fila do roteiro e ficar vermelha no mapa:")
+        st.markdown("1. O que você **selecionar manualmente** na tela de 'Filtros Dinâmicos' (ex: escolher tipos CCF, DIF).")
+        st.markdown("2. Status de **'CORREÇÃO DE LEVANTAMENTO'** detectado automaticamente na coluna `STATUS LIST`.")
+        st.markdown("3. Se o Excel possuir a coluna nativa chamada **`PRIORIDADE`**, qualquer linha onde não esteja vazio, '0' ou 'Não' força a prioridade imediata da obra.")
 
+    st.markdown("---")
+    st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
     st.markdown("""
-    *   **🌐 1. Baixar Planilhas (ZIP):**
-        *   **`Demanda_Geral.xlsx`:** A visão do Gerente. Todas as obras do projeto ordenadas de 1 a N, com a coluna `LEVANTADOR_RESPONSAVEL` no início.
-        *   **`ROTA_Nome_Tecnico.xlsx`:** A visão do Campo. Planilhas limpas, apenas com as colunas originais do seu projeto. Todo o "lixo" de processamento de máquina (distâncias algorítmicas de retas, coordenadas do folium, etc.) é destruído antes da exportação para não poluir a tela do levantador.
-        *   **`Resumo_Levantadores.xlsx`:** O painel logístico mostrando quantos postes (BT/MT) totais cada técnico deve prever. O cálculo é inteligente: ele pega o menor número entre BT e MT (para evitar somar o mesmo poste duas vezes) e arredonda para números inteiros (porque não existe meio poste no mundo real).
-    
-    *   **🗺️ 2. Baixar Mapas (KML):** 
-        *   Arquivo nativo para visualizar no **Google Earth** ou Meu Maps. Exibe ícones coloridos: Laranja para *Super Pontos*, Vermelho para *Obras Prioritárias* e Azul para comuns. Ele foi higienizado com expressões regulares pesadas para não exibir campos de "Horário" internos e nem ícones indesejados. As linhas coloridas conectam o melhor caminho passo a passo.
-    
-    *   **🛰️ 3. Baixar GPS Offline (GPX):**
-        *   O arquivo que salva vidas no interior! Formato puro de satélite (`.gpx`). Pode ser importado em aplicativos de celular como **OsmAnd**, **Wikiloc** ou **GPX Viewer**. Se o levantador perder o sinal de internet/4G no mato ou na estrada de terra, o GPS continuará lendo a rota por cima via satélite.
+    * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o "Dia 2" (Terça-Feira), garantindo que as metas programadas não estourem.
+    * **Cálculo da Malha (Postes Previstos):** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma. Se ambas falharem, ele puxa a coluna global `POSTES PREVISTOS`.
+    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Massa" das obras de um técnico. Se essa mancha roxa de trabalho ficar concentrada a mais de **60 km** de distância da coordenada de residência base dele, a aba gerencial vai piscar sugerindo Hospedagem, com um botão direto para pesquisa de pousadas.
     """)
     
-    st.markdown("<br><hr><br>", unsafe_allow_html=True)
-    
-    st.markdown("### 4. Os 'Poderes Invisíveis' (Regras que rodam nos bastidores)")
-    st.markdown("""
-    *   **⚡ Super Pontos (Deduplicação):** A IA odeia ineficiência. Se a sua planilha possuir 4 notas geradas com coordenadas muito próximas (raio de 100 metros) - indicando que é tudo na mesma rua ou no mesmo poste - a IA as amarra invisivelmente e as trata como um "SUPER PONTO". A meta do técnico não cai, mas o mapa fica muito mais leve e inteligente.
-    *   **🚨 Força Bruta de Prioridade (Tripla Checagem):** A IA define a urgência de 3 formas: Pelo que você selecionar no menu; por qualquer obra que contenha o nome "Correção de Levantamento"; e **lendo a coluna nativa `PRIORIDADE`** do seu Excel. Se houver qualquer coisa escrita lá dentro (diferente de zero), a obra vira prioridade absoluta.
-    *   **🏨 Modo Pernoite / Acampamento:** Se o "Centro de Gravidade" do bloco de obras despachado para um levantador ficar a mais de **60 KM** da casa dele, a UI exibe um alerta vermelho na aba "Apoio Logístico", sugerindo que o técnico seja hospedado em um hotel para não estourar os custos de gasolina indo e voltando rodovias todo dia.
+    st.markdown("---")
+    st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
+    st.info("""
+    * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. Possui o nome da equipe travado na primeira coluna, seguido da Ordem (1, 2, 3...) e os dias processados. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação.
+    * **Pacote KML e GPX:** O KML roda em Google Earth (limpo de caixas de textos desnecessárias via Regex). O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
     """)
 
 # ==========================================
-# 5. ESTRUTURA PRINCIPAL E NAVEGAÇÃO
+# 6. ESTRUTURA PRINCIPAL E NAVEGAÇÃO
 # ==========================================
 def main():
     # MENU LATERAL SUPERIOR (ROTEAMENTO ENTRE PÁGINAS)
