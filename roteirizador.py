@@ -71,7 +71,6 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    # Resetando as variáveis de tempo para o relógio
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -191,6 +190,8 @@ def app_roteirizador():
     
     with st.sidebar:
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
+            trava_global_obras = st.number_input("Trava Total de Operação (Bolo Geral da Empresa)", min_value=0, value=0, step=50, disabled=is_locked, help="Deixe 0 para roteirizar o máximo que a base permitir. Se preenchido, a IA pega apenas as primeiras X notas e descarta o resto para a semana seguinte.")
+            
             sentido_rota = st.radio("Sentido do Roteamento Diário:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
             raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
             
@@ -307,6 +308,11 @@ def app_roteirizador():
         else:
             meta_exata_por_equipe = obras_dia_meta * dias_multiplicador * limite_periodos_meta
             meta_global_exata = meta_exata_por_equipe * tot_equipes_cadastradas
+            
+        # Adicionando a trava global matemática nos relatórios se ativada
+        trava_global = cfg_atual.get('trava_global_obras', 0)
+        if trava_global > 0:
+            meta_global_exata = min(meta_global_exata, trava_global)
         
         obras_por_equipe = {b['LEVANTADOR']: 0 for b in st.session_state.bases_records}
             
@@ -359,7 +365,7 @@ def app_roteirizador():
                 st.markdown(f'''
                 <div style="background-color: #d4edda; color: #155724; padding: 15px; border-left: 5px solid #c3e6cb; margin-bottom: 20px; border-radius: 4px;">
                     <h4 style="margin-top: 0; margin-bottom: 5px;">✅ Meta de Despacho 100% Atingida!</h4>
-                    <p style="margin: 0;">O sistema logístico preencheu perfeitamente a meta exata de <b>{meta_global_exata} obras</b> ({obras_dia_meta} obras/dia × {dias_multiplicador * limite_periodos_meta} dias × {tot_equipes_cadastradas} equipes).</p>
+                    <p style="margin: 0;">O sistema logístico preencheu perfeitamente a meta exata de <b>{meta_global_exata} obras</b>.</p>
                 </div>
                 ''', unsafe_allow_html=True)
 
@@ -792,6 +798,28 @@ def app_roteirizador():
                             
                 except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
 
+                # ABA DE DASHBOARD INTERATIVO (IMPLEMENTAÇÃO #2)
+                st.markdown("##### 🗂️ Triagem Dinâmica de Notas (Bolo Geral)")
+                col_dash1, col_dash2, col_dash3, col_dash4 = st.columns(4)
+                
+                if 'TIPO NOTA' in df_tasks.columns:
+                    tipos_counts = df_tasks['TIPO NOTA'].value_counts()
+                    t_unr = tipos_counts.get('UNR', 0)
+                    t_mgd = tipos_counts.get('MGD', 0)
+                    t_asc = tipos_counts.get('ASC', 0)
+                    t_dif = tipos_counts.get('DIF', 0)
+                    
+                    col_dash1.metric("Notas UNR", f"{t_unr}")
+                    col_dash2.metric("Notas MGD", f"{t_mgd}")
+                    col_dash3.metric("Notas ASC", f"{t_asc}")
+                    col_dash4.metric("Notas DIF", f"{t_dif}")
+                    
+                    tipos_unicos_na_base = [str(x) for x in df_tasks['TIPO NOTA'].dropna().unique()]
+                    tipos_rejeitados = st.multiselect("🗑️ Selecione Tipos de Nota para DESCARTAR temporariamente da operação:", options=tipos_unicos_na_base, default=[])
+                    if tipos_rejeitados:
+                        df_tasks = df_tasks[~df_tasks['TIPO NOTA'].isin(tipos_rejeitados)]
+                        st.info(f"Omitindo obras do tipo {tipos_rejeitados}.")
+
                 if not df_status_upload.empty and coluna_status_selecionada:
                     df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
 
@@ -808,6 +836,25 @@ def app_roteirizador():
             has_saneamento = 'SANEAMENTO' in df_tasks['_ORIGEM_BASE'].values
             has_generica = 'GENERICA' in df_tasks['_ORIGEM_BASE'].values
             df_list = []
+            
+            # MATRIZ MULTI-FILTRO (ESCOPO DA OPERAÇÃO / IMPLEMENTAÇÃO #3)
+            st.markdown("### 🎯 Escopo da Operação (Multi-Filtro)")
+            col_escopo1, col_escopo2 = st.columns(2)
+            
+            if 'Regional' in df_tasks.columns or 'REGIONAL' in df_tasks.columns:
+                col_reg_real = 'Regional' if 'Regional' in df_tasks.columns else 'REGIONAL'
+                regs_unicas = [str(x) for x in df_tasks[col_reg_real].dropna().unique()]
+                regs_selecionadas = col_escopo1.multiselect("🌍 Filtrar por REGIONAL (Deixe vazio para roteirizar todas):", options=regs_unicas, default=[])
+                if regs_selecionadas:
+                    df_tasks = df_tasks[df_tasks[col_reg_real].isin(regs_selecionadas)]
+                    
+            if 'PAT' in df_tasks.columns:
+                pats_unicos = [str(x) for x in df_tasks['PAT'].dropna().unique()]
+                pats_selecionados = col_escopo2.multiselect("🏗️ Filtrar por PAT (Deixe vazio para roteirizar todos):", options=pats_unicos, default=[])
+                if pats_selecionados:
+                    df_tasks = df_tasks[df_tasks['PAT'].isin(pats_selecionados)]
+                    
+            st.markdown("---")
             
             if has_levantamento:
                 with st.expander("🛠️ 4A. Filtros Iniciais - Base LEVANTAMENTO", expanded=True):
@@ -934,6 +981,26 @@ def app_roteirizador():
             """, unsafe_allow_html=True)
             if df_tasks.empty: return
             
+            # --- LIMITE GLOBAL DA DEMANDA (TRAVA DE ESTOQUE / IMPLEMENTAÇÃO #4) ---
+            if trava_global_obras > 0 and modo_operacao == "1":
+                if tot_obras_aprovadas > trava_global_obras:
+                    st.info(f"✂️ A Trava Global de Operação foi ativada. O sistema limitará o roteamento às primeiras {trava_global_obras} obras prioritárias/próximas e descartará o excedente ({tot_obras_aprovadas - trava_global_obras} obras).")
+                    
+                    df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                    
+                    obras_aceitas_fisicas = []
+                    contador_real = 0
+                    for idx, r in df_tasks.iterrows():
+                        qtd = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
+                        if contador_real + qtd <= trava_global_obras:
+                            obras_aceitas_fisicas.append(r)
+                            contador_real += qtd
+                        else:
+                            break
+                            
+                    df_tasks = pd.DataFrame(obras_aceitas_fisicas)
+            # ------------------------------------------------------------------------
+
             # --- FILTRO ALTA DENSIDADE (MODO PRODUTIVIDADE) ---
             df_sparse_global = pd.DataFrame()
             if modo_produtividade and modo_operacao == "1":
@@ -1088,9 +1155,9 @@ def app_roteirizador():
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
                 st.session_state.df_unallocated = df_unallocated
-                st.session_state.tot_obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
+                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
-                tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
                 if df_tasks_alocadas.empty: 
@@ -1142,7 +1209,7 @@ def app_roteirizador():
                     mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
                     obras_despachadas = mask_despacho.sum()
                     if obras_despachadas > 0:
-                        st.info(f"⏭️ {obras_despachadas} obras ignoradas (DATA DESPACHO CAMPO preenchida).")
+                        st.info(f"⏭️ {obras_despachadas} obras foram ignoradas (DATA DESPACHO CAMPO preenchida).")
                         df_tasks = df_tasks[~mask_despacho]
                         
                 df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -1278,7 +1345,8 @@ def app_roteirizador():
                         'tracado_real': tracado_real,
                         'data_inicio': data_inicio_roteiro,
                         'sentido_rota': sentido_rota,
-                        'raio_super_ponto': raio_super_ponto
+                        'raio_super_ponto': raio_super_ponto,
+                        'trava_global_obras': trava_global_obras
                     },
                     'b_names': list(set([b['LEVANTADOR'] for b in bases_records])),
                     'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
@@ -2044,12 +2112,16 @@ def renderizar_faq():
         st.markdown("1. O que você **selecionar manualmente** na tela de 'Filtros Dinâmicos' (ex: escolher tipos CCF, DIF).")
         st.markdown("2. Status de **'CORREÇÃO DE LEVANTAMENTO'** detectado automaticamente na coluna `STATUS LIST`.")
         st.markdown("3. Se o Excel possuir a coluna nativa chamada **`PRIORIDADE`**, qualquer linha onde não esteja vazia, '0' ou 'Não' (Ex: 'GIRO NO PRAZO') força a prioridade imediata da obra.")
+        
+        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
+        st.markdown("Assim que você sobe a planilha de Levantamento, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, há um campo *'Selecione Tipos de Nota para DESCARTAR'*. Se você não quiser planejar MGD naquela semana, basta marcar ali e a IA limpa a base antes de começar.")
 
     st.markdown("---")
     st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
     st.markdown("""
     * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o dia seguinte, garantindo que as metas programadas não estourem.
     * **Varredura Reversa (Longe -> Perto):** No menu lateral, você pode escolher se a IA faz a rota comum (visita o que está perto de casa e vai se afastando) ou se faz a *Reversa*: a IA manda o técnico cedo para a obra mais longe da cidade e vem puxando a rota dele de volta, para o fim do expediente terminar mais perto de casa.
+    * **Trava Total de Operação:** No menu lateral, você pode definir um limite absoluto de obras para a empresa inteira naquela rodada (Ex: 300 obras). A IA processará apenas as 300 melhores/mais urgentes notas do estado e rejeitará todo o resto, aliviando o backoffice.
     * **Cálculo de Postes e Malhas:** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma.
     * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Massa" das obras de um técnico. Se essa mancha roxa de trabalho ficar concentrada a mais de **60 km** de distância da coordenada de residência base dele, a aba gerencial vai piscar sugerindo Hospedagem, com um botão direto para pesquisa de pousadas.
     """)
