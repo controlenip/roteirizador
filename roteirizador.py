@@ -71,6 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
+    # Resetando as variáveis de tempo para o relógio
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -193,6 +194,14 @@ def app_roteirizador():
             sentido_rota = st.radio("Sentido do Roteamento Diário:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
             raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
             
+            st.markdown("---")
+            modo_produtividade = st.checkbox("🔥 Focar em Alta Densidade (Produtividade)", value=False, disabled=is_locked, help="Ignora obras esparsas e direciona a equipe apenas para 'bolsões' densos.")
+            if modo_produtividade:
+                min_vizinhos = st.slider("Mínimo de obras próximas (Raio 2km):", min_value=2, max_value=50, value=10, step=1, disabled=is_locked)
+            else:
+                min_vizinhos = 0
+            st.markdown("---")
+
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
             
@@ -328,7 +337,7 @@ def app_roteirizador():
         else:
             if obras_faltantes > 0:
                 if obras_sobrando_na_planilha > 0:
-                    dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem. A meta de {meta_global_exata} não foi atingida porque o estoque de obras nas cidades específicas de cada técnico esgotou. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real das cidades. Faça o download do <b>KML de Obras Não Alocadas</b> para inspecionar.</li>"
+                    dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem (ou foram rejeitadas pelo filtro de densidade). A meta de {meta_global_exata} não foi atingida. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real. Faça o download do <b>KML de Obras Não Alocadas</b> para inspecionar.</li>"
                 else:
                     dica_extra = f"<li><b>Falta de Obras na Planilha Geral:</b> O estoque total de obras válidas esgotou antes de fechar a meta operacional. Faltaram obras nos municípios de atuação. O sistema roteirizou a quantidade máxima encontrada ({tot_obras_reais} obras).</li>"
                 
@@ -924,6 +933,31 @@ def app_roteirizador():
             </div>
             """, unsafe_allow_html=True)
             if df_tasks.empty: return
+            
+            # --- FILTRO ALTA DENSIDADE (MODO PRODUTIVIDADE) ---
+            df_sparse_global = pd.DataFrame()
+            if modo_produtividade and modo_operacao == "1":
+                with st.spinner("🔥 Modo Produtividade: Mapeando bolsões e isolando obras esparsas..."):
+                    lats = df_tasks['LATITUDE'].values
+                    lons = df_tasks['LONGITUDE'].values
+                    prio_mask = (df_tasks['PRIORIDADE'] == 'Sim').values
+                    keep_mask = np.copy(prio_mask)
+                    
+                    for i in range(len(df_tasks)):
+                        if not keep_mask[i]:
+                            dists = haversine_vectorized(lats[i], lons[i], lats, lons)
+                            if np.sum(dists <= 2.0) >= min_vizinhos:
+                                keep_mask[i] = True
+                                
+                    df_sparse_global = df_tasks[~keep_mask].copy()
+                    if not df_sparse_global.empty:
+                        df_sparse_global['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
+                        df_sparse_global['MOTIVO_REJEICAO'] = "Alta Densidade (Obra Isolada)"
+                    df_tasks = df_tasks[keep_mask].copy()
+                    
+                    if not df_sparse_global.empty:
+                        st.toast(f"🔥 {len(df_sparse_global)} obras isoladas foram ignoradas para maximizar a produtividade da equipe!")
+            # ----------------------------------------------------
 
             df_tasks_alocadas = pd.DataFrame()
             bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
@@ -1041,17 +1075,22 @@ def app_roteirizador():
                             assigned_tasks.append(row)
                         else:
                             row['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
+                            row['MOTIVO_REJEICAO'] = "Estoque do Técnico Lotado ou > 100km"
                             still_unassigned.append(row)
 
                     return pd.DataFrame(assigned_tasks), pd.DataFrame(still_unassigned)
 
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
+                # ADICIONANDO AS OBRAS REJEITADAS PELA DENSIDADE (MODO PRODUTIVIDADE) NA LISTA DE ÓRFÃS
+                if not df_sparse_global.empty:
+                    df_unallocated = pd.concat([df_unallocated, df_sparse_global], ignore_index=True)
+                
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
                 st.session_state.df_unallocated = df_unallocated
-                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
+                st.session_state.tot_obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
-                tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
                 if df_tasks_alocadas.empty: 
@@ -1156,6 +1195,7 @@ def app_roteirizador():
                 else:
                     df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
                     df_tasks_alocadas = df_tasks.copy()
+                    
                     st.session_state.df_unallocated = pd.DataFrame()
                     st.session_state.tot_obras_nao_alocadas = 0
                     
@@ -1180,7 +1220,7 @@ def app_roteirizador():
                             'TIPO_EQUIPE': 'LISTA_CONTINUA'
                         })
                     
-                    tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                    tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                     sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
                     st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
                     
@@ -1312,6 +1352,8 @@ def app_roteirizador():
             texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
             status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
             
+            update_running_timer(b_idx, 0, 1)
+            
             if 'current_rotas_flat' not in state:
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 unvisited = state['unvisited']
@@ -1418,14 +1460,14 @@ def app_roteirizador():
                             if prio_macros: 
                                 tsp_res = resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base'])
                                 if is_reversa and tsp_res:
-                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, tsp_res[i]['LATITUDE'], tsp_res[i]['LONGITUDE']))
+                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, float(tsp_res[i]['LATITUDE']), float(tsp_res[i]['LONGITUDE'])))
                                     tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
                                 ordered_macros.extend(tsp_res)
                                 
                             if comum_macros: 
                                 tsp_res = resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base'])
                                 if is_reversa and tsp_res:
-                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, tsp_res[i]['LATITUDE'], tsp_res[i]['LONGITUDE']))
+                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, float(tsp_res[i]['LATITUDE']), float(tsp_res[i]['LONGITUDE'])))
                                     tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
                                 ordered_macros.extend(tsp_res)
                             
@@ -1845,7 +1887,7 @@ def app_roteirizador():
                             nome = html.escape(str(r.get('PROTOCOLO', 'Ponto Rejeitado')))
                             kml_u.append(f'<Placemark><name>{nome}</name><styleUrl>#white_pin</styleUrl><Point><coordinates>{lon},{lat}</coordinates></Point></Placemark>')
                     kml_u.append('</Document></kml>')
-                    zip_kml.writestr(f"OBRAS_NAO_ALOCADAS - {data_atual_formatada}.kml", "\\n".join(kml_u).encode('utf-8'))
+                    zip_kml.writestr(f"OBRAS_NAO_ALOCADAS - {data_atual_formatada}.kml", "\n".join(kml_u).encode('utf-8'))
                 
                 gpx_geral_str = gerar_gpx_simples(df_routed_kml, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}")
                 zip_gpx.writestr(f"GPS_ROTA_TOTAL - {data_atual_formatada}.gpx", gpx_geral_str.encode('utf-8'))
@@ -1993,6 +2035,9 @@ def renderizar_faq():
         
         st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
         st.markdown("Se o sistema encontrar notas fiscais cujas coordenadas estejam sobrepostas em um pequeno raio de ação, ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML. **Você pode definir esse raio de agrupamento (em metros) no menu lateral.**")
+        
+        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
+        st.markdown("Uma trava que isola áreas rurais esparsas. Quando ativada no menu lateral, a IA escaneia o mapa inteiro e joga fora as obras que estiverem sozinhas ou muito distantes umas das outras. A equipe é enviada apenas para os 'Bolsões' onde podem bater metas gigantes de produtividade a pé. As obras isoladas vão direto para o mapa de rejeições.")
     with c_flt2:
         st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
         st.markdown("O sistema exige urgência por três fontes simultâneas. Basta a obra cumprir **UM** destes requisitos para furar a fila do roteiro e ficar vermelha no mapa:")
