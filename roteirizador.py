@@ -973,6 +973,7 @@ def app_roteirizador():
                     
                     lista_obras = df_combinado.to_dict('records')
                     
+                    # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -1007,6 +1008,7 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
+                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -1019,6 +1021,7 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
+                        
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1858,12 +1861,7 @@ def app_roteirizador():
 # ==========================================
 def gerar_excel_modelo(df_modelo):
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_modelo.to_excel(writer, index=False, sheet_name='Modelo')
-        worksheet = writer.sheets['Modelo']
-        for i, col in enumerate(df_modelo.columns):
-            column_len = max(df_modelo[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.set_column(i, i, column_len)
+    df_modelo.to_excel(output, index=False, sheet_name='Modelo')
     return output.getvalue()
 
 def renderizar_faq():
@@ -1900,7 +1898,6 @@ def renderizar_faq():
     st.markdown("### 2. Baixar Modelos de Planilhas (Templates)")
     st.markdown("Para garantir que a Inteligência consiga rastrear o endereço de cada nota perfeitamente, utilize os modelos padrão abaixo para formatar sua base de dados antes do upload.")
 
-    # Criação dos DataFrames de Exemplo
     df_equipes = pd.DataFrame([{
         'MunicIpio': 'FORTUNA', 'Estado': 'Maranhão', 'Levantador': 'NOME DO TECNICO', 
         'Regional': 'CENTRO', 'Longitude': -44.0264, 'Latitude': -5.7335, 'Equipe': 'EQUIPE 17'
