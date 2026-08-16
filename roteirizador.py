@@ -1148,7 +1148,7 @@ def app_roteirizador():
                         })
                     
                     tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
-                    sidebar_html_placeholder.renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
+                    sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
                     st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
                     
                     col_prioridade = "PRIORIDADE"
@@ -1404,7 +1404,6 @@ def app_roteirizador():
                     semana_atual = 1
                     dia_da_semana = 1
                     obras_no_periodo_macro = 0
-                    mun_anterior = None
                     
                     def iniciar_dia(dia_abs):
                         data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
@@ -1418,7 +1417,6 @@ def app_roteirizador():
                     estado = iniciar_dia(dia_absoluto)
                     
                     for obra in ordered_tasks:
-                        mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
@@ -1527,7 +1525,6 @@ def app_roteirizador():
                         estado['prio_hoje'] = prio_acumulada 
                         estado['km_hoje'] += viagem_km
                         obras_no_periodo_macro += qtd_real
-                        mun_anterior = mun_atual 
 
                     if estado['obras_hoje'] > 0:
                         dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
