@@ -973,7 +973,6 @@ def app_roteirizador():
                     
                     lista_obras = df_combinado.to_dict('records')
                     
-                    # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -1008,7 +1007,6 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
-                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -1021,8 +1019,6 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
-                        
-                        # ORDENAR EQUIPES PELA COTA MAIS OCIOSA (PARA EQUILIBRAR AS OBRAS!)
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1860,6 +1856,16 @@ def app_roteirizador():
 # ==========================================
 # 4. CONTEÚDO DA PÁGINA FAQ (MANUAL COMPLETO)
 # ==========================================
+def gerar_excel_modelo(df_modelo):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_modelo.to_excel(writer, index=False, sheet_name='Modelo')
+        worksheet = writer.sheets['Modelo']
+        for i, col in enumerate(df_modelo.columns):
+            column_len = max(df_modelo[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(i, i, column_len)
+    return output.getvalue()
+
 def renderizar_faq():
     st.markdown("<h1 class='brand-title' style='margin-bottom: 20px;'>📖 Central de Ajuda e Manual de Operação</h1>", unsafe_allow_html=True)
     
@@ -1873,7 +1879,7 @@ def renderizar_faq():
     col_faq1, col_faq2 = st.columns(2)
     with col_faq1:
         st.markdown("""
-        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'>
+        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
             <h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático (IA Automática)</h4>
             <b>A IA no Comando:</b> Você sobe a planilha de técnicos e joga milhares de obras brutas. O sistema lê onde cada técnico atua, calcula todas as distâncias cruzadas e distribui as obras do zero de forma otimizada.<br><br>
             <b>A Regra dos 100km (Pulo Logístico):</b> Se o técnico terminar a cota do município dele antes de bater a meta diária, a IA usa o "radar" de 100km em linha reta para acionar e agrupar obras ociosas de cidades vizinhas no mesmo dia, garantindo produtividade máxima.
@@ -1890,40 +1896,54 @@ def renderizar_faq():
         """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 2. Padrões de Planilhas (Arquivos de Upload)")
-    st.markdown("Para garantir que a Inteligência consiga rastrear o endereço de cada nota, os arquivos de upload precisam ter colunas-chave. Abaixo estão os **Modelos Ideais** extraídos das planilhas de operação NIP:")
+    
+    st.markdown("### 2. Baixar Modelos de Planilhas (Templates)")
+    st.markdown("Para garantir que a Inteligência consiga rastrear o endereço de cada nota perfeitamente, utilize os modelos padrão abaixo para formatar sua base de dados antes do upload.")
 
-    st.markdown("#### 👤 Planilha de Equipes / Levantadores (Apenas para o Modo 1)")
-    st.markdown("Deve conter obrigatoriamente quem é a pessoa, onde ela atua e, principalmente, a Latitude e Longitude da 'Base' dela, para a IA saber de onde ela parte de manhã.")
-    st.table(pd.DataFrame({
-        "Levantador": ["ALLEFE DANIEL", "ISRAEL GARRAS"],
-        "MunicIpio": ["FORTUNA", "SAO LUIS"],
-        "Regional": ["CENTRO", "NORTE"],
-        "Latitude": [-5.7335, -2.5297],
-        "Longitude": [-44.0264, -44.3028]
-    }))
+    # Criação dos DataFrames de Exemplo
+    df_equipes = pd.DataFrame([{
+        'MunicIpio': 'FORTUNA', 'Estado': 'Maranhão', 'Levantador': 'NOME DO TECNICO', 
+        'Regional': 'CENTRO', 'Longitude': -44.0264, 'Latitude': -5.7335, 'Equipe': 'EQUIPE 17'
+    }])
 
-    st.markdown("#### 📁 Planilha de Levantamento Total (Apenas para o Modo 1)")
-    st.markdown("Base de obras cruas. Como a IA fará a distribuição, ela **não precisa** ter a coluna 'Levantador'.")
-    st.table(pd.DataFrame({
-        "PROTOCOLO": ["1081945188", "1081945189"],
-        "Município": ["CODÓ", "CAXIAS"],
-        "LATITUDE": [-4.4591, -5.0606],
-        "LONGITUDE": [-44.1504, -43.4388],
-        "STATUS LIST": ["Em levantamento", "Correção de Levantamento"],
-        "PRIORIDADE": [0, "GIRO NO PRAZO"]
-    }))
+    df_levantamento = pd.DataFrame([{
+        'ID SISCO': 1982315, 'PROTOCOLO': 1081945188, 'TIPO NOTA': 'UNR', 'PRIORIDADE': 0, 
+        'STATUS SAP': 'ATIV', 'STATUS SISCO': 'Liberado para Levantamento', 'STATUS LIST': 'Em levantamento', 
+        'FASE': 'MO', 'PAT': 'PAT1', 'Regional': 'LESTE', 'Município': 'CODÓ', 
+        'DISTANCIA BT': 248.78, 'DISTANCIA MT': 241.99, 'DISTANCIA TRAFO': 243.4, 
+        'POSTE PREVISTO BT': 6, 'POSTE PREVISTO MT': 2, 'NOME': 'NOME DO CLIENTE', 
+        'CONTA CONTRATO': 3019326160, 'INSTALAÇÃO': 2000876176, 'ENDEREÇO': 'ENDERECO COMPLETO', 
+        'LOCALIDADE': 'RURAL', 'LATITUDE': -4.459156, 'LONGITUDE': -44.150418, 
+        'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS', 'TEXTO': 'TEXTO DESCRITIVO', 'TEXTO_GERAL': 'TEXTO GERAL'
+    }])
 
-    st.markdown("#### ♾️ Planilha de Lista Contínua (Apenas para o Modo 2)")
-    st.markdown("Base cravada por técnico. Exige que a coluna `LEVANTADOR` já venha preenchida de fábrica.")
-    st.table(pd.DataFrame({
-        "LEVANTADOR": ["ALLEFE DANIEL", "ALLEFE DANIEL"],
-        "PROTOCOLO": ["1076894592", "1076894593"],
-        "Município": ["CAXIAS", "CAXIAS"],
-        "LATITUDE": [-5.0606, -5.0608],
-        "LONGITUDE": [-43.4388, -43.4390],
-        "STATUS LIST": [0, "Em levantamento"]
-    }))
+    df_continua = pd.DataFrame([{
+        'LEVANTADOR': 'NOME DO TECNICO', 'DATA DESPACHO': '17/08/2026', 'ID SISCO': 1982149, 
+        'PROTOCOLO': 1076894592, 'TIPO NOTA': 'UNR', 'PRIORIDADE': 0, 'STATUS SAP': 'ATIV', 
+        'STATUS SISCO': 'Pré Análise', 'STATUS LIST': 'Em levantamento', 'FASE': 'MO', 'PAT': 'PAT1', 
+        'Regional': 'LESTE', 'Município': 'CAXIAS', 'DISTANCIA BT': 285.18, 'DISTANCIA MT': 212.99, 
+        'DISTANCIA TRAFO': 224.66, 'POSTE PREVISTO BT': 7, 'POSTE PREVISTO MT': 2, 
+        'NOME': 'NOME DO CLIENTE', 'CONTA CONTRATO': 3018299797, 'INSTALAÇÃO': 2000835041, 
+        'ENDEREÇO': 'ENDERECO COMPLETO', 'LOCALIDADE': 'RURAL', 'LATITUDE': -5.060694, 
+        'LONGITUDE': -43.438846, 'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS'
+    }])
+
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
+    
+    with col_dl1:
+        st.markdown("**👥 Planilha de Levantadores**")
+        st.caption("Apenas para o Modo Tático. Define onde cada técnico mora/atua.")
+        st.download_button("📥 Baixar Modelo Equipes", data=gerar_excel_modelo(df_equipes), file_name="MODELO_LEVANTADORES.xlsx", use_container_width=True)
+
+    with col_dl2:
+        st.markdown("**📁 Base Levantamento / Saneamento**")
+        st.caption("Apenas para o Modo Tático. A IA distribuirá estas obras automaticamente.")
+        st.download_button("📥 Baixar Modelo Obras Livres", data=gerar_excel_modelo(df_levantamento), file_name="MODELO_BASE_LEVANTAMENTO.xlsx", use_container_width=True)
+
+    with col_dl3:
+        st.markdown("**♾️ Base Lista Contínua**")
+        st.caption("Apenas para o Modo Lista Contínua. Já exige a coluna 'LEVANTADOR'.")
+        st.download_button("📥 Baixar Modelo Lista Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
 
     st.markdown("---")
     st.markdown("### 3. Filtros Inteligentes e Travas de Segurança")
