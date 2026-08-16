@@ -70,9 +70,12 @@ def limpar_roteirizador():
     st.session_state.colunas_exibir = []
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
-    if 'bytes_zip_xl' in st.session_state: del st.session_state['bytes_zip_xl']
-    if 'bytes_zip_kml' in st.session_state: del st.session_state['bytes_zip_kml']
-    if 'bytes_zip_gpx' in st.session_state: del st.session_state['bytes_zip_gpx']
+    
+    # Resetando as variáveis de tempo para o relógio
+    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento']:
+        if k in st.session_state:
+            del st.session_state[k]
+            
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -111,7 +114,6 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
     
-    # Busca nas colunas originais enviadas pelo usuário, ignorando os "lixos" de processamento
     middle_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end]
     
     final_cols = []
@@ -657,8 +659,7 @@ def app_roteirizador():
                 st.markdown("### 📁 2. Upload de Demandas (Obras)")
                 with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
                 with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
-                with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
-                with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
+                with st.container(border=True): status_file = st.file_uploader("3️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
                 
                 df_status_upload = pd.DataFrame()
                 coluna_status_selecionada = None
@@ -720,7 +721,7 @@ def app_roteirizador():
                 
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
-                if not task_files and not saneamento_files and not generica_files: 
+                if not task_files and not saneamento_files: 
                     st.info("Aguardando upload de obras para iniciar o roteamento.")
                     return
 
@@ -754,35 +755,13 @@ def app_roteirizador():
                                         break
                             dfs.append(df_temp)
 
-                    if generica_files:
-                        for f in generica_files:
-                            if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
-                            else: df_temp = ler_planilha_cached(f.getvalue())
-                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
-                            df_temp.columns = normalize_cols(df_temp.columns)
-                            df_temp['_ORIGEM_BASE'] = 'GENERICA'
-                            if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
-                                st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
-                                continue
-                            if 'PROTOCOLO' not in df_temp.columns:
-                                id_cols = ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS', 'ID', 'CODIGO', 'CHAMADO', 'CHAVE']
-                                found_id = False
-                                for c in id_cols:
-                                    if c in df_temp.columns:
-                                        df_temp['PROTOCOLO'] = df_temp[c]
-                                        found_id = True
-                                        break
-                                if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
-                            dfs.append(df_temp)
-                            
                     if not dfs: return
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
                     total_obras_inicial = len(df_tasks)
                     cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
                     cols_orig_san = st.session_state.get('colunas_originais_san', [])
-                    cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
-                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
+                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san))
                     
                     for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                         if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
@@ -803,7 +782,6 @@ def app_roteirizador():
             st.markdown("---")
             has_levantamento = 'LEVANTAMENTO' in df_tasks['_ORIGEM_BASE'].values
             has_saneamento = 'SANEAMENTO' in df_tasks['_ORIGEM_BASE'].values
-            has_generica = 'GENERICA' in df_tasks['_ORIGEM_BASE'].values
             df_list = []
             
             if has_levantamento:
@@ -851,30 +829,6 @@ def app_roteirizador():
                     df_san = df_tasks[df_tasks['_ORIGEM_BASE'] == 'SANEAMENTO'].copy()
                     df_san['PRIORIDADE'] = 'Não'
                     df_list.append(df_san)
-
-            if has_generica:
-                with st.expander("🛠️ 4C. Filtros Iniciais - Base GENÉRICA", expanded=True):
-                    df_gen = df_tasks[df_tasks['_ORIGEM_BASE'] == 'GENERICA'].copy()
-                    st.info("💡 A base Genérica é flexível. O sistema tenta adivinhar a prioridade, mas você pode alterar as regras abaixo.")
-                    col_c1, col_c2 = st.columns(2)
-                    colunas_validas = [c for c in df_gen.columns if not c.startswith('_')]
-                    idx_default = 0
-                    if 'TIPO NOTA' in colunas_validas: idx_default = colunas_validas.index('TIPO NOTA') + 1
-                    coluna_prio = col_c1.selectbox("📌 1. Qual coluna define a prioridade?", ["Nenhuma"] + colunas_validas, index=idx_default, key='prio_col_gen')
-                    
-                    if coluna_prio != "Nenhuma":
-                        df_gen[coluna_prio] = df_gen[coluna_prio].fillna('SEM TIPO').astype(str).str.strip()
-                        valores_unicos = [x for x in df_gen[coluna_prio].unique() if str(x).lower() != 'nan']
-                        default_prio = []
-                        if coluna_prio == 'TIPO NOTA': default_prio = [x for x in valores_unicos if x in TIPOS_PRIORITARIOS]
-                        valores_prio = col_c2.multiselect(f"🚨 2. Definir Obras PRIORITÁRIAS em '{coluna_prio}':", valores_unicos, default=default_prio, key='prio_val_gen')
-                        if valores_prio: df_gen['PRIORIDADE'] = df_gen[coluna_prio].apply(lambda x: 'Sim' if str(x).strip() in valores_prio else 'Não')
-                        else: df_gen['PRIORIDADE'] = 'Não'
-                        st.session_state.col_prioridade_gen = coluna_prio
-                    else:
-                        df_gen['PRIORIDADE'] = 'Não'
-                        st.session_state.col_prioridade_gen = "Nenhuma"
-                    df_list.append(df_gen)
 
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
@@ -1016,7 +970,6 @@ def app_roteirizador():
                             
                         best_base_fb = None
                         
-                        # ORDENAR EQUIPES PELA COTA MAIS OCIOSA (PARA EQUILIBRAR AS OBRAS!)
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1028,7 +981,7 @@ def app_roteirizador():
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
                                         if d <= 100.0:  # TRAVA MAXIMA DE 100KM EM LINHA RETA
                                             best_base_fb = b_name
-                                            break # Encontrou o técnico mais ocioso dentro de 100km. Para a busca!
+                                            break
                                             
                         if best_base_fb:
                             base_counts[best_base_fb] += qtd_real
@@ -1053,8 +1006,7 @@ def app_roteirizador():
                     return
                 bases_records = todas_bases_records 
 
-            if has_generica: col_prioridade = st.session_state.get('col_prioridade_gen', "Nenhuma")
-            elif has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
+            if has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
             else: col_prioridade = "Nenhuma"
 
         else:
@@ -1197,6 +1149,11 @@ def app_roteirizador():
                     'custo_hora_equipe': custo_hora_equipe
                 }
                 
+                # ZERANDO VARIÁVEIS DE TEMPO ANTES DE INICIAR O MOTOR
+                keys_to_clear = ['start_time_run', 'tempo_processamento', 'start_time_pkg']
+                for k in keys_to_clear:
+                    if k in st.session_state: del st.session_state[k]
+                
                 st.session_state.vrp_state = {
                     'config': {
                         'velocidade_media_kmh': velocidade_media_kmh,
@@ -1217,16 +1174,6 @@ def app_roteirizador():
                 st.session_state.vrp_status = "RUNNING"
                 tentar_rerun()
 
-    def fetch_geom_wrapper(item):
-        time.sleep(0.8) 
-        try:
-            geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-            return geom, dur_sec
-        except Exception:
-            coords = np.array([[item['lat_ant'], item['lon_ant']], [item['lat_atual'], item['lon_atual']]])
-            dist_m = calcular_matriz_distancias_numpy(coords)[0][1]
-            return [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]], (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
-
     if status_exec in ["RUNNING"]:
         state = st.session_state.vrp_state
         cfg = state['config']
@@ -1240,42 +1187,39 @@ def app_roteirizador():
             
         b_names = state['b_names']
         total_equipes = len(b_names)
+        b_idx = state.get('b_idx', 0)
+        
+        if 'start_time_run' not in st.session_state:
+            st.session_state.start_time_run = time.time()
+        if 'tempo_processamento' not in st.session_state:
+            st.session_state.tempo_processamento = 0.0
+            
+        global_start_time = st.session_state.start_time_run
         
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         timer_placeholder = st.empty()
-        
-        agora_dt = datetime.combine(cfg['data_inicio'], datetime.min.time())
-        data_base_inicio = agora_dt.replace(hour=8, minute=0, second=0, microsecond=0)
-        data_base_almoco = agora_dt.replace(hour=12, minute=0, second=0, microsecond=0)
-        
-        def get_workday_date(start_dt, dia_abs, valid_days_list):
-            pt_to_idx = {"Segunda": 0, "Terça": 1, "Quarta": 2, "Quinta": 3, "Sexta": 4, "Sábado": 5, "Domingo": 6}
-            allowed = [pt_to_idx[d] for d in valid_days_list] if valid_days_list else [0,1,2,3,4]
-            curr = start_dt
-            while curr.weekday() not in allowed:
-                curr += pd.Timedelta(days=1)
-            count = 1
-            while count < dia_abs:
-                curr += pd.Timedelta(days=1)
-                if curr.weekday() in allowed:
-                    count += 1
-            return curr
 
-        # SISTEMA DE CRONÔMETRO DUPLO EM TEMPO REAL
-        global_start_time = time.time()
-        
-        def update_running_timer(b_index, inner_idx, inner_total):
-            elapsed = time.time() - global_start_time
-            fraction = (b_index + (inner_idx / max(1, inner_total))) / max(1, total_equipes)
+        if b_idx < total_equipes:
+            b_name = b_names[b_idx]
+            start_iter = time.time()
             
-            if fraction > 0.02: 
-                est_total = elapsed / fraction
-                rem = max(0, est_total - elapsed)
-                r_m, r_s = divmod(int(rem), 60)
-                r_str = f"{r_m:02d}m {r_s:02d}s"
+            progresso = b_idx / max(1, total_equipes)
+            progress_bar.progress(progresso)
+            
+            texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
+            status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
+
+            elapsed = time.time() - global_start_time
+            if b_idx > 0:
+                avg = st.session_state.tempo_processamento / b_idx
+                restantes = total_equipes - b_idx
+                est_rem = avg * restantes
+                m, s = divmod(int(est_rem), 60)
+                h, m = divmod(m, 60)
+                time_str = f"{h:02d}h {m:02d}s" if h > 0 else f"{m:02d}m {s:02d}s"
             else:
-                r_str = "Calculando..."
+                time_str = "Calculando..."
                 
             e_m, e_s = divmod(int(elapsed), 60)
             e_str = f"{e_m:02d}m {e_s:02d}s"
@@ -1288,191 +1232,248 @@ def app_roteirizador():
                 </div>
                 <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                     <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
-                    <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
+                    <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{time_str}</div>
                 </div>
             </div>
             """
             timer_placeholder.markdown(html_timer, unsafe_allow_html=True)
 
-        try:
-            routed_data_final = []
-            df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
-            unvisited = state['unvisited']
+            agora_dt = datetime.combine(cfg['data_inicio'], datetime.min.time())
+            data_base_inicio = agora_dt.replace(hour=8, minute=0, second=0, microsecond=0)
+            data_base_almoco = agora_dt.replace(hour=12, minute=0, second=0, microsecond=0)
             
-            for b_idx, b_name in enumerate(b_names):
-                update_running_timer(b_idx, 0, 1)
-                
-                progresso = b_idx / total_equipes if total_equipes > 0 else 1.0
-                progress_bar.progress(progresso)
-                
-                texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
-                status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
-                
-                time.sleep(0.05)
+            def get_workday_date(start_dt, dia_abs, valid_days_list):
+                pt_to_idx = {"Segunda": 0, "Terça": 1, "Quarta": 2, "Quinta": 3, "Sexta": 4, "Sábado": 5, "Domingo": 6}
+                allowed = [pt_to_idx[d] for d in valid_days_list] if valid_days_list else [0,1,2,3,4]
+                curr = start_dt
+                while curr.weekday() not in allowed:
+                    curr += pd.Timedelta(days=1)
+                count = 1
+                while count < dia_abs:
+                    curr += pd.Timedelta(days=1)
+                    if curr.weekday() in allowed:
+                        count += 1
+                return curr
 
+            try:
+                routed_data_final_team = []
+                df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
+                unvisited = state['unvisited']
+                
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
-                if pd.isna(base_ref.get('LATITUDE')): continue
+                if not pd.isna(base_ref.get('LATITUDE')):
+                    base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
+                    obras_equipe = unvisited[unvisited['BASE_ATRIBUIDA'] == b_name].to_dict('records')
                     
-                base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
-                obras_equipe = unvisited[unvisited['BASE_ATRIBUIDA'] == b_name].to_dict('records')
-                
-                if obras_equipe:
-                    ordered_tasks = []
-                    
-                    if is_lista_continua:
-                        mun_groups = {}
-                        for o in obras_equipe:
-                            mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
-                            mun_limpo = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) else 'DESCONHECIDO'
-                            o['MUN_LIMPO_CALC'] = mun_limpo
-                            if mun_limpo not in mun_groups: mun_groups[mun_limpo] = []
-                            mun_groups[mun_limpo].append(o)
-                            
-                        for mun, obs in mun_groups.items():
-                            prio_sim = [o for o in obs if str(o.get('PRIORIDADE')).upper() == 'SIM']
-                            prio_nao = [o for o in obs if str(o.get('PRIORIDADE')).upper() != 'SIM']
-                            
-                            def greedy_sort(pts, start_lat, start_lon):
-                                if not pts: return []
-                                sorted_pts = []
-                                curr_lat, curr_lon = start_lat, start_lon
-                                unvisited_pts = list(pts)
-                                while unvisited_pts:
-                                    best_idx = 0
-                                    best_d = float('inf')
-                                    for i, p in enumerate(unvisited_pts):
-                                        d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
-                                        if d < best_d:
-                                            best_d = d; best_idx = i
-                                    nxt = unvisited_pts.pop(best_idx)
-                                    sorted_pts.append(nxt)
-                                    curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
-                                return sorted_pts
-
-                            sub_sim = greedy_sort(prio_sim, base_lat, base_lon)
-                            ordered_tasks.extend(sub_sim)
-                            
-                            if ordered_tasks:
-                                last = ordered_tasks[-1]
-                                ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE']))
-                            else:
-                                ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon))
-
-                    else:
-                        coords_dict = {}
-                        for o in obras_equipe:
-                            k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
-                            if k not in coords_dict: coords_dict[k] = []
-                            coords_dict[k].append(o)
-                            
-                        macro_obras = []
-                        for k, lista in coords_dict.items():
-                            tem_prio = any(x.get('PRIORIDADE') == 'Sim' for x in lista)
-                            rep = lista[0].copy()
-                            rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
-                            mun_raw = rep.get('MUNICIPIO', rep.get('CIDADE', 'DESCONHECIDO'))
-                            rep['MUN_LIMPO'] = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) and str(mun_raw).strip() != '' else 'DESCONHECIDO'
-                            rep['_sub_obras'] = lista
-                            macro_obras.append(rep)
-
-                        macros_by_mun = {}
-                        for m in macro_obras:
-                            mun = m['MUN_LIMPO']
-                            if mun not in macros_by_mun: macros_by_mun[mun] = []
-                            macros_by_mun[mun].append(m)
-
-                        mun_stats = []
-                        for mun, m_list in macros_by_mun.items():
-                            prio_count = sum(1 for x in m_list if x['PRIORIDADE'] == 'Sim')
-                            mun_stats.append({'mun': mun, 'prio_count': prio_count, 'total_count': len(m_list)})
-
-                        mun_stats.sort(key=lambda x: (x['prio_count'] > 0, x['prio_count'], x['total_count']), reverse=True)
-
-                        ordered_macros = []
-                        for stat in mun_stats:
-                            mun = stat['mun']
-                            m_list = macros_by_mun[mun]
-                            prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
-                            comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
-                            
-                            if prio_macros: ordered_macros.extend(resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base']))
-                            if comum_macros: ordered_macros.extend(resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base']))
-                            
-                        for macro in ordered_macros:
-                            subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
-                            for s in subs: s['MUN_LIMPO_CALC'] = macro['MUN_LIMPO']
-                            ordered_tasks.extend(subs)
-                    
-                    rotas_flat = []
-                    dia_absoluto = 1
-                    semana_atual = 1
-                    dia_da_semana = 1
-                    obras_no_periodo_macro = 0
-                    mun_anterior = None
-                    
-                    def iniciar_dia(dia_abs):
-                        data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
-                        return {
-                            'lat': base_lat, 'lon': base_lon,
-                            'time': data_atual,
-                            'date_obj': data_atual,
-                            'obras_hoje': 0, 'prio_hoje': 0, 'km_hoje': 0.0, 'lunch': False
-                        }
+                    if obras_equipe:
+                        ordered_tasks = []
                         
-                    estado = iniciar_dia(dia_absoluto)
-                    
-                    for obra in ordered_tasks:
-                        mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
-                        qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
-                        qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
-                        
-                        viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
-                        
-                        viagem_km = viagem_km_reta * 1.3 
-                        obra['ALERTA_TOPOLOGIA'] = 'OK'
-                        if viagem_km > (viagem_km_reta * 3) and viagem_km_reta > 2.0:
-                            obra['ALERTA_TOPOLOGIA'] = '⚠️ Rota suspeita (Barreira física)'
-                            
-                        if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
-                            viagem_min = 0.0
-                            exec_min = 30.0 
+                        if is_lista_continua:
+                            mun_groups = {}
+                            for o in obras_equipe:
+                                mun_raw = o.get('MUNICIPIO', o.get('CIDADE', 'DESCONHECIDO'))
+                                mun_limpo = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) else 'DESCONHECIDO'
+                                o['MUN_LIMPO_CALC'] = mun_limpo
+                                if mun_limpo not in mun_groups: mun_groups[mun_limpo] = []
+                                mun_groups[mun_limpo].append(o)
+                                
+                            for mun, obs in mun_groups.items():
+                                prio_sim = [o for o in obs if str(o.get('PRIORIDADE')).upper() == 'SIM']
+                                prio_nao = [o for o in obs if str(o.get('PRIORIDADE')).upper() != 'SIM']
+                                
+                                def greedy_sort(pts, start_lat, start_lon):
+                                    if not pts: return []
+                                    sorted_pts = []
+                                    curr_lat, curr_lon = start_lat, start_lon
+                                    unvisited_pts = list(pts)
+                                    while unvisited_pts:
+                                        best_idx = 0
+                                        best_d = float('inf')
+                                        for i, p in enumerate(unvisited_pts):
+                                            d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
+                                            if d < best_d:
+                                                best_d = d; best_idx = i
+                                        nxt = unvisited_pts.pop(best_idx)
+                                        sorted_pts.append(nxt)
+                                        curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                    return sorted_pts
+
+                                sub_sim = greedy_sort(prio_sim, base_lat, base_lon)
+                                ordered_tasks.extend(sub_sim)
+                                
+                                if ordered_tasks:
+                                    last = ordered_tasks[-1]
+                                    ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE']))
+                                else:
+                                    ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon))
+
                         else:
-                            vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
-                            viagem_min = (viagem_km / vel_dinamica) * 60
-                            exec_min = cfg['tempo_medio_obra'] * 60
+                            coords_dict = {}
+                            for o in obras_equipe:
+                                k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
+                                if k not in coords_dict: coords_dict[k] = []
+                                coords_dict[k].append(o)
+                                
+                            macro_obras = []
+                            for k, lista in coords_dict.items():
+                                tem_prio = any(x.get('PRIORIDADE') == 'Sim' for x in lista)
+                                rep = lista[0].copy()
+                                rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
+                                mun_raw = rep.get('MUNICIPIO', rep.get('CIDADE', 'DESCONHECIDO'))
+                                rep['MUN_LIMPO'] = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) and str(mun_raw).strip() != '' else 'DESCONHECIDO'
+                                rep['_sub_obras'] = lista
+                                macro_obras.append(rep)
+
+                            macros_by_mun = {}
+                            for m in macro_obras:
+                                mun = m['MUN_LIMPO']
+                                if mun not in macros_by_mun: macros_by_mun[mun] = []
+                                macros_by_mun[mun].append(m)
+
+                            mun_stats = []
+                            for mun, m_list in macros_by_mun.items():
+                                prio_count = sum(1 for x in m_list if x['PRIORIDADE'] == 'Sim')
+                                mun_stats.append({'mun': mun, 'prio_count': prio_count, 'total_count': len(m_list)})
+
+                            mun_stats.sort(key=lambda x: (x['prio_count'] > 0, x['prio_count'], x['total_count']), reverse=True)
+
+                            ordered_macros = []
+                            for stat in mun_stats:
+                                mun = stat['mun']
+                                m_list = macros_by_mun[mun]
+                                prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
+                                comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
+                                
+                                if prio_macros: ordered_macros.extend(resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base']))
+                                if comum_macros: ordered_macros.extend(resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base']))
+                                
+                            for macro in ordered_macros:
+                                subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
+                                for s in subs: s['MUN_LIMPO_CALC'] = macro['MUN_LIMPO']
+                                ordered_tasks.extend(subs)
                         
-                        chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
+                        rotas_flat = []
+                        dia_absoluto = 1
+                        semana_atual = 1
+                        dia_da_semana = 1
+                        obras_no_periodo_macro = 0
+                        mun_anterior = None
                         
-                        if chegada_prevista.hour >= 12 and not estado['lunch']:
-                            lunch_start = max(estado['time'], estado['date_obj'].replace(hour=12))
-                            lunch_end = lunch_start + pd.Timedelta(hours=1)
-                            rotas_flat.append({
-                                'obra': None, 'is_lunch': True, 'is_retorno': False,
-                                'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                                'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
-                                'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                                'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                                'hora_inicio': lunch_start, 'hora_fim': lunch_end,
-                                'viagem_min': 0.0, 'dist_km': 0.0
-                            })
-                            estado['time'] = lunch_end
-                            estado['lunch'] = True
+                        def iniciar_dia(dia_abs):
+                            data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
+                            return {
+                                'lat': base_lat, 'lon': base_lon,
+                                'time': data_atual,
+                                'date_obj': data_atual,
+                                'obras_hoje': 0, 'km_hoje': 0.0, 'lunch': False
+                            }
+                            
+                        estado = iniciar_dia(dia_absoluto)
+                        
+                        for obra in ordered_tasks:
+                            mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
+                            qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
+                            
+                            viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
+                            
+                            viagem_km = viagem_km_reta * 1.3 
+                            obra['ALERTA_TOPOLOGIA'] = 'OK'
+                            if viagem_km > (viagem_km_reta * 3) and viagem_km_reta > 2.0:
+                                obra['ALERTA_TOPOLOGIA'] = '⚠️ Rota suspeita'
+                                
+                            if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
+                                viagem_min = 0.0
+                                exec_min = 30.0 
+                            else:
+                                vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
+                                viagem_min = (viagem_km / vel_dinamica) * 60
+                                exec_min = cfg['tempo_medio_obra'] * 60
+                            
                             chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                             
-                        fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
-                        
-                        virar_dia = False
-                        prio_acumulada = estado.get('prio_hoje', 0) + qtd_prio_atual
-                        limite_diario_atual = cfg['obras_por_dia']
-                        if prio_acumulada > 3: limite_diario_atual += 10 
-                        
-                        if obras_no_periodo_macro >= limite_diario_atual:
-                            virar_dia = True
-                        elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
-                            if viagem_km_reta > 100.0:
-                                virar_dia = True 
+                            if chegada_prevista.hour >= 12 and not estado['lunch']:
+                                lunch_start = max(estado['time'], estado['date_obj'].replace(hour=12))
+                                lunch_end = lunch_start + pd.Timedelta(hours=1)
+                                rotas_flat.append({
+                                    'obra': None, 'is_lunch': True, 'is_retorno': False,
+                                    'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
+                                    'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
+                                    'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                    'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
+                                    'hora_inicio': lunch_start, 'hora_fim': lunch_end,
+                                    'viagem_min': 0.0, 'dist_km': 0.0
+                                })
+                                estado['time'] = lunch_end
+                                estado['lunch'] = True
+                                chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                                 
-                        if virar_dia:
+                            fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
+                            
+                            virar_dia = False
+                            limite_diario_atual = cfg['obras_por_dia']
+                            
+                            if obras_no_periodo_macro >= limite_diario_atual:
+                                virar_dia = True
+                            elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
+                                if viagem_km_reta > 100.0:
+                                    virar_dia = True 
+                                    
+                            if virar_dia:
+                                dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
+                                viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
+                                ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
+                                rotas_flat.append({
+                                    'obra': None, 'is_lunch': False, 'is_retorno': True,
+                                    'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
+                                    'lat_atual': base_lat, 'lon_atual': base_lon,
+                                    'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                    'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
+                                    'hora_inicio': estado['time'], 'hora_fim': ret_fim,
+                                    'viagem_min': viagem_ret, 'dist_km': dist_ret
+                                })
+                                
+                                dia_absoluto += 1
+                                obras_no_periodo_macro = 0
+                                
+                                if cfg['tipo_periodo'] == "Semana":
+                                    dia_da_semana += 1
+                                    if dia_da_semana > len(cfg['dias_selecionados']):
+                                        semana_atual += 1
+                                        dia_da_semana = 1
+                                        
+                                estado = iniciar_dia(dia_absoluto)
+                                
+                                viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
+                                viagem_km = viagem_km_reta * 1.3
+                                
+                                if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
+                                    viagem_min = 0.0; exec_min = 30.0 
+                                else:
+                                    vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
+                                    viagem_min = (viagem_km / vel_dinamica) * 60; exec_min = cfg['tempo_medio_obra'] * 60
+                                
+                                chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
+                                fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
+                                
+                            rotas_flat.append({
+                                'obra': obra, 'is_lunch': False, 'is_retorno': False,
+                                'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
+                                'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
+                                'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
+                                'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
+                                'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
+                                'viagem_min': viagem_min, 'dist_km': viagem_km
+                            })
+                            estado['lat'] = obra['LATITUDE']
+                            estado['lon'] = obra['LONGITUDE']
+                            estado['time'] = fim_previsto
+                            estado['obras_hoje'] += qtd_real
+                            estado['km_hoje'] += viagem_km
+                            obras_no_periodo_macro += qtd_real
+                            mun_anterior = mun_atual 
+
+                        if estado['obras_hoje'] > 0:
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
                             viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
                             ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
@@ -1481,170 +1482,110 @@ def app_roteirizador():
                                 'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
                                 'lat_atual': base_lat, 'lon_atual': base_lon,
                                 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
+                                'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
                                 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
                                 'hora_inicio': estado['time'], 'hora_fim': ret_fim,
                                 'viagem_min': viagem_ret, 'dist_km': dist_ret
                             })
-                            
-                            dia_absoluto += 1
-                            obras_no_periodo_macro = 0
-                            
-                            if cfg['tipo_periodo'] == "Semana":
-                                dia_da_semana += 1
-                                if dia_da_semana > len(cfg['dias_selecionados']):
-                                    if not cfg.get('roteirizar_tudo'):
-                                        semana_atual += 1
-                                    else:
-                                        semana_atual += 1
-                                    dia_da_semana = 1
-                                    
-                            estado = iniciar_dia(dia_absoluto)
-                            prio_acumulada = qtd_prio_atual 
-                            
-                            viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
-                            viagem_km = viagem_km_reta * 1.3
-                            
-                            if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
-                                viagem_min = 0.0; exec_min = 30.0 
-                            else:
-                                vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
-                                viagem_min = (viagem_km / vel_dinamica) * 60; exec_min = cfg['tempo_medio_obra'] * 60
-                            
-                            chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
-                            fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
-                            
-                        rotas_flat.append({
-                            'obra': obra, 'is_lunch': False, 'is_retorno': False,
-                            'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                            'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
-                            'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
-                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                            'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
-                            'viagem_min': viagem_min, 'dist_km': viagem_km
-                        })
-                        estado['lat'] = obra['LATITUDE']
-                        estado['lon'] = obra['LONGITUDE']
-                        estado['time'] = fim_previsto
-                        estado['obras_hoje'] += qtd_real
-                        estado['prio_hoje'] = prio_acumulada 
-                        estado['km_hoje'] += viagem_km
-                        obras_no_periodo_macro += qtd_real
-                        mun_anterior = mun_atual 
 
-                    if estado['obras_hoje'] > 0:
-                        dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
-                        viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
-                        ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
-                        rotas_flat.append({
-                            'obra': None, 'is_lunch': False, 'is_retorno': True,
-                            'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                            'lat_atual': base_lat, 'lon_atual': base_lon,
-                            'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                            'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
-                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                            'hora_inicio': estado['time'], 'hora_fim': ret_fim,
-                            'viagem_min': viagem_ret, 'dist_km': dist_ret
-                        })
-
-                    geoms_and_durs = []
-                    if not cfg.get('tracado_real', False):
-                        total_r = len(rotas_flat)
-                        for i, item in enumerate(rotas_flat):
-                            if i % 100 == 0: 
-                                update_running_timer(b_idx, i, total_r)
-                            dist_m = item['dist_km'] * 1000
-                            dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
-                            geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
-                            geoms_and_durs.append((geom, dur_sec))
-                    else:
-                        total_r = len(rotas_flat)
-                        for i, item in enumerate(rotas_flat):
-                            if i % 5 == 0:
-                                status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{total_r})")
-                            
-                            update_running_timer(b_idx, i, total_r)
-                            time.sleep(0.5)
-                            try:
-                                geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-                            except Exception:
+                        geoms_and_durs = []
+                        if not cfg.get('tracado_real', False):
+                            for item in rotas_flat:
                                 dist_m = item['dist_km'] * 1000
-                                geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
                                 dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
-                            geoms_and_durs.append((geom, dur_sec))
-
-                    ordem_global = 1
-                    dias_pt = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-                    for item, (geom, dur_sec) in zip(rotas_flat, geoms_and_durs):
-                        periodo_val = item['semana'] if cfg['tipo_periodo'] == "Semana" else item['dia']
-                        
-                        data_do_item = datetime.strptime(item['dia_mes'], '%d/%m/%Y')
-                        dia_nome_str = dias_pt[data_do_item.weekday()] if cfg['tipo_periodo'] == "Semana" else f"Dia {item['dia']}"
-                        
-                        if item['is_lunch']:
-                            routed_data_final.append({
-                                'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO DA EQUIPE', 
-                                'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
-                                'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                                'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
-                                'SEMANA': item['semana'], 'DIA': item['dia'], 
-                                'PERIODO': periodo_val,
-                                'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'TEMPO_VIAGEM_MINUTOS': 0.0,
-                                'ROTA_GEOMETRIA': geom,
-                                'PRIORIDADE': 'Não',
-                                'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
-                                'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
-                                '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
-                            })
-                        elif item['is_retorno']:
-                            routed_data_final.append({
-                                'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 
-                                'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
-                                'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                                'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
-                                'SEMANA': item['semana'], 'DIA': item['dia'], 
-                                'PERIODO': periodo_val,
-                                'DISTANCIA_PONTO_ANTERIOR_KM': round(item['dist_km'], 2), 
-                                'TEMPO_VIAGEM_MINUTOS': round(item['viagem_min'], 1),
-                                'ROTA_GEOMETRIA': geom,
-                                'PRIORIDADE': 'Não',
-                                'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
-                                'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
-                                '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
-                            })
+                                geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
+                                geoms_and_durs.append((geom, dur_sec))
                         else:
-                            obra = item['obra']
-                            obra['ORDEM'] = ordem_global
-                            obra['NOME_DIA'] = dia_nome_str
-                            obra['DIA_MES'] = item['dia_mes']
-                            obra['SEMANA'] = item['semana']
-                            obra['DIA'] = item['dia']
-                            obra['PERIODO'] = periodo_val
-                            obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2)
-                            obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
-                            obra['ROTA_GEOMETRIA'] = geom
-                            obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M')
-                            obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M')
-                            obra['_HORA_INICIO_DT'] = item['hora_inicio']
-                            obra['_HORA_FIM_DT'] = item['hora_fim']
-                            
-                            routed_data_final.append(obra)
-                        ordem_global += 1
+                            total_r = len(rotas_flat)
+                            for i, item in enumerate(rotas_flat):
+                                if i % 10 == 0:
+                                    status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{total_r})")
+                                try:
+                                    geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                                except Exception:
+                                    dist_m = item['dist_km'] * 1000
+                                    geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
+                                    dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
+                                geoms_and_durs.append((geom, dur_sec))
 
+                        ordem_global = 1
+                        dias_pt = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+                        for item, (geom, dur_sec) in zip(rotas_flat, geoms_and_durs):
+                            periodo_val = item['semana'] if cfg['tipo_periodo'] == "Semana" else item['dia']
+                            
+                            data_do_item = datetime.strptime(item['dia_mes'], '%d/%m/%Y')
+                            dia_nome_str = dias_pt[data_do_item.weekday()] if cfg['tipo_periodo'] == "Semana" else f"Dia {item['dia']}"
+                            
+                            if item['is_lunch']:
+                                routed_data_final_team.append({
+                                    'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO DA EQUIPE', 
+                                    'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
+                                    'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
+                                    'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
+                                    'SEMANA': item['semana'], 'DIA': item['dia'], 
+                                    'PERIODO': periodo_val,
+                                    'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'TEMPO_VIAGEM_MINUTOS': 0.0,
+                                    'ROTA_GEOMETRIA': geom,
+                                    'PRIORIDADE': 'Não',
+                                    'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
+                                    'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
+                                    '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
+                                })
+                            elif item['is_retorno']:
+                                routed_data_final_team.append({
+                                    'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 
+                                    'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
+                                    'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
+                                    'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
+                                    'SEMANA': item['semana'], 'DIA': item['dia'], 
+                                    'PERIODO': periodo_val,
+                                    'DISTANCIA_PONTO_ANTERIOR_KM': round(item['dist_km'], 2), 
+                                    'TEMPO_VIAGEM_MINUTOS': round(item['viagem_min'], 1),
+                                    'ROTA_GEOMETRIA': geom,
+                                    'PRIORIDADE': 'Não',
+                                    'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
+                                    'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
+                                    '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
+                                })
+                            else:
+                                obra = item['obra']
+                                obra['ORDEM'] = ordem_global
+                                obra['NOME_DIA'] = dia_nome_str
+                                obra['DIA_MES'] = item['dia_mes']
+                                obra['SEMANA'] = item['semana']
+                                obra['DIA'] = item['dia']
+                                obra['PERIODO'] = periodo_val
+                                obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2)
+                                obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
+                                obra['ROTA_GEOMETRIA'] = geom
+                                obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M')
+                                obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M')
+                                obra['_HORA_INICIO_DT'] = item['hora_inicio']
+                                obra['_HORA_FIM_DT'] = item['hora_fim']
+                                
+                                routed_data_final_team.append(obra)
+                            ordem_global += 1
+
+                st.session_state.tempo_processamento += (time.time() - start_iter)
+                state['b_idx'] += 1
+                state['routed_data'].extend(routed_data_final_team)
+                st.session_state.vrp_state = state
                 gc.collect() 
+                tentar_rerun()
                 
-            status_text.success("✅ Matrizes Resolvidas! Preparando empacotamento...")
-            progress_bar.progress(1.0)
-            
-            df_final_route = pd.DataFrame(routed_data_final)
-            if not df_final_route.empty:
-                df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+            else:
+                status_text.success("✅ Matrizes Resolvidas! Preparando empacotamento...")
+                progress_bar.progress(1.0)
                 
-            st.session_state.df_routed = df_final_route
-            st.session_state.vrp_status = "PACKAGING"
-            time.sleep(1)
-            tentar_rerun()
-            
+                df_final_route = pd.DataFrame(state['routed_data'])
+                if not df_final_route.empty:
+                    df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+                    
+                st.session_state.df_routed = df_final_route
+                st.session_state.vrp_status = "PACKAGING"
+                time.sleep(1)
+                tentar_rerun()
+
         except Exception as e:
             st.error(f"🚨 ERRO CRÍTICO NO MOTOR DE INTELIGÊNCIA: {e}")
             import traceback
@@ -1671,7 +1612,9 @@ def app_roteirizador():
         total_steps = len(bases_unicas) * 2 + 3
         current_step = 0
         
-        start_time = time.time()
+        if 'start_time_pkg' not in st.session_state:
+            st.session_state.start_time_pkg = time.time()
+        start_time = st.session_state.start_time_pkg
         
         buf_zip_xl = io.BytesIO()
         buf_zip_kml = io.BytesIO()
@@ -1775,7 +1718,6 @@ def app_roteirizador():
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, [], f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
-                
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
@@ -1805,7 +1747,6 @@ def app_roteirizador():
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, [], f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
-                    
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
