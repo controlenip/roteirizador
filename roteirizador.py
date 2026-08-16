@@ -973,7 +973,6 @@ def app_roteirizador():
                     
                     lista_obras = df_combinado.to_dict('records')
                     
-                    # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -1008,7 +1007,6 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
-                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -1021,7 +1019,6 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
-                        
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1102,7 +1099,7 @@ def app_roteirizador():
                     mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
                     obras_despachadas = mask_despacho.sum()
                     if obras_despachadas > 0:
-                        st.info(f"⏭️ {obras_despachadas} obras foram ignoradas (DATA DESPACHO CAMPO preenchida).")
+                        st.info(f"⏭️ {obras_despachadas} obras ignoradas (DATA DESPACHO CAMPO preenchida).")
                         df_tasks = df_tasks[~mask_despacho]
                         
                 df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -1306,6 +1303,8 @@ def app_roteirizador():
             
             texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
             status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
+            
+            update_running_timer(b_idx, 0, 1)
             
             if 'current_rotas_flat' not in state:
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
@@ -1861,6 +1860,7 @@ def app_roteirizador():
 # ==========================================
 def gerar_excel_modelo(df_modelo):
     output = io.BytesIO()
+    # Usando engine default para não depender do xlsxwriter que falta no servidor
     df_modelo.to_excel(output, index=False, sheet_name='Modelo')
     return output.getvalue()
 
