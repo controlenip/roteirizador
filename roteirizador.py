@@ -71,7 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento']
+    keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated']
     for k in keys_to_clear:
         if k in st.session_state:
             del st.session_state[k]
@@ -190,6 +190,9 @@ def app_roteirizador():
     
     with st.sidebar:
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
+            sentido_rota = st.radio("Sentido do Roteamento Diário:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
+            raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
+            
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
             
@@ -312,7 +315,7 @@ def app_roteirizador():
                  st.markdown(f'''
                  <div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px;">
                      <h3 style="margin-top: 0; color: #856404;">⚠️ Modo Lista Contínua: {tot_obras_reais} Obras Roteirizadas</h3>
-                     <p>O sistema processou a lista ignorando limites de tempo. No entanto, <b>{obras_sobrando_na_planilha} obras</b> ficaram de fora pois pertencem a municípios que nenhum levantador atende de forma explícita.</p>
+                     <p>O sistema processou a lista ignorando limites de tempo. No entanto, <b>{obras_sobrando_na_planilha} obras</b> ficaram de fora pois pertencem a municípios que nenhum levantador atende de forma explícita. Faça o download do KML "OBRAS NÃO ALOCADAS" para visualizar as rejeitadas.</p>
                  </div>
                  ''', unsafe_allow_html=True)
              else:
@@ -325,7 +328,7 @@ def app_roteirizador():
         else:
             if obras_faltantes > 0:
                 if obras_sobrando_na_planilha > 0:
-                    dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem. A meta de {meta_global_exata} não foi atingida porque o estoque de obras nas cidades específicas de cada técnico esgotou. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real das cidades.</li>"
+                    dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem. A meta de {meta_global_exata} não foi atingida porque o estoque de obras nas cidades específicas de cada técnico esgotou. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real das cidades. Faça o download do <b>KML de Obras Não Alocadas</b> para inspecionar.</li>"
                 else:
                     dica_extra = f"<li><b>Falta de Obras na Planilha Geral:</b> O estoque total de obras válidas esgotou antes de fechar a meta operacional. Faltaram obras nos municípios de atuação. O sistema roteirizou a quantidade máxima encontrada ({tot_obras_reais} obras).</li>"
                 
@@ -910,7 +913,7 @@ def app_roteirizador():
             erros_nome += drop_mask.sum()
             df_tasks = df_tasks[~drop_mask]
 
-            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=100, agrupar_por_levantador=False)
+            df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=False)
             if qtd_condensada > 0: st.toast(f"✅ Inteligência condensou {qtd_condensada} obras repetidas no mesmo endereço em 'Super Pontos'.")
 
             st.markdown("#### 📊 Raio-X da Base de Dados Carregada")
@@ -1045,6 +1048,7 @@ def app_roteirizador():
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
+                st.session_state.df_unallocated = df_unallocated
                 st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
                 tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
@@ -1118,7 +1122,7 @@ def app_roteirizador():
                 lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
                 df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
 
-                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=100, agrupar_por_levantador=True)
+                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=True)
                 if qtd_condensada > 0: st.toast(f"✅ {qtd_condensada} obras repetidas no mesmo endereço viraram 'Super Pontos'.")
                 
                 if 'PRIORIDADE' not in df_tasks.columns:
@@ -1152,6 +1156,7 @@ def app_roteirizador():
                 else:
                     df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
                     df_tasks_alocadas = df_tasks.copy()
+                    st.session_state.df_unallocated = pd.DataFrame()
                     st.session_state.tot_obras_nao_alocadas = 0
                     
                     bases_records = []
@@ -1195,7 +1200,7 @@ def app_roteirizador():
                 reference_order = cols_desejadas + [c for c in todas_cols_limpas if c not in cols_desejadas]
                 colunas_exibir.sort(key=lambda x: reference_order.index(x) if x in reference_order else 999)
                 
-                st.info("⚡ **Deduplicação Ativa:** Obras num raio de 100 metros foram transformadas em Super Pontos para otimização.")
+                st.info("⚡ **Deduplicação Ativa:** Obras baseadas no raio definido no menu lateral foram condensadas para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
                 tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
@@ -1231,7 +1236,9 @@ def app_roteirizador():
                         'dias_selecionados': dias_semana_selecionados,
                         'url_osrm_base': url_osrm_base,
                         'tracado_real': tracado_real,
-                        'data_inicio': data_inicio_roteiro
+                        'data_inicio': data_inicio_roteiro,
+                        'sentido_rota': sentido_rota,
+                        'raio_super_ponto': raio_super_ponto
                     },
                     'b_names': list(set([b['LEVANTADOR'] for b in bases_records])),
                     'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
@@ -1243,6 +1250,7 @@ def app_roteirizador():
         state = st.session_state.vrp_state
         cfg = state['config']
         is_lista_continua = cfg.get('is_lista_continua', False)
+        is_reversa = "Reversa" in cfg.get('sentido_rota', '')
         
         titulo_motor = "🚀 Execução do Motor Leve Vetorial (Lista Contínua)" if is_lista_continua else "🚀 Execução do Motor de Inteligência (OR-Tools VRP)"
         st.markdown(f"## {titulo_motor}")
@@ -1304,8 +1312,6 @@ def app_roteirizador():
             texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
             status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
             
-            update_running_timer(b_idx, 0, 1)
-            
             if 'current_rotas_flat' not in state:
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 unvisited = state['unvisited']
@@ -1335,11 +1341,23 @@ def app_roteirizador():
                             prio_sim = [o for o in obs if str(o.get('PRIORIDADE')).upper() == 'SIM']
                             prio_nao = [o for o in obs if str(o.get('PRIORIDADE')).upper() != 'SIM']
                             
-                            def greedy_sort(pts, start_lat, start_lon):
+                            def greedy_sort(pts, start_lat, start_lon, reverse_first=False):
                                 if not pts: return []
                                 sorted_pts = []
                                 curr_lat, curr_lon = start_lat, start_lon
                                 unvisited_pts = list(pts)
+                                
+                                if reverse_first and unvisited_pts:
+                                    best_idx = 0
+                                    best_d = -1
+                                    for i, p in enumerate(unvisited_pts):
+                                        d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
+                                        if d > best_d:
+                                            best_d = d; best_idx = i
+                                    nxt = unvisited_pts.pop(best_idx)
+                                    sorted_pts.append(nxt)
+                                    curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                    
                                 while unvisited_pts:
                                     best_idx = 0
                                     best_d = float('inf')
@@ -1352,13 +1370,13 @@ def app_roteirizador():
                                     curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                 return sorted_pts
 
-                            sub_sim = greedy_sort(prio_sim, base_lat, base_lon)
+                            sub_sim = greedy_sort(prio_sim, base_lat, base_lon, is_reversa)
                             ordered_tasks.extend(sub_sim)
                             if ordered_tasks:
                                 last = ordered_tasks[-1]
-                                ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE']))
+                                ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE'], False))
                             else:
-                                ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon))
+                                ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon, is_reversa))
 
                     else:
                         coords_dict = {}
@@ -1397,8 +1415,19 @@ def app_roteirizador():
                             prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
                             comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
                             
-                            if prio_macros: ordered_macros.extend(resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base']))
-                            if comum_macros: ordered_macros.extend(resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base']))
+                            if prio_macros: 
+                                tsp_res = resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base'])
+                                if is_reversa and tsp_res:
+                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, tsp_res[i]['LATITUDE'], tsp_res[i]['LONGITUDE']))
+                                    tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
+                                ordered_macros.extend(tsp_res)
+                                
+                            if comum_macros: 
+                                tsp_res = resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base'])
+                                if is_reversa and tsp_res:
+                                    farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, tsp_res[i]['LATITUDE'], tsp_res[i]['LONGITUDE']))
+                                    tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
+                                ordered_macros.extend(tsp_res)
                             
                         for macro in ordered_macros:
                             subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
@@ -1805,6 +1834,19 @@ def app_roteirizador():
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
+                # GERADOR DO KML DE OBRAS NAO ALOCADAS
+                df_unallocated = st.session_state.get('df_unallocated', pd.DataFrame())
+                if not df_unallocated.empty:
+                    kml_u = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>']
+                    kml_u.append('<Style id="white_pin"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>')
+                    for _, r in df_unallocated.iterrows():
+                        lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+                        if pd.notna(lat) and pd.notna(lon):
+                            nome = html.escape(str(r.get('PROTOCOLO', 'Ponto Rejeitado')))
+                            kml_u.append(f'<Placemark><name>{nome}</name><styleUrl>#white_pin</styleUrl><Point><coordinates>{lon},{lat}</coordinates></Point></Placemark>')
+                    kml_u.append('</Document></kml>')
+                    zip_kml.writestr(f"OBRAS_NAO_ALOCADAS - {data_atual_formatada}.kml", "\\n".join(kml_u).encode('utf-8'))
+                
                 gpx_geral_str = gerar_gpx_simples(df_routed_kml, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}")
                 zip_gpx.writestr(f"GPS_ROTA_TOTAL - {data_atual_formatada}.gpx", gpx_geral_str.encode('utf-8'))
                 
@@ -1860,7 +1902,6 @@ def app_roteirizador():
 # ==========================================
 def gerar_excel_modelo(df_modelo):
     output = io.BytesIO()
-    # Usando engine default para não depender do xlsxwriter que falta no servidor
     df_modelo.to_excel(output, index=False, sheet_name='Modelo')
     return output.getvalue()
 
@@ -1951,7 +1992,7 @@ def renderizar_faq():
         st.markdown("Existe um checkbox chamado *Filtro: Ignorar obras já despachadas*. Se ativado, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha qualquer coisa escrita ali (que não seja vazia/NaN) será sumariamente ignorada do roteamento. Isso previne retrabalho cego.")
         
         st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
-        st.markdown("Se o sistema encontrar 4 notas fiscais cujas coordenadas estejam sobrepostas num raio de até 100 metros (indicando a mesma rua ou condomínio), ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML.")
+        st.markdown("Se o sistema encontrar notas fiscais cujas coordenadas estejam sobrepostas em um pequeno raio de ação, ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML. **Você pode definir esse raio de agrupamento (em metros) no menu lateral.**")
     with c_flt2:
         st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
         st.markdown("O sistema exige urgência por três fontes simultâneas. Basta a obra cumprir **UM** destes requisitos para furar a fila do roteiro e ficar vermelha no mapa:")
@@ -1962,8 +2003,9 @@ def renderizar_faq():
     st.markdown("---")
     st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
     st.markdown("""
-    * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o "Dia 2" (Terça-Feira), garantindo que as metas programadas não estourem.
-    * **Cálculo de Postes e Malhas:** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma. Se ambas falharem, ele puxa a coluna global `POSTES PREVISTOS`.
+    * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o dia seguinte, garantindo que as metas programadas não estourem.
+    * **Varredura Reversa (Longe -> Perto):** No menu lateral, você pode escolher se a IA faz a rota comum (visita o que está perto de casa e vai se afastando) ou se faz a *Reversa*: a IA manda o técnico cedo para a obra mais longe da cidade e vem puxando a rota dele de volta, para o fim do expediente terminar mais perto de casa.
+    * **Cálculo de Postes e Malhas:** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma.
     * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Massa" das obras de um técnico. Se essa mancha roxa de trabalho ficar concentrada a mais de **60 km** de distância da coordenada de residência base dele, a aba gerencial vai piscar sugerindo Hospedagem, com um botão direto para pesquisa de pousadas.
     """)
     
@@ -1971,8 +2013,9 @@ def renderizar_faq():
     st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
     st.info("""
     * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
-    * **Demanda_Geral.xlsx:** Uma compilação cristalina. Possui o nome da equipe travado na primeira coluna, seguido da Ordem (1, 2, 3...) e os dias processados. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação.
-    * **Pacote KML e GPX:** O KML roda em Google Earth (limpo de caixas de textos desnecessárias via Regex). O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação.
+    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra não couber na cota de nenhum técnico, a IA gera um mapa extra chamado **`OBRAS_NAO_ALOCADAS.kml`** com pinos brancos para você saber exatamente onde ficou o buraco da operação.
+    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
     """)
 
 # ==========================================
