@@ -19,7 +19,7 @@ import gc
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA
 # ==========================================
 st.set_page_config(
-    page_title="Roteirizador NIP v2.0",
+    page_title="Roteirizador NIP v3.0",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
