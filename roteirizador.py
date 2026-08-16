@@ -864,6 +864,12 @@ def app_roteirizador():
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
 
+            # --- REGRA DE OURO: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
+            if 'STATUS LIST' in df_tasks.columns:
+                mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
+                df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
+            # -------------------------------------------------------------------
+
             if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
                 st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'. Verifique o cabeçalho dos arquivos enviados e certifique-se de que o sistema de mapeamento não foi comprometido na origem.")
                 st.stop()
@@ -1107,6 +1113,12 @@ def app_roteirizador():
                 else:
                     df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
                 
+                # --- REGRA DE OURO: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
+                if 'STATUS LIST' in df_tasks.columns:
+                    mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
+                    df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
+                # -------------------------------------------------------------------
+
                 if df_tasks.empty:
                     st.error("🚨 Nenhuma obra restou após os filtros de coordenadas. Verifique sua planilha.")
                 else:
@@ -1136,7 +1148,7 @@ def app_roteirizador():
                         })
                     
                     tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
-                    sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
+                    sidebar_html_placeholder.renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
                     st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
                     
                     col_prioridade = "PRIORIDADE"
@@ -1392,6 +1404,7 @@ def app_roteirizador():
                     semana_atual = 1
                     dia_da_semana = 1
                     obras_no_periodo_macro = 0
+                    mun_anterior = None
                     
                     def iniciar_dia(dia_abs):
                         data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
@@ -1405,6 +1418,7 @@ def app_roteirizador():
                     estado = iniciar_dia(dia_absoluto)
                     
                     for obra in ordered_tasks:
+                        mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
                         qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
                         qtd_prio_atual = qtd_real if obra.get('PRIORIDADE') == 'Sim' else 0
                         
@@ -1449,7 +1463,11 @@ def app_roteirizador():
                         if prio_acumulada > 3: limite_diario_atual += 10 
                         
                         if obras_no_periodo_macro >= limite_diario_atual:
-                            virar_dia = True
+                            if not is_lista_continua:
+                                if viagem_km_reta > 100.0:
+                                    virar_dia = True
+                            else:
+                                virar_dia = True
                                 
                         if virar_dia:
                             dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1509,6 +1527,7 @@ def app_roteirizador():
                         estado['prio_hoje'] = prio_acumulada 
                         estado['km_hoje'] += viagem_km
                         obras_no_periodo_macro += qtd_real
+                        mun_anterior = mun_atual 
 
                     if estado['obras_hoje'] > 0:
                         dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
@@ -1770,7 +1789,7 @@ def app_roteirizador():
                     nome_seguro = re.sub(r'_+', '_', nome_seguro)
                     df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                     
-                    update_ui(f"Formatando e desenhando rotas para: {base_nome}...")
+                    update_ui(f"Formatando rotas para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
