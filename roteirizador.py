@@ -34,7 +34,7 @@ from modules.data_processing import (
 )
 from modules.geospatial import (
     haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, 
-    resgatar_coordenadas, extrair_coordenadas_rede, encontrar_rede_mais_proxima, fundir_super_pontos
+    resgatar_coordenadas, fundir_super_pontos
 )
 from modules.routing_engine import (
     resolver_tsp_ortools, obter_rota_ruas, calcular_matriz_distancias_numpy
@@ -101,6 +101,25 @@ def count_real_obras(row):
         nums = re.findall(r'\d+', val)
         if nums: return int(nums[0])
     return 1
+
+def limpar_colunas_excel(df_alvo, cols_originais):
+    base_start = ['LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
+    if 'BASE_ATRIBUIDA' in df_alvo.columns:
+        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
+    elif 'LEVANTADOR' in df_alvo.columns and 'LEVANTADOR_RESPONSAVEL' not in df_alvo.columns:
+        df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
+        
+    base_end = ['LINK_NAVEGACAO_OFFLINE']
+    
+    # Busca nas colunas originais enviadas pelo usuário, ignorando os "lixos" de processamento
+    middle_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end]
+    
+    final_cols = []
+    for c in base_start + middle_cols + base_end:
+        if c in df_alvo.columns and c not in final_cols:
+            final_cols.append(c)
+            
+    return df_alvo[final_cols]
 
 def gerar_gpx_simples(df_kml, nome_rota):
     gpx = ['<?xml version="1.0" encoding="UTF-8"?>']
@@ -640,11 +659,7 @@ def app_roteirizador():
                 with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
                 with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
                 with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
-                with st.container(border=True):
-                    rede_files = st.file_uploader("5️⃣ Malha Elétrica de Referência (KMZ/KML) - P/ Ligar Obra à Rede", type=["kmz", "kml"], accept_multiple_files=True, key="rede_uploader")
-                    vao_medio_postes = st.slider("📏 Vão entre Postes (Metros)", min_value=20, max_value=100, value=60, step=1, help="Distância padrão entre postes para calcular os postes previstos.")
-                    st.caption("⚡ A IA varrerá as redes e transformadores nestes mapas e guiará o técnico no KML final ignorando outros componentes.")
-
+                
                 df_status_upload = pd.DataFrame()
                 coluna_status_selecionada = None
                 if status_file:
@@ -1046,13 +1061,8 @@ def app_roteirizador():
             st.markdown("### 📥 1. Planilha de Demanda (Lista Contínua)")
             st.info("Neste modo, o sistema apenas lê as colunas **LEVANTADOR**, **REGIONAL** e **MUNICIPIO** da sua planilha. Nenhuma equipe receberá obras de outro levantador. A IA vai roteirizar 100% da lista ignorando o limite de dias.")
             
-            col_m2_1, col_m2_2 = st.columns(2)
-            with col_m2_1.container(border=True):
-                pre_file = st.file_uploader("1️⃣ Planilha de Obras", type=["xlsx", "xls", "csv"], help="A planilha deve conter LEVANTADOR, MUNICIPIO, LATITUDE e LONGITUDE.")
-            
-            with col_m2_2.container(border=True):
-                rede_files_m2 = st.file_uploader("2️⃣ Malha Elétrica de Referência (KMZ/KML)", type=["kmz", "kml"], accept_multiple_files=True)
-                vao_medio_postes_m2 = st.slider("📏 Vão entre Postes (Metros) ", min_value=20, max_value=100, value=60, step=1, key="slider_m2")
+            with st.container(border=True):
+                pre_file = st.file_uploader("Planilha de Obras", type=["xlsx", "xls", "csv"], help="A planilha deve conter LEVANTADOR, MUNICIPIO, LATITUDE e LONGITUDE.")
             
             ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida. (Deixe desmarcado para roteirizar tudo).")
 
@@ -1174,19 +1184,6 @@ def app_roteirizador():
                 if tipo_periodo_clean == "Semana" and not dias_semana_selecionados:
                     st.error("Selecione os dias da semana na barra lateral antes de continuar.")
                     return
-
-                df_rede_kml = pd.DataFrame()
-                rede_files_active = rede_files_m2 if modo_operacao == "2" else (rede_files if 'rede_files' in locals() else None)
-                vao_ativo = vao_medio_postes_m2 if modo_operacao == "2" else (vao_medio_postes if 'vao_medio_postes' in locals() else 60)
-                
-                if rede_files_active:
-                    with st.spinner("🗺️ Analisando e extraindo a malha elétrica dos arquivos KMZ/KML..."):
-                        df_rede_kml = extrair_coordenadas_rede(rede_files_active)
-                        
-                    if not df_rede_kml.empty:
-                        with st.spinner(f"⚡ Encontrando a rede elétrica mais próxima para as {len(df_tasks_alocadas)} obras prontas..."):
-                            df_tasks_alocadas = encontrar_rede_mais_proxima(df_tasks_alocadas, df_rede_kml, vao_ativo)
-                            st.success(f"✅ {len(df_rede_kml)} nós de rede mapeados! O KML vai traçar uma linha-guia visual até a rede mais próxima.")
 
                 st.session_state.tarefas_alocadas_inicialmente = len(df_tasks_alocadas)
                 st.session_state.bases_records = bases_records
@@ -1566,7 +1563,6 @@ def app_roteirizador():
                             if i % 5 == 0:
                                 status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{total_r})")
                             
-                            # CRONÔMETRO ATUALIZADO A CADA TRECHO DA RUA
                             update_running_timer(b_idx, i, total_r)
                             time.sleep(0.5)
                             try:
@@ -1766,21 +1762,8 @@ def app_roteirizador():
                     if col in df_demanda_geral.columns:
                         df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round(2)
                         
-                cols_list_geral = df_demanda_geral.columns.tolist()
-                
-                if 'BASE_ATRIBUIDA' in cols_list_geral:
-                    cols_list_geral.remove('BASE_ATRIBUIDA')
-                    cols_list_geral.insert(0, 'BASE_ATRIBUIDA')
-                
-                if 'NOME_DIA' in cols_list_geral and 'DIA_MES' in cols_list_geral:
-                    cols_list_geral.remove('DIA_MES')
-                    idx = cols_list_geral.index('NOME_DIA')
-                    cols_list_geral.insert(idx + 1, 'DIA_MES')
-                    
-                df_demanda_geral = df_demanda_geral[cols_list_geral]
-                df_demanda_geral = df_demanda_geral.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
-                
-                cols_originais_hack = ['LEVANTADOR_RESPONSAVEL'] + [c for c in st.session_state.colunas_originais if c != 'LEVANTADOR_RESPONSAVEL']
+                df_demanda_geral = limpar_colunas_excel(df_demanda_geral, st.session_state.colunas_originais)
+                cols_originais_hack = df_demanda_geral.columns.tolist()
                 zip_xl.writestr(f"Demanda_Geral - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_demanda_geral, st.session_state.col_prioridade, cols_originais_hack))
                 
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
@@ -1791,10 +1774,9 @@ def app_roteirizador():
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                kml_geral_str = gerar_kml_agrupado(df_routed_kml, [], f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
-                kml_geral_str = re.sub(r'<Placemark>(?:(?!<Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 gpx_geral_str = gerar_gpx_simples(df_routed_kml, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}")
@@ -1814,24 +1796,17 @@ def app_roteirizador():
                         if col in df_lev_xl.columns:
                             df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round(2)
                             
-                    cols_list_lev = df_lev_xl.columns.tolist()
-                    if 'NOME_DIA' in cols_list_lev and 'DIA_MES' in cols_list_lev:
-                        cols_list_lev.remove('DIA_MES')
-                        idx_l = cols_list_lev.index('NOME_DIA')
-                        cols_list_lev.insert(idx_l + 1, 'DIA_MES')
-                        df_lev_xl = df_lev_xl[cols_list_lev]
-
-                    zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, st.session_state.colunas_originais))
+                    df_lev_xl = limpar_colunas_excel(df_lev_xl, st.session_state.colunas_originais)
+                    zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, df_lev_xl.columns.tolist()))
                     
                     df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, [], f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
-                    kml_lev_str = re.sub(r'<Placemark>(?:(?!<Placemark>).)*?<name>BASE:(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
                     gpx_lev_str = gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}")
