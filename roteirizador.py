@@ -71,6 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
+    # Resetando as variáveis de tempo para o relógio
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -170,7 +171,7 @@ def app_roteirizador():
     status_exec = st.session_state.vrp_status
     is_done = st.session_state.roteamento_concluido
 
-    st.markdown("<h1 class='brand-title'>Plataforma Roteirizadora NIP v2.0</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='brand-title'>Plataforma Roteirizadora NIP v3.0</h1>", unsafe_allow_html=True)
 
     s1_class = "step-item done" if (status_exec != "IDLE" or is_done) else "step-item active"
     s2_class = "step-item done" if (status_exec != "IDLE" or is_done) else "step-item active"
@@ -190,7 +191,8 @@ def app_roteirizador():
     
     with st.sidebar:
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
-            trava_global_obras = st.number_input("Trava Total de Operação (Bolo Geral da Empresa)", min_value=0, value=0, step=50, disabled=is_locked, help="Deixe 0 para roteirizar o máximo que a base permitir. Se preenchido, a IA pega apenas as primeiras X notas e descarta o resto para a semana seguinte.")
+            trava_global_obras = st.number_input("Trava Total de Operação (Bolo Geral da Empresa)", min_value=0, value=0, step=50, disabled=is_locked)
+            st.caption("⚠️ **Aviso:** Se o valor for **0**, o sistema levará em consideração **todas** as obras compatíveis. Se ficar em qualquer outro valor, apenas esta exata quantidade será roteirizada.")
             
             sentido_rota = st.radio("Sentido do Roteamento Diário:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
             raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
@@ -1155,9 +1157,9 @@ def app_roteirizador():
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
                 st.session_state.df_unallocated = df_unallocated
-                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
+                st.session_state.tot_obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
-                tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
                 if df_tasks_alocadas.empty: 
@@ -2019,7 +2021,7 @@ def renderizar_faq():
     st.markdown("<h1 class='brand-title' style='margin-bottom: 20px;'>📖 Central de Ajuda e Manual de Operação</h1>", unsafe_allow_html=True)
     
     st.markdown("""
-    Bem-vindo ao manual do **Roteirizador NIP v2.0**. Esta página detalha como o Cérebro Logístico (IA) toma decisões, os filtros ocultos e o fluxo de todos os dados do sistema.
+    Bem-vindo ao manual do **Roteirizador NIP v3.0**. Esta página detalha como o Cérebro Logístico (IA) toma decisões, os filtros ocultos e o fluxo de todos os dados do sistema.
     """)
     
     st.markdown("---")
