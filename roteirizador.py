@@ -71,7 +71,6 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    # Resetando as variáveis de tempo para o relógio
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -732,6 +731,7 @@ def app_roteirizador():
                             if len(dfs) == 0: st.session_state.colunas_originais_lev = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
                             df_temp['_ORIGEM_BASE'] = 'LEVANTAMENTO'
+                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'PROTOCOLO' not in df_temp.columns:
                                 for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
                                     if col_candidata in df_temp.columns:
@@ -745,6 +745,7 @@ def app_roteirizador():
                             if len(dfs) == 0: st.session_state.colunas_originais_san = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
                             df_temp['_ORIGEM_BASE'] = 'SANEAMENTO'
+                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'LATITUDE PROJETO' in df_temp.columns and 'LATITUDE' not in df_temp.columns: df_temp['LATITUDE'] = df_temp['LATITUDE PROJETO']
                             if 'LONGITUDE PROJETO' in df_temp.columns and 'LONGITUDE' not in df_temp.columns: df_temp['LONGITUDE'] = df_temp['LONGITUDE PROJETO']
                             if 'PROTOCOLO' not in df_temp.columns:
@@ -761,6 +762,7 @@ def app_roteirizador():
                             if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
                             df_temp['_ORIGEM_BASE'] = 'GENERICA'
+                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
                                 st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
                                 continue
@@ -879,10 +881,25 @@ def app_roteirizador():
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
 
-            # --- REGRA DE OURO: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
+            # --- REGRA DE OURO 1: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
             if 'STATUS LIST' in df_tasks.columns:
                 mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
                 df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
+            # -------------------------------------------------------------------
+            
+            # --- REGRA DE OURO 2: COLUNA "PRIORIDADE" DIFERENTE DE ZERO ---
+            if '_PRIORIDADE_ORIGINAL' in df_tasks.columns:
+                mask_not_zero = (
+                    df_tasks['_PRIORIDADE_ORIGINAL'].notna() & 
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '') & 
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0') & 
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0.0') & 
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAN') &
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NÃO') &
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAO') &
+                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE')
+                )
+                df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
             # -------------------------------------------------------------------
 
             if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
@@ -967,7 +984,6 @@ def app_roteirizador():
                     
                     lista_obras = df_combinado.to_dict('records')
                     
-                    # PASSO 1: ATRIBUIÇÃO ESTRITA (SOMENTE MUNICIPIOS DECLARADOS)
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -1002,7 +1018,6 @@ def app_roteirizador():
                         else:
                             unassigned_tasks.append(row)
                             
-                    # PASSO 2: FALLBACK (Raio de 100km para preencher cotas não batidas com obras órfãs)
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
@@ -1015,7 +1030,6 @@ def app_roteirizador():
                             valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
-                        
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
                         
                         if pd.notna(lat) and pd.notna(lon):
@@ -1070,6 +1084,7 @@ def app_roteirizador():
                 st.session_state.colunas_originais = df_tasks.columns.tolist()
                 df_tasks.columns = normalize_cols(df_tasks.columns)
                 df_tasks['_ORIGEM_BASE'] = 'LISTA_CONTINUA'
+                if 'PRIORIDADE' in df_tasks.columns: df_tasks['_PRIORIDADE_ORIGINAL'] = df_tasks['PRIORIDADE']
                 
                 if 'LEVANTADOR' not in df_tasks.columns:
                     if 'NOME DO LEVANTADOR' in df_tasks.columns: df_tasks.rename(columns={'NOME DO LEVANTADOR': 'LEVANTADOR'}, inplace=True)
@@ -1122,10 +1137,25 @@ def app_roteirizador():
                 else:
                     df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
                 
-                # --- REGRA DE OURO: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
+                # --- REGRA DE OURO 1: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
                 if 'STATUS LIST' in df_tasks.columns:
                     mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
                     df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
+                # -------------------------------------------------------------------
+                
+                # --- REGRA DE OURO 2: COLUNA "PRIORIDADE" DIFERENTE DE ZERO ---
+                if '_PRIORIDADE_ORIGINAL' in df_tasks.columns:
+                    mask_not_zero = (
+                        df_tasks['_PRIORIDADE_ORIGINAL'].notna() & 
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '') & 
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0') & 
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0.0') & 
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAN') &
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NÃO') &
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAO') &
+                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE')
+                    )
+                    df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
                 # -------------------------------------------------------------------
 
                 if df_tasks.empty:
