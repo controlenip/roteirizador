@@ -198,7 +198,8 @@ def app_roteirizador():
             raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
             
             st.markdown("---")
-            modo_produtividade = st.checkbox("🔥 Focar em Alta Densidade (Produtividade)", value=False, disabled=is_locked, help="Ignora obras esparsas e direciona a equipe apenas para 'bolsões' densos.")
+            modo_produtividade = st.checkbox("🔥 Focar em Alta Densidade (Produtividade)", value=False, disabled=is_locked)
+            st.caption("⚠️ **Aviso:** Se ativado, a IA rejeita obras isoladas e foca a equipe apenas em 'bolsões' com muitas notas.")
             if modo_produtividade:
                 min_vizinhos = st.slider("Mínimo de obras próximas (Raio 2km):", min_value=2, max_value=50, value=10, step=1, disabled=is_locked)
             else:
