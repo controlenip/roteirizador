@@ -107,14 +107,26 @@ def count_real_obras(row):
     return 1
 
 def limpar_colunas_excel(df_alvo, cols_originais):
-    base_start = ['LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
+    base_start = ['PROTOCOLO', 'LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
     elif 'LEVANTADOR' in df_alvo.columns and 'LEVANTADOR_RESPONSAVEL' not in df_alvo.columns:
         df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
-    middle_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end]
+    
+    # Trava de Segurança: Colunas Sagradas nunca são deletadas da exportação final
+    colunas_garantia = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'FASE', 'INFORMACOES EXTRAS']
+    
+    middle_cols = []
+    
+    for c in cols_originais:
+        if c in df_alvo.columns and c not in base_start and c not in base_end and not str(c).startswith('_'):
+            middle_cols.append(c)
+            
+    for c in colunas_garantia:
+        if c in df_alvo.columns and c not in base_start and c not in base_end and c not in middle_cols:
+            middle_cols.append(c)
     
     final_cols = []
     for c in base_start + middle_cols + base_end:
@@ -738,8 +750,8 @@ def app_roteirizador():
                     if task_files:
                         for f in task_files:
                             df_temp = ler_planilha_cached(f.getvalue())
-                            if len(dfs) == 0: st.session_state.colunas_originais_lev = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
+                            if len(dfs) == 0: st.session_state.colunas_originais_lev = df_temp.columns.tolist()
                             df_temp['_ORIGEM_BASE'] = 'LEVANTAMENTO'
                             if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'PROTOCOLO' not in df_temp.columns:
@@ -752,8 +764,8 @@ def app_roteirizador():
                     if saneamento_files:
                         for f in saneamento_files:
                             df_temp = ler_planilha_cached(f.getvalue())
-                            if len(dfs) == 0: st.session_state.colunas_originais_san = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
+                            if len(dfs) == 0: st.session_state.colunas_originais_san = df_temp.columns.tolist()
                             df_temp['_ORIGEM_BASE'] = 'SANEAMENTO'
                             if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'LATITUDE PROJETO' in df_temp.columns and 'LATITUDE' not in df_temp.columns: df_temp['LATITUDE'] = df_temp['LATITUDE PROJETO']
@@ -769,8 +781,8 @@ def app_roteirizador():
                         for f in generica_files:
                             if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
                             else: df_temp = ler_planilha_cached(f.getvalue())
-                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
                             df_temp.columns = normalize_cols(df_temp.columns)
+                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
                             df_temp['_ORIGEM_BASE'] = 'GENERICA'
                             if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                             if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
@@ -1158,9 +1170,9 @@ def app_roteirizador():
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
                 st.session_state.df_unallocated = df_unallocated
-                st.session_state.tot_obras_nao_alocadas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
+                st.session_state.tot_obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_unallocated.iterrows())
 
-                tot_obras_prontas = sum(len(r['_ORIGINAL_ROWS']) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
+                tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
                 sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, tot_obras_prontas, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
                 if df_tasks_alocadas.empty: 
@@ -1183,8 +1195,8 @@ def app_roteirizador():
 
             if pre_file:
                 df_tasks = ler_planilha_cached(pre_file.getvalue()) if not pre_file.name.endswith('.csv') else pd.read_csv(pre_file)
-                st.session_state.colunas_originais = df_tasks.columns.tolist()
                 df_tasks.columns = normalize_cols(df_tasks.columns)
+                st.session_state.colunas_originais = df_tasks.columns.tolist()
                 df_tasks['_ORIGEM_BASE'] = 'LISTA_CONTINUA'
                 if 'PRIORIDADE' in df_tasks.columns: df_tasks['_PRIORIDADE_ORIGINAL'] = df_tasks['PRIORIDADE']
                 
@@ -2112,7 +2124,7 @@ def renderizar_faq():
 
     with c_flt2:
         st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
-        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural. A equipe é enviada apenas para os 'Bolsões de Densidade', e las obras isoladas vão para o arquivo de rejeições para tratativa futura.")
+        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
         
         st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
         st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
@@ -2124,7 +2136,7 @@ def renderizar_faq():
     st.markdown("---")
     st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
     st.markdown("""
-    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo el resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
+    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo o resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
     * **O Paredão Diário (Corte Rígido):** Se a meta for **6 Obras Previstas por Dia**, na hora que a IA montar a 6ª obra, ela aborta o cálculo, traça a linha de "Retorno para a Base" e a 7ª obra cai para a Terça-Feira, blindando o técnico de sobrecarga.
     * **Varredura Reversa (Longe -> Perto):** Permite inverter a lógica da rota diária. Em vez de começar pelas obras da esquina, a IA manda o técnico cedo para a fazenda mais distante do mapa e vem puxando ele de volta obra por obra, para que o fim do expediente seja feito a poucos minutos de casa.
     * **Cálculo de Postes e Malhas:** Nos relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), ele usa matematicamente o Menor Valor entre as duas.
@@ -2135,19 +2147,20 @@ def renderizar_faq():
     st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
     st.info("""
     * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
-    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação.
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação. O sistema faz a autolimpeza com a função `limpar_colunas_excel()` garantindo que os identificadores primários (como PROTOCOLO, REGIONAL e LAT/LON) nunca sumam da entrega final.
     * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
-    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
+    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel. Construído nativamente pela função interna `gerar_gpx_simples()`.
     """)
 
     st.markdown("---")
     st.markdown("### 6. Bastidores Técnicos e Motores de IA (Arquitetura Interna)")
     st.markdown("""
     Para engenheiros e planejadores que desejam entender a matemática por trás do sistema, a v3.0 executa rotinas automatizadas robustas no motor Python:
-    * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas.
-    * **Contagem Real de Ativos (`count_real_obras`):** Identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas não fiquem distorcidos.
-    * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada, podendo ser invertido quando a **Varredura Reversa** está ativada.
-    * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (ex: pulando fins de semana ou dias específicos) para garantir que a linha de cronograma de campo respeite o calendário real da empresa.
+    * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas, sempre priorizando alocar obras que não extrapolam a capacidade do técnico.
+    * **Contagem Real de Ativos (`count_real_obras`):** Função invisível que identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas financeiras não fiquem distorcidos por condensação visual.
+    * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
+    * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (pulando sábados ou domingos, se definidos assim) para garantir que a linha do tempo (cronograma final) respeite perfeitamente o calendário civil da empresa.
+    * **Atualizador de Relógio Dinâmico (`update_running_timer` e `update_ui`):** Funções assíncronas que calculam o tempo real decorrido contra a projeção matemática, entregando um dashboard estimativo visual do término das execuções sem travar a renderização do mapa.
     """)
 
 # ==========================================
