@@ -996,7 +996,36 @@ def app_roteirizador():
             """, unsafe_allow_html=True)
             if df_tasks.empty: return
             
-            # --- LIMITE GLOBAL DA DEMANDA (TRAVA DE ESTOQUE / IMPLEMENTAÇÃO #4) ---
+            # --- 1. EXTRAIR INFORMAÇÕES DE BASES E MUNICÍPIOS ANTECIPADAMENTE ---
+            bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
+            bases_temporarias_records = df_bases_temp.to_dict('records') if not df_bases_temp.empty else []
+            todas_bases_records = bases_principais_records + bases_temporarias_records
+            
+            col_mun_name = 'MUNICIPIO' if 'MUNICIPIO' in df_tasks.columns else ('CIDADE' if 'CIDADE' in df_tasks.columns else None)
+            if col_mun_name:
+                df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks[col_mun_name].fillna(''))
+            else:
+                df_tasks['MUN_LIMPO'] = ''
+                
+            mun_to_main = {}
+            mun_to_all = {}
+            muns_atendidos_global = set()
+            
+            for b in todas_bases_records:
+                muns_str = str(b.get('MUNICIPIO', b.get('RESIDENCIA', '')))
+                for m in muns_str.split(','):
+                    m_limpo = normalizar_municipios(pd.Series([m])).iloc[0]
+                    if m_limpo:
+                        muns_atendidos_global.add(m_limpo)
+                        if m_limpo not in mun_to_all: mun_to_all[m_limpo] = []
+                        if b['LEVANTADOR'] not in mun_to_all[m_limpo]: mun_to_all[m_limpo].append(b['LEVANTADOR'])
+                        if b.get('TIPO_EQUIPE') == 'PRINCIPAL':
+                            if m_limpo not in mun_to_main: mun_to_main[m_limpo] = []
+                            if b['LEVANTADOR'] not in mun_to_main[m_limpo]: mun_to_main[m_limpo].append(b['LEVANTADOR'])
+
+            base_counts = {b['LEVANTADOR']: 0 for b in todas_bases_records}
+
+            # --- LIMITE GLOBAL DA DEMANDA (TRAVA DE ESTOQUE) ---
             if trava_global_obras > 0 and modo_operacao == "1":
                 if tot_obras_aprovadas > trava_global_obras:
                     st.info(f"✂️ A Trava Global de Operação foi ativada. O sistema limitará o roteamento às primeiras {trava_global_obras} obras prioritárias/próximas e descartará o excedente ({tot_obras_aprovadas - trava_global_obras} obras).")
@@ -1014,38 +1043,40 @@ def app_roteirizador():
                             break
                             
                     df_tasks = pd.DataFrame(obras_aceitas_fisicas)
-            # ------------------------------------------------------------------------
 
             # --- FILTRO ALTA DENSIDADE (MODO PRODUTIVIDADE) ---
             df_sparse_global = pd.DataFrame()
             if modo_produtividade and modo_operacao == "1":
-                with st.spinner("🔥 Modo Produtividade: Mapeando bolsões e isolando obras esparsas..."):
+                with st.spinner("🔥 Modo Produtividade: Mapeando bolsões e obedecendo municípios dos levantadores..."):
                     lats = df_tasks['LATITUDE'].values
                     lons = df_tasks['LONGITUDE'].values
                     prio_mask = (df_tasks['PRIORIDADE'] == 'Sim').values
+                    mun_vals = df_tasks['MUN_LIMPO'].values
+                    
                     keep_mask = np.copy(prio_mask)
                     
                     for i in range(len(df_tasks)):
+                        # REGRA DE OURO SOLICITADA: Focar em Alta Densidade DEVE obedecer aos municípios que a equipe atende.
+                        if muns_atendidos_global and mun_vals[i] not in muns_atendidos_global:
+                            keep_mask[i] = False
+                            continue
+                            
                         if not keep_mask[i]:
                             dists = haversine_vectorized(lats[i], lons[i], lats, lons)
                             if np.sum(dists <= 2.0) >= min_vizinhos:
                                 keep_mask[i] = True
-                                
+                            
                     df_sparse_global = df_tasks[~keep_mask].copy()
                     if not df_sparse_global.empty:
                         df_sparse_global['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
-                        df_sparse_global['MOTIVO_REJEICAO'] = "Alta Densidade (Obra Isolada)"
+                        df_sparse_global['MOTIVO_REJEICAO'] = "Fora da Área de Cobertura ou Obra Isolada"
                     df_tasks = df_tasks[keep_mask].copy()
                     
                     if not df_sparse_global.empty:
-                        st.toast(f"🔥 {len(df_sparse_global)} obras isoladas foram ignoradas para maximizar a produtividade da equipe!")
-            # ----------------------------------------------------
+                        st.toast(f"🔥 {len(df_sparse_global)} obras isoladas ou de outros municípios ignoradas!")
 
+            # --- ALOCAÇÃO DE TAREFAS ---
             df_tasks_alocadas = pd.DataFrame()
-            bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
-            bases_temporarias_records = df_bases_temp.to_dict('records') if not df_bases_temp.empty else []
-            todas_bases_records = bases_principais_records + bases_temporarias_records
-            
             if len(todas_bases_records) > 0:
                 df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
                 df_tasks['COORD_KEY'] = df_tasks['LATITUDE'].astype(str) + "_" + df_tasks['LONGITUDE'].astype(str)
@@ -1054,28 +1085,6 @@ def app_roteirizador():
                 
                 df_prio_e_agregadas = df_tasks[df_tasks['PRECISA_PRINCIPAL']].copy()
                 df_comum_puro = df_tasks[~df_tasks['PRECISA_PRINCIPAL']].copy()
-                col_mun_name = 'MUNICIPIO' if 'MUNICIPIO' in df_tasks.columns else ('CIDADE' if 'CIDADE' in df_tasks.columns else None)
-                if col_mun_name:
-                    df_prio_e_agregadas['MUN_LIMPO'] = normalizar_municipios(df_prio_e_agregadas[col_mun_name].fillna(''))
-                    df_comum_puro['MUN_LIMPO'] = normalizar_municipios(df_comum_puro[col_mun_name].fillna(''))
-                else:
-                    df_prio_e_agregadas['MUN_LIMPO'] = ''
-                    df_comum_puro['MUN_LIMPO'] = ''
-                
-                mun_to_main = {}
-                mun_to_all = {}
-                for b in todas_bases_records:
-                    muns_str = str(b.get('MUNICIPIO', b.get('RESIDENCIA', '')))
-                    for m in muns_str.split(','):
-                        m_limpo = normalizar_municipios(pd.Series([m])).iloc[0]
-                        if m_limpo:
-                            if m_limpo not in mun_to_all: mun_to_all[m_limpo] = []
-                            if b['LEVANTADOR'] not in mun_to_all[m_limpo]: mun_to_all[m_limpo].append(b['LEVANTADOR'])
-                            if b.get('TIPO_EQUIPE') == 'PRINCIPAL':
-                                if m_limpo not in mun_to_main: mun_to_main[m_limpo] = []
-                                if b['LEVANTADOR'] not in mun_to_main[m_limpo]: mun_to_main[m_limpo].append(b['LEVANTADOR'])
-
-                base_counts = {b['LEVANTADOR']: 0 for b in todas_bases_records}
                 
                 tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
                 dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
@@ -2124,7 +2133,7 @@ def renderizar_faq():
 
     with c_flt2:
         st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
-        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
+        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural, garantindo que ela não crie rotas para cidades que nenhum técnico atende. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
         
         st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
         st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
@@ -2161,6 +2170,9 @@ def renderizar_faq():
     * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
     * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (pulando sábados ou domingos, se definidos assim) para garantir que a linha do tempo (cronograma final) respeite perfeitamente o calendário civil da empresa.
     * **Atualizador de Relógio Dinâmico (`update_running_timer` e `update_ui`):** Funções assíncronas que calculam o tempo real decorrido contra a projeção matemática, entregando um dashboard estimativo visual do término das execuções sem travar a renderização do mapa.
+    * **Filtro Seguro de Exportação (`limpar_colunas_excel`):** Organiza e seleciona as colunas de saída para a planilha Excel, garantindo a presença de campos cruciais (como protocolos e coordenadas) independente do que aconteça na memória do sistema.
+    * **Formatação Visual do Mapa (`formatar_valor_coluna`):** Padroniza e trata dados numéricos (como metragens exatas de extensão de rede e volume de postes) antes de exibi-los nos pop-ups interativos do mapa.
+    * **Construtor de Navegação Offline (`gerar_gpx_simples`):** Compila nativamente uma string XML formatada em GPX, gerando trilhas de navegação para aplicativos GPS.
     """)
 
 # ==========================================
