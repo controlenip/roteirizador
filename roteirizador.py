@@ -2097,36 +2097,38 @@ def renderizar_faq():
         st.download_button("📥 Baixar Modelo Lista Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
 
     st.markdown("---")
-    st.markdown("### 3. Filtros Inteligentes e Travas de Segurança")
+    st.markdown("### 3. Filtros Inteligentes e Controle de Escopo")
     
     c_flt1, c_flt2 = st.columns(2)
     with c_flt1:
-        st.markdown("**🛡️ Ignorar Coordenada (Obras já Despachadas)**")
-        st.markdown("Existe um checkbox chamado *Filtro: Ignorar obras já despachadas*. Se ativado, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha qualquer coisa escrita ali (que não seja vazia/NaN) será sumariamente ignorada do roteamento. Isso previne retrabalho cego.")
+        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
+        st.markdown("Assim que você sobe a planilha, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, você pode escolher tipos específicos (ex: 'UNR') para **descartar temporariamente**, limpando a base sem precisar editar o arquivo Excel.")
+
+        st.markdown("**🎯 Matriz Multi-Filtro (Regional e PAT)**")
+        st.markdown("Na seção 'Escopo da Operação', o sistema lê todas as Regionais e PATs presentes no seu arquivo. Você pode afunilar o roteamento para processar *apenas* a 'REGIONAL LESTE' e *apenas* o 'PAT1', bloqueando o restante do Estado instantaneamente.")
         
         st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
-        st.markdown("Se o sistema encontrar notas fiscais cujas coordenadas estejam sobrepostas em um pequeno raio de ação, ele funde tudo. No mapa, isso vira um mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez e resolva tudo, limpando a poluição visual do KML. **Você pode definir esse raio de agrupamento (em metros) no menu lateral.**")
-        
-        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
-        st.markdown("Uma trava que isola áreas rurais esparsas. Quando ativada no menu lateral, a IA escaneia o mapa inteiro e joga fora as obras que estiverem sozinhas ou muito distantes umas das outras. A equipe é enviada apenas para os 'Bolsões' onde podem bater metas gigantes de produtividade a pé. As obras isoladas vão direto para o mapa de rejeições.")
+        st.markdown("Se a IA encontrar notas sobrepostas em um pequeno raio de ação, ela funde tudo num mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez. **Você pode ajustar o raio desse agrupamento (em metros) na barra lateral.**")
+
     with c_flt2:
-        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
-        st.markdown("O sistema exige urgência por três fontes simultâneas. Basta a obra cumprir **UM** destes requisitos para furar a fila do roteiro e ficar vermelha no mapa:")
-        st.markdown("1. O que você **selecionar manualmente** na tela de 'Filtros Dinâmicos' (ex: escolher tipos CCF, DIF).")
-        st.markdown("2. Status de **'CORREÇÃO DE LEVANTAMENTO'** detectado automaticamente na coluna `STATUS LIST`.")
-        st.markdown("3. Se o Excel possuir a coluna nativa chamada **`PRIORIDADE`**, qualquer linha onde não esteja vazia, '0' ou 'Não' (Ex: 'GIRO NO PRAZO') força a prioridade imediata da obra.")
+        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
+        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
         
-        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
-        st.markdown("Assim que você sobe a planilha de Levantamento, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, há um campo *'Selecione Tipos de Nota para DESCARTAR'*. Se você não quiser planejar MGD naquela semana, basta marcar ali e a IA limpa a base antes de começar.")
+        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
+        st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
+
+        st.markdown("**🛡️ Ignorar Obras já Despachadas**")
+        st.markdown("Se a caixa 'Ignorar obras já despachadas' for marcada, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha algo escrito ali é sumariamente ignorada para evitar o retrabalho de rotas já ativas.")
+
 
     st.markdown("---")
     st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
     st.markdown("""
-    * **O Paredão Diário (Corte Rígido):** Se você definiu no menu lateral que a meta é **6 Obras Previstas por Dia**, na hora que o algoritmo montar a 6ª obra, ele cria a linha "Retorno para a Base" e a 7ª obra cai instantaneamente para o dia seguinte, garantindo que as metas programadas não estourem.
-    * **Varredura Reversa (Longe -> Perto):** No menu lateral, você pode escolher se a IA faz a rota comum (visita o que está perto de casa e vai se afastando) ou se faz a *Reversa*: a IA manda o técnico cedo para a obra mais longe da cidade e vem puxando a rota dele de volta, para o fim do expediente terminar mais perto de casa.
-    * **Trava Total de Operação:** No menu lateral, você pode definir um limite absoluto de obras para a empresa inteira naquela rodada (Ex: 300 obras). A IA processará apenas as 300 melhores/mais urgentes notas do estado e rejeitará todo o resto, aliviando o backoffice.
-    * **Cálculo de Postes e Malhas:** Na tela de relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), a matemática escolhe inteligentemente o **Menor Valor** entre as duas para compor o cronograma.
-    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Massa" das obras de um técnico. Se essa mancha roxa de trabalho ficar concentrada a mais de **60 km** de distância da coordenada de residência base dele, a aba gerencial vai piscar sugerindo Hospedagem, com um botão direto para pesquisa de pousadas.
+    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo o resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
+    * **O Paredão Diário (Corte Rígido):** Se a meta for **6 Obras Previstas por Dia**, na hora que a IA montar a 6ª obra, ela aborta o cálculo, traça a linha de "Retorno para a Base" e a 7ª obra cai para a Terça-Feira, blindando o técnico de sobrecarga.
+    * **Varredura Reversa (Longe -> Perto):** Permite inverter a lógica da rota diária. Em vez de começar pelas obras da esquina, a IA manda o técnico cedo para a fazenda mais distante do mapa e vem puxando ele de volta obra por obra, para que o fim do expediente seja feito a poucos minutos de casa.
+    * **Cálculo de Postes e Malhas:** Nos relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), ele usa matematicamente o Menor Valor entre as duas.
+    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Gravidade" do lote de obras. Se essa mancha de trabalho ficar concentrada a mais de **60 km** de distância da residência do técnico, a aba gerencial sugere **Hospedagem** com um link de busca de pousadas integrado ao Google Maps.
     """)
     
     st.markdown("---")
@@ -2134,7 +2136,7 @@ def renderizar_faq():
     st.info("""
     * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
     * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação.
-    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra não couber na cota de nenhum técnico, a IA gera um mapa extra chamado **`OBRAS_NAO_ALOCADAS.kml`** com pinos brancos para você saber exatamente onde ficou o buraco da operação.
+    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
     * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel.
     """)
 
