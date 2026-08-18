@@ -802,6 +802,14 @@ def app_roteirizador():
                     if not dfs: return
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
+                    
+                    # --- DESMEMBRADOR DE PROTOCOLOS MÚLTIPLOS (TÁTICO) ---
+                    if 'PROTOCOLO' in df_tasks.columns:
+                        df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+                        df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
+                        df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
+                    # ----------------------------------------------------
+                    
                     total_obras_inicial = len(df_tasks)
                     cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
                     cols_orig_san = st.session_state.get('colunas_originais_san', [])
@@ -971,7 +979,16 @@ def app_roteirizador():
 
             df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-            df_tasks = resgatar_coordenadas(df_tasks)
+            
+            # --- CORREÇÃO DO BUG DO OPENSTREETMAP ---
+            # Removemos o resgate via satélite que trava a aplicação.
+            erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
+            qtd_erros_coords_finais = erros_coords_mask.sum()
+            df_tasks = df_tasks[~erros_coords_mask]
+            
+            if qtd_erros_coords_finais > 0:
+                st.warning(f"⚠️ {qtd_erros_coords_finais} obras foram ignoradas pois estavam sem coordenadas válidas na planilha original.")
+            # ----------------------------------------
             
             erros_nome = 0
             if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
@@ -1225,6 +1242,13 @@ def app_roteirizador():
                             break
                     if 'PROTOCOLO' not in df_tasks.columns:
                         df_tasks['PROTOCOLO'] = [f"LC-{i+1}" for i in range(len(df_tasks))]
+                        
+                # --- DESMEMBRADOR DE PROTOCOLOS MÚLTIPLOS (LISTA CONTÍNUA) ---
+                if 'PROTOCOLO' in df_tasks.columns:
+                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+                    df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
+                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
+                # -------------------------------------------------------------
                         
                 for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                     if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
@@ -2165,6 +2189,7 @@ def renderizar_faq():
     st.markdown("### 6. Bastidores Técnicos e Motores de IA (Arquitetura Interna)")
     st.markdown("""
     Para engenheiros e planejadores que desejam entender a matemática por trás do sistema, a v3.0 executa rotinas automatizadas robustas no motor Python:
+    * **Desmembrador de Protocolos Múltiplos (`.explode`):** Se a sua base vier com obras múltiplas na mesma célula (ex: `1078936091 | 1078936284`), o sistema detecta a barra vertical, "rasga" a célula em duas linhas independentes e roteiriza ambas de forma natural. Se as coordenadas forem iguais, elas serão condensadas logicamente como um "Super Ponto".
     * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas, sempre priorizando alocar obras que não extrapolam a capacidade do técnico.
     * **Contagem Real de Ativos (`count_real_obras`):** Função invisível que identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas financeiras não fiquem distorcidos por condensação visual.
     * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
