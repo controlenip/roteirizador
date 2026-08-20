@@ -187,6 +187,22 @@ def extrair_qtd(val):
     except:
         return 0.0
 
+def auto_fix_lat(val):
+    if pd.isna(val): return val
+    if val < -35 or val > 5:
+        t = abs(val)
+        while t > 35: t /= 10
+        return -t if val < 0 else t
+    return val
+
+def auto_fix_lon(val):
+    if pd.isna(val): return val
+    if val < -75 or val > -30:
+        t = abs(val)
+        while t > 75: t /= 10
+        return -t if val < 0 else t
+    return val
+
 # ==========================================
 # 3. LÓGICA DO ROTEIRIZADOR (MOTOR PRINCIPAL)
 # ==========================================
@@ -1081,7 +1097,13 @@ def app_roteirizador():
 
             df_sparse_global = pd.DataFrame()
             if modo_produtividade and modo_operacao == "1":
-                with st.spinner("🔥 Modo Produtividade: Mapeando bolsões e obedecendo municípios dos levantadores..."):
+                c_prod1, c_prod2 = st.columns([4, 1])
+                c_prod1.markdown("#### 🔥 Modo Produtividade (Alta Densidade)")
+                if c_prod2.button("⏹️ Abortar Operação", key="abort_prod", use_container_width=True):
+                    limpar_roteirizador()
+                    st.stop()
+                    
+                with st.spinner("Mapeando bolsões e obedecendo municípios dos levantadores..."):
                     lats = df_tasks['LATITUDE'].values
                     lons = df_tasks['LONGITUDE'].values
                     prio_mask = (df_tasks['PRIORIDADE'] == 'Sim').values
@@ -1402,8 +1424,15 @@ def app_roteirizador():
                     # FATIA O DATAFRAME ANTES DA GEOGRAFIA (EVITA LEITURA INFINITA)
                     df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
                 
-                # --- INÍCIO DO FILTRO DE GEOFENCING COM TIMER E PROGRESSO ---
-                st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
+                # --- INÍCIO DO FILTRO DE GEOFENCING COM TIMER E PROGRESSO E ABORTAR ---
+                col_geo1, col_geo2 = st.columns([4, 1])
+                with col_geo1:
+                    st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
+                with col_geo2:
+                    if st.button("⏹️ Abortar Operação", key="abort_geo", use_container_width=True):
+                        limpar_roteirizador()
+                        st.stop()
+                        
                 prog_bar_geo = st.progress(0.0)
                 timer_geo_placeholder = st.empty()
                 status_geo_text = st.empty()
@@ -1462,10 +1491,7 @@ def app_roteirizador():
                     mun_dict = {}
                     
                     for i, m in enumerate(muns_unicos):
-                        status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
-                        lat_m, lon_m = obter_coordenadas_municipio_cached(m)
-                        mun_dict[m] = (lat_m, lon_m)
-                        
+                        # Atualiza timer ANTES de chamar a API
                         elapsed = time.time() - start_time_geo
                         fraction = (i + 1) / max(1, total_muns)
                         if fraction > 0.05:
@@ -1491,6 +1517,17 @@ def app_roteirizador():
                         """
                         timer_geo_placeholder.markdown(html_timer, unsafe_allow_html=True)
                         prog_bar_geo.progress(fraction)
+                        
+                        status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
+                        
+                        # Chama API com try/except e respiro para não travar
+                        try:
+                            lat_m, lon_m = obter_coordenadas_municipio_cached(m)
+                            time.sleep(0.3) # Respiro vital anti-bloqueio
+                        except:
+                            lat_m, lon_m = np.nan, np.nan
+                            
+                        mun_dict[m] = (lat_m, lon_m)
                         
                     status_geo_text.info("📏 Aplicando Cálculo Vetorial de Cerca Eletrônica...")
                     def is_outside(row):
@@ -2391,10 +2428,10 @@ def renderizar_faq():
     """)
     
     st.markdown("---")
-    st.markdown("### 1. As Duas Estratégias de Despacho (Modos)")
+    st.markdown("### 1. As Três Estratégias de Despacho (Modos)")
     
-    col_faq1, col_faq2 = st.columns(2)
-    with col_faq1:
+    c_faq1, c_faq2, c_faq3 = st.columns(3)
+    with c_faq1:
         st.markdown("""
         <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
             <h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático (IA Automática)</h4>
@@ -2403,12 +2440,21 @@ def renderizar_faq():
         </div>
         """, unsafe_allow_html=True)
         
-    with col_faq2:
+    with c_faq2:
         st.markdown("""
         <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #55B929; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'>
             <h4 style='color: #2e7d32; margin-top: 0;'>♾️ 2. Lista Contínua (Técnico Fixo)</h4>
             <b>O Usuário no Comando:</b> A IA respeita estritamente o que você definiu. Sua planilha já deve ter a coluna <b>LEVANTADOR</b> preenchida.<br><br>
             <b>Processamento Contínuo:</b> A ferramenta ignora as travas de fim de expediente e desenha o caminho mais curto para conectar 100% da lista do profissional. Nenhuma nota é transferida de um técnico para outro, independentemente da distância ou tempo.
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c_faq3:
+        st.markdown("""
+        <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #FF9800; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
+            <h4 style='color: #FF9800; margin-top: 0;'>📋 3. Lista Contínua (Fiscalização)</h4>
+            <b>Foco em Volumetria:</b> O sistema lê a coluna FISCAL e prioriza automaticamente as obras com a maior QTD PREVISTA DE POSTES.<br><br>
+            <b>Cerca Eletrônica (Geofencing):</b> Uma trava de segurança impede que obras com erro de digitação de coordenadas (que caiam a mais de 70km da cidade) poluam o roteiro. Elas são enviadas para uma planilha de Correção.
         </div>
         """, unsafe_allow_html=True)
 
@@ -2443,23 +2489,36 @@ def renderizar_faq():
         'ENDEREÇO': 'ENDERECO COMPLETO', 'LOCALIDADE': 'RURAL', 'LATITUDE': -5.060694, 
         'LONGITUDE': -43.438846, 'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS'
     }])
+    
+    df_fiscalizacao = pd.DataFrame([{
+        'NOTA': 1081945188, 'FISCAL': 'NOME DO FISCAL', 'STATUS DA FISCALIZACAO': 'APTO PARA CAMPO', 
+        'QTD PREVISTA DE POSTES': 45, 'MUNICIPIO': 'SAO LUIS', 'LATITUDE': -2.5297, 'LONGITUDE': -44.3028, 
+        'VALOR DA OBRA': 15000.50, 'PREVISAO DE ENTREGA': '10/10/2026', 'TIPO DE FISCALIZACAO': 'NORMAL', 
+        'TIPO DE PROJETO': 'EXTENSAO', 'REGIONAL': 'LESTE', 'ZONA': 'URBANA', 
+        'BACKOFFICE DA FISCALIZACAO': 'NOME BACKOFFICE', 'OBSERVACAO': 'Atenção ao prazo'
+    }])
 
-    col_dl1, col_dl2, col_dl3 = st.columns(3)
+    col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
     
     with col_dl1:
-        st.markdown("**👥 Planilha de Levantadores**")
-        st.caption("Apenas para o Modo Tático. Define onde cada técnico mora/atua.")
+        st.markdown("**👥 Planilha Equipes**")
+        st.caption("Usado no Modo Tático.")
         st.download_button("📥 Baixar Modelo Equipes", data=gerar_excel_modelo(df_equipes), file_name="MODELO_LEVANTADORES.xlsx", use_container_width=True)
 
     with col_dl2:
-        st.markdown("**📁 Base Levantamento / Saneamento**")
-        st.caption("Apenas para o Modo Tático. A IA distribuirá estas obras automaticamente.")
+        st.markdown("**📁 Obras Levantamento**")
+        st.caption("Usado no Modo Tático.")
         st.download_button("📥 Baixar Modelo Obras Livres", data=gerar_excel_modelo(df_levantamento), file_name="MODELO_BASE_LEVANTAMENTO.xlsx", use_container_width=True)
 
     with col_dl3:
-        st.markdown("**♾️ Base Lista Contínua**")
-        st.caption("Apenas para o Modo Lista Contínua. Já exige a coluna 'LEVANTADOR'.")
-        st.download_button("📥 Baixar Modelo Lista Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
+        st.markdown("**♾️ Lista Contínua**")
+        st.caption("Modo 2 (Exige LEVANTADOR).")
+        st.download_button("📥 Baixar Modelo Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
+        
+    with col_dl4:
+        st.markdown("**📋 Fiscalização**")
+        st.caption("Modo 3 (Exige FISCAL).")
+        st.download_button("📥 Baixar Modelo Fiscalização", data=gerar_excel_modelo(df_fiscalizacao), file_name="MODELO_FISCALIZACAO.xlsx", use_container_width=True)
 
     st.markdown("---")
     st.markdown("### 3. Filtros Inteligentes e Controle de Escopo")
@@ -2503,6 +2562,7 @@ def renderizar_faq():
     * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação. O sistema faz a autolimpeza com a função `limpar_colunas_excel()` garantindo que os identificadores primários (como PROTOCOLO, REGIONAL e LAT/LON) nunca sumam da entrega final.
     * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
     * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel. Construído nativamente pela função interna `gerar_gpx_simples()`.
+    * **Planilha de Correção (Fiscalização):** Se alguma obra apresentar coordenadas zeradas, invertidas ou fora da cidade, ela é barrada pela Cerca Eletrônica. O sistema cria automaticamente o arquivo `Obras_para_Correcao.xlsx` detalhando o motivo exato do erro para a sua equipe de backoffice.
     """)
 
     st.markdown("---")
