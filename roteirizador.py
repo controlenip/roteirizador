@@ -1781,6 +1781,12 @@ def app_roteirizador():
                     tentar_rerun()
                     return
                 
+                # --- INÍCIO DA CORREÇÃO: Resgatando base_lat e base_lon para a geração da geometria ---
+                df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
+                base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
+                base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
+                # --- FIM DA CORREÇÃO ---
+
                 routed_data_final_team = []
                 ordem_global = 1
                 dias_pt = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
@@ -1831,7 +1837,16 @@ def app_roteirizador():
                         obra['PERIODO'] = periodo_val
                         obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2)
                         obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
-                        obra['ROTA_GEOMETRIA'] = geom
+                        
+                        # ---------------------------------------------------------
+                        # CORREÇÃO: Apaga a linha gráfica se for a saída da base invisível
+                        # ---------------------------------------------------------
+                        if item['lat_ant'] == base_lat and item['lon_ant'] == base_lon:
+                            obra['ROTA_GEOMETRIA'] = [[item['lon_atual'], item['lat_atual']], [item['lon_atual'], item['lat_atual']]]
+                        else:
+                            obra['ROTA_GEOMETRIA'] = geom
+                        # ---------------------------------------------------------
+                            
                         obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M')
                         obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M')
                         obra['_HORA_INICIO_DT'] = item['hora_inicio']
