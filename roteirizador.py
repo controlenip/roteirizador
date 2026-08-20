@@ -1982,13 +1982,18 @@ def app_roteirizador():
                 
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
+                
+                # Filtra os pontos virtuais para que não virem pinos no KML
+                df_routed_kml = df_routed_kml[~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                     if col in df_routed_kml.columns:
                         df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                # Envia uma lista vazia [] para não gerar o pino da casinha (base)
+                kml_geral_str = gerar_kml_agrupado(df_routed_kml, [], f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
@@ -2015,6 +2020,11 @@ def app_roteirizador():
                     
                     update_ui(f"Formatando rotas para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
+                    
+                    # Filtra os pontos virtuais do arquivo individual
+                    df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
+                    df_lev_kml = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                    
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_xl.columns:
                             df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
@@ -2025,12 +2035,12 @@ def app_roteirizador():
                     df_lev_xl = limpar_colunas_excel(df_lev_xl, st.session_state.colunas_originais)
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, df_lev_xl.columns.tolist()))
                     
-                    df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    # Envia uma lista vazia [] para não gerar o pino da casinha (base)
+                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, [], f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
