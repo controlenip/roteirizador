@@ -847,7 +847,7 @@ def app_roteirizador():
                 if 'TIPO NOTA' in df_tasks.columns:
                     tipos_counts = df_tasks['TIPO NOTA'].value_counts()
                     t_unr = tipos_counts.get('UNR', 0)
-                    t_mgd = output = t_mgd = tipos_counts.get('MGD', 0)
+                    t_mgd = tipos_counts.get('MGD', 0)
                     t_asc = tipos_counts.get('ASC', 0)
                     t_dif = tipos_counts.get('DIF', 0)
                     
@@ -1667,7 +1667,14 @@ def app_roteirizador():
                             # Lógica Especial para Fiscalização: Tratar tudo como um único pacote para limpar áreas (Sweep)
                             if len(obs) > 0 and obs[0].get('_ORIGEM_BASE') == 'LISTA_CONTINUA_FISCALIZACAO':
                                 # Ordena para que as obras gigantes sejam o "imã" inicial se estiverem na mesma distância
-                                obs_ordenadas = sorted(obs, key=lambda x: (x.get('PRIORIDADE') != 'Sim', -float(x.get('QTD PREVISTA DE POSTES', 0))))
+                                def extrair_qtd(val):
+                                    try:
+                                        if pd.isna(val) or val == '' or val is None: return 0.0
+                                        return float(str(val).replace(',', '.'))
+                                    except:
+                                        return 0.0
+                                        
+                                obs_ordenadas = sorted(obs, key=lambda x: (x.get('PRIORIDADE') != 'Sim', -extrair_qtd(x.get('QTD PREVISTA DE POSTES', 0))))
                                 ordered_tasks.extend(greedy_sort(obs_ordenadas, base_lat, base_lon, is_reversa))
                             else:
                                 sub_sim = greedy_sort(prio_sim, base_lat, base_lon, is_reversa)
