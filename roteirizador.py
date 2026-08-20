@@ -828,7 +828,7 @@ def app_roteirizador():
                 if 'TIPO NOTA' in df_tasks.columns:
                     tipos_counts = df_tasks['TIPO NOTA'].value_counts()
                     t_unr = tipos_counts.get('UNR', 0)
-                    t_mgd = tipos_counts.get('MGD', 0)
+                    t_mgd = output = t_mgd = tipos_counts.get('MGD', 0)
                     t_asc = tipos_counts.get('ASC', 0)
                     t_dif = tipos_counts.get('DIF', 0)
                     
@@ -1983,7 +1983,7 @@ def app_roteirizador():
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
                 
-                # Filtra os pontos virtuais para que não virem pinos no KML
+                # Filtra os pontos virtuais para que não virem pinos de sobra no KML
                 df_routed_kml = df_routed_kml[~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
@@ -1992,9 +1992,14 @@ def app_roteirizador():
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                # Envia uma lista vazia [] para não gerar o pino da casinha (base)
-                kml_geral_str = gerar_kml_agrupado(df_routed_kml, [], f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                # Restaurado st.session_state.bases_records para evitar o erro NoneType no export_utils
+                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                
+                # NOVA ABORDAGEM: Remove a "casinha" (Base) limpando o Placemark correspondente via Regex de forma segura
+                padrao_base = r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>'
+                kml_geral_str = re.sub(padrao_base, '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 # GERADOR DO KML DE OBRAS NAO ALOCADAS
@@ -2039,9 +2044,13 @@ def app_roteirizador():
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    # Envia uma lista vazia [] para não gerar o pino da casinha (base)
-                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, [], f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    # Restaurado st.session_state.bases_records
+                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    
+                    # Remove a casinha do KML individual
+                    kml_lev_str = re.sub(padrao_base, '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
                     gpx_lev_str = gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}")
