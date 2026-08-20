@@ -71,7 +71,6 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    # Limpeza de buffers temporários
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated', 'df_correcao_fiscalizacao']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -1403,79 +1402,124 @@ def app_roteirizador():
                     # FATIA O DATAFRAME ANTES DA GEOGRAFIA (EVITA LEITURA INFINITA)
                     df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
                 
-                # --- AGORA AS REGRAS PESADAS (NUM SPINNER PARA NÃO PARECER TRAVADO) ---
-                with st.spinner("Aplicando cercas eletrônicas e validando coordenadas..."):
-                    df_tasks.rename(columns={'FISCAL': 'LEVANTADOR', 'NOTA': 'PROTOCOLO'}, inplace=True)
+                # --- INÍCIO DO FILTRO DE GEOFENCING COM TIMER E PROGRESSO ---
+                st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
+                prog_bar_geo = st.progress(0.0)
+                timer_geo_placeholder = st.empty()
+                status_geo_text = st.empty()
+                start_time_geo = time.time()
+                
+                df_tasks.rename(columns={'FISCAL': 'LEVANTADOR', 'NOTA': 'PROTOCOLO'}, inplace=True)
+                
+                if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
+                    mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
+                    df_tasks = df_tasks[~mask_despacho]
                     
-                    if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
-                        mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
-                        df_tasks = df_tasks[~mask_despacho]
-                        
-                    df_tasks['MOTIVO_REJEICAO'] = ''
-                    df_rejeitadas = pd.DataFrame()
+                df_tasks['MOTIVO_REJEICAO'] = ''
+                df_rejeitadas = pd.DataFrame()
+                
+                # 1. Filtro de Vazios
+                status_geo_text.info("⏳ Validando Integridade das Células...")
+                m_f = df_tasks['LEVANTADOR'].isna() | (df_tasks['LEVANTADOR'].astype(str).str.strip() == '') | (df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper() == 'NAN')
+                m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
+                mask_vazios = m_f | m_m
+                if mask_vazios.sum() > 0:
+                    df_tasks.loc[mask_vazios, 'MOTIVO_REJEICAO'] = 'Célula Vazia (FISCAL ou MUNICIPIO)'
+                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_vazios].copy()], ignore_index=True)
+                    df_tasks = df_tasks[~mask_vazios].copy()
                     
-                    # 1. Filtro de Vazios
-                    m_f = df_tasks['LEVANTADOR'].isna() | (df_tasks['LEVANTADOR'].astype(str).str.strip() == '') | (df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper() == 'NAN')
-                    m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
-                    mask_vazios = m_f | m_m
-                    if mask_vazios.sum() > 0:
-                        df_tasks.loc[mask_vazios, 'MOTIVO_REJEICAO'] = 'Célula Vazia (FISCAL ou MUNICIPIO)'
-                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_vazios].copy()], ignore_index=True)
-                        df_tasks = df_tasks[~mask_vazios].copy()
+                # 2. Filtro de Coordenadas Sujas
+                status_geo_text.info("⏳ Validando Formatação Geográfica...")
+                if not df_tasks.empty:
+                    df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                    df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                    
+                    m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
+                    df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
+                    
+                    m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
+                    df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
+                    
+                    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
+                    df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o sinal de -)'
+                    
+                    m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
+                    df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat no lugar da Lon)'
+                    
+                    mask_coords = m_na | m_zero | m_pos | m_inv
+                    if mask_coords.sum() > 0:
+                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
+                        df_tasks = df_tasks[~mask_coords].copy()
                         
-                    # 2. Filtro de Coordenadas Sujas
-                    if not df_tasks.empty:
-                        df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                        df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                    df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
+                    df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
+                    df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+                    
+                # 3. Geofencing (Raio de 70km)
+                if not df_tasks.empty:
+                    muns_unicos = df_tasks['MUNICIPIO'].unique()
+                    total_muns = len(muns_unicos)
+                    mun_dict = {}
+                    
+                    for i, m in enumerate(muns_unicos):
+                        status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
+                        lat_m, lon_m = obter_coordenadas_municipio_cached(m)
+                        mun_dict[m] = (lat_m, lon_m)
                         
-                        m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
-                        df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
-                        
-                        m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
-                        df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
-                        
-                        m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
-                        df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o sinal de -)'
-                        
-                        m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
-                        df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat no lugar da Lon)'
-                        
-                        mask_coords = m_na | m_zero | m_pos | m_inv
-                        if mask_coords.sum() > 0:
-                            df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
-                            df_tasks = df_tasks[~mask_coords].copy()
+                        elapsed = time.time() - start_time_geo
+                        fraction = (i + 1) / max(1, total_muns)
+                        if fraction > 0.05:
+                            rem = (elapsed / fraction) - elapsed
+                        else:
+                            rem = 0
                             
-                        df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
-                        df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
-                        df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+                        e_m, e_s = divmod(int(elapsed), 60)
+                        r_m, r_s = divmod(int(rem), 60)
+                        r_str = f"{r_m:02d}m {r_s:02d}s" if fraction > 0.05 else "Calculando..."
                         
-                    # 3. Geofencing (Raio de 70km)
-                    if not df_tasks.empty:
-                        mun_dict = {}
-                        for m in df_tasks['MUNICIPIO'].unique():
-                            lat_m, lon_m = obter_coordenadas_municipio_cached(m)
-                            mun_dict[m] = (lat_m, lon_m)
-                            
-                        def is_outside(row):
-                            lm, lom = mun_dict.get(row['MUNICIPIO'], (np.nan, np.nan))
-                            if pd.isna(lm) or pd.isna(lom): return False
-                            dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
-                            return dist > 70.0
-                            
-                        mask_out = df_tasks.apply(is_outside, axis=1)
-                        if mask_out.sum() > 0:
-                            df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km de distância)'
-                            df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_out].copy()], ignore_index=True)
-                            df_tasks = df_tasks[~mask_out].copy()
-                            
-                # SAINDO DO SPINNER - SALVAR REJEITADAS
+                        html_timer = f"""
+                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                            <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                                <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
+                                <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
+                            </div>
+                            <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                                <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
+                                <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
+                            </div>
+                        </div>
+                        """
+                        timer_geo_placeholder.markdown(html_timer, unsafe_allow_html=True)
+                        prog_bar_geo.progress(fraction)
+                        
+                    status_geo_text.info("📏 Aplicando Cálculo Vetorial de Cerca Eletrônica...")
+                    def is_outside(row):
+                        lm, lom = mun_dict.get(row['MUNICIPIO'], (np.nan, np.nan))
+                        if pd.isna(lm) or pd.isna(lom): return False
+                        dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
+                        return dist > 70.0
+                        
+                    mask_out = df_tasks.apply(is_outside, axis=1)
+                    if mask_out.sum() > 0:
+                        df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km de distância)'
+                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_out].copy()], ignore_index=True)
+                        df_tasks = df_tasks[~mask_out].copy()
+                        
+                # Limpa a interface do timer quando acabar
+                prog_bar_geo.empty()
+                timer_geo_placeholder.empty()
+                status_geo_text.empty()
+                st.markdown("---")
+                
+                # SALVAR PLANILHA DE CORREÇÃO NA MEMÓRIA
                 st.session_state.df_correcao_fiscalizacao = df_rejeitadas
                 
                 if not df_rejeitadas.empty:
-                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, vazias ou fora do município) e foram removidas do Roteamento. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
-                    
+                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município) e foram abortadas para sua segurança. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
+                
+                # SE TUDO ESTIVER QUEBRADO, PARA AQUI
                 if df_tasks.empty:
-                    st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica.")
+                    st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica (Todas falharam). Verifique sua planilha e a tabela de Correção.")
                     st.stop()
                 
                 # --- PREPARANDO AS OBRAS VÁLIDAS ---
@@ -2025,11 +2069,9 @@ def app_roteirizador():
                     tentar_rerun()
                     return
                 
-                # --- INÍCIO DA CORREÇÃO: Resgatando base_lat e base_lon para a geração da geometria ---
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
                 base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
-                # --- FIM DA CORREÇÃO ---
 
                 routed_data_final_team = []
                 ordem_global = 1
@@ -2082,14 +2124,10 @@ def app_roteirizador():
                         obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2)
                         obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
                         
-                        # ---------------------------------------------------------
-                        # CORREÇÃO: Apaga a linha gráfica se for a saída da base invisível
-                        # ---------------------------------------------------------
                         if item['lat_ant'] == base_lat and item['lon_ant'] == base_lon:
                             obra['ROTA_GEOMETRIA'] = [[item['lon_atual'], item['lat_atual']], [item['lon_atual'], item['lat_atual']]]
                         else:
                             obra['ROTA_GEOMETRIA'] = geom
-                        # ---------------------------------------------------------
                             
                         obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M')
                         obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M')
@@ -2222,12 +2260,10 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
-                # --- EXPORTAÇÃO DA PLANILHA DE CORREÇÃO (Obras Ignoradas na Fiscalização) ---
                 df_correcao = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
                 if not df_correcao.empty:
                     update_ui("Gerando Planilha de Obras para Correção...")
                     df_correcao.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True, errors='ignore')
-                    # Retorna os nomes das colunas originais para não confundir o backoffice
                     df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
                     out_err = io.BytesIO()
@@ -2255,7 +2291,6 @@ def app_roteirizador():
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
                 
-                # Filtra os pontos virtuais para que não virem pinos de sobra no KML
                 df_routed_kml = df_routed_kml[~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
@@ -2264,17 +2299,14 @@ def app_roteirizador():
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                # Restaurado st.session_state.bases_records para evitar o erro NoneType no export_utils
                 kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                 kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 
-                # Remove a "casinha" (Base) limpando o Placemark correspondente via Regex de forma segura
                 padrao_base = r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>'
                 kml_geral_str = re.sub(padrao_base, '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 
                 zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
-                # GERADOR DO KML DE OBRAS NAO ALOCADAS (Antigo)
                 df_unallocated = st.session_state.get('df_unallocated', pd.DataFrame())
                 if not df_unallocated.empty:
                     kml_u = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>']
@@ -2298,7 +2330,6 @@ def app_roteirizador():
                     update_ui(f"Formatando rotas para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
                     
-                    # Filtra os pontos virtuais do arquivo individual
                     df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     df_lev_kml = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     
@@ -2316,11 +2347,9 @@ def app_roteirizador():
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    # Restaurado st.session_state.bases_records
                     kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     
-                    # Remove a casinha do KML individual
                     kml_lev_str = re.sub(padrao_base, '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
