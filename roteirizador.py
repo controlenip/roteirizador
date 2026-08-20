@@ -71,8 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    # Resetando as variáveis de tempo para o relógio
-    keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated']
+    keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated', 'df_correcao_fiscalizacao']
     for k in keys_to_clear:
         if k in st.session_state:
             del st.session_state[k]
@@ -107,15 +106,21 @@ def count_real_obras(row):
     return 1
 
 def limpar_colunas_excel(df_alvo, cols_originais):
-    base_start = ['PROTOCOLO', 'LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
-    if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
-    elif 'LEVANTADOR' in df_alvo.columns and 'LEVANTADOR_RESPONSAVEL' not in df_alvo.columns:
-        df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
+    is_fiscalizacao = 'STATUS DA FISCALIZACAO' in cols_originais or 'STATUS DA FISCALIZAÇÃO' in cols_originais
+    
+    if is_fiscalizacao:
+        if 'PROTOCOLO' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
+        if 'BASE_ATRIBUIDA' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
+        elif 'LEVANTADOR' in df_alvo.columns and 'FISCAL' not in df_alvo.columns: df_alvo['FISCAL'] = df_alvo['LEVANTADOR']
+        base_start = ['NOTA', 'FISCAL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
+    else:
+        if 'BASE_ATRIBUIDA' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR_RESPONSAVEL'})
+        elif 'LEVANTADOR' in df_alvo.columns and 'LEVANTADOR_RESPONSAVEL' not in df_alvo.columns: df_alvo['LEVANTADOR_RESPONSAVEL'] = df_alvo['LEVANTADOR']
+        base_start = ['PROTOCOLO', 'LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
     
-    colunas_garantia = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'FASE', 'INFORMACOES EXTRAS', 'NOTA', 'FISCAL', 'STATUS DA FISCALIZAÇÃO', 'QTD PREVISTA DE POSTES']
+    colunas_garantia = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'FASE', 'INFORMACOES EXTRAS', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES']
     
     middle_cols = []
     
@@ -174,6 +179,13 @@ def definir_cor_fiscalizacao(qtd):
         else: return 'red'
     except:
         return 'gray'
+
+def extrair_qtd(val):
+    try:
+        if pd.isna(val) or val == '' or val is None: return 0.0
+        return float(str(val).replace(',', '.'))
+    except:
+        return 0.0
 
 # ==========================================
 # 3. LÓGICA DO ROTEIRIZADOR (MOTOR PRINCIPAL)
@@ -822,12 +834,10 @@ def app_roteirizador():
 
                     df_tasks = pd.concat(dfs, ignore_index=True)
                     
-                    # --- DESMEMBRADOR DE PROTOCOLOS MÚLTIPLOS (TÁTICO) ---
                     if 'PROTOCOLO' in df_tasks.columns:
                         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
                         df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
                         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
-                    # ----------------------------------------------------
                     
                     total_obras_inicial = len(df_tasks)
                     cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
@@ -840,7 +850,6 @@ def app_roteirizador():
                             
                 except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
 
-                # ABA DE DASHBOARD INTERATIVO (IMPLEMENTAÇÃO #2)
                 st.markdown("##### 🗂️ Triagem Dinâmica de Notas (Bolo Geral)")
                 col_dash1, col_dash2, col_dash3, col_dash4 = st.columns(4)
                 
@@ -879,7 +888,6 @@ def app_roteirizador():
             has_generica = 'GENERICA' in df_tasks['_ORIGEM_BASE'].values
             df_list = []
             
-            # MATRIZ MULTI-FILTRO (ESCOPO DA OPERAÇÃO / IMPLEMENTAÇÃO #3)
             st.markdown("### 🎯 Escopo da Operação (Multi-Filtro)")
             col_escopo1, col_escopo2 = st.columns(2)
             
@@ -971,13 +979,10 @@ def app_roteirizador():
             if not df_list: return
             df_tasks = pd.concat(df_list, ignore_index=True)
 
-            # --- REGRA DE OURO 1: CORREÇÃO DE LEVANTAMENTO É SEMPRE PRIORIDADE ---
             if 'STATUS LIST' in df_tasks.columns:
                 mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
                 df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
-            # -------------------------------------------------------------------
             
-            # --- REGRA DE OURO 2: COLUNA "PRIORIDADE" DIFERENTE DE ZERO ---
             if '_PRIORIDADE_ORIGINAL' in df_tasks.columns:
                 mask_not_zero = (
                     df_tasks['_PRIORIDADE_ORIGINAL'].notna() & 
@@ -990,7 +995,6 @@ def app_roteirizador():
                     (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE')
                 )
                 df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
-            # -------------------------------------------------------------------
 
             if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
                 st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'. Verifique o cabeçalho dos arquivos enviados e certifique-se de que o sistema de mapeamento não foi comprometido na origem.")
@@ -999,15 +1003,12 @@ def app_roteirizador():
             df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             
-            # --- CORREÇÃO DO BUG DO OPENSTREETMAP ---
-            # Removemos o resgate via satélite que trava a aplicação.
             erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
             qtd_erros_coords_finais = erros_coords_mask.sum()
             df_tasks = df_tasks[~erros_coords_mask]
             
             if qtd_erros_coords_finais > 0:
                 st.warning(f"⚠️ {qtd_erros_coords_finais} obras foram ignoradas pois estavam sem coordenadas válidas na planilha original.")
-            # ----------------------------------------
             
             erros_nome = 0
             if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
@@ -1032,7 +1033,6 @@ def app_roteirizador():
             """, unsafe_allow_html=True)
             if df_tasks.empty: return
             
-            # --- 1. EXTRAIR INFORMAÇÕES DE BASES E MUNICÍPIOS ANTECIPADAMENTE ---
             bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
             bases_temporarias_records = df_bases_temp.to_dict('records') if not df_bases_temp.empty else []
             todas_bases_records = bases_principais_records + bases_temporarias_records
@@ -1061,7 +1061,6 @@ def app_roteirizador():
 
             base_counts = {b['LEVANTADOR']: 0 for b in todas_bases_records}
 
-            # --- LIMITE GLOBAL DA DEMANDA (TRAVA DE ESTOQUE) ---
             if trava_global_obras > 0 and modo_operacao == "1":
                 if tot_obras_aprovadas > trava_global_obras:
                     st.info(f"✂️ A Trava Global de Operação foi ativada. O sistema limitará o roteamento às primeiras {trava_global_obras} obras prioritárias/próximas e descartará o excedente ({tot_obras_aprovadas - trava_global_obras} obras).")
@@ -1080,7 +1079,6 @@ def app_roteirizador():
                             
                     df_tasks = pd.DataFrame(obras_aceitas_fisicas)
 
-            # --- FILTRO ALTA DENSIDADE (MODO PRODUTIVIDADE) ---
             df_sparse_global = pd.DataFrame()
             if modo_produtividade and modo_operacao == "1":
                 with st.spinner("🔥 Modo Produtividade: Mapeando bolsões e obedecendo municípios dos levantadores..."):
@@ -1092,7 +1090,6 @@ def app_roteirizador():
                     keep_mask = np.copy(prio_mask)
                     
                     for i in range(len(df_tasks)):
-                        # REGRA DE OURO SOLICITADA: Focar em Alta Densidade DEVE obedecer aos municípios que a equipe atende.
                         if muns_atendidos_global and mun_vals[i] not in muns_atendidos_global:
                             keep_mask[i] = False
                             continue
@@ -1111,7 +1108,6 @@ def app_roteirizador():
                     if not df_sparse_global.empty:
                         st.toast(f"🔥 {len(df_sparse_global)} obras isoladas ou de outros municípios ignoradas!")
 
-            # --- ALOCAÇÃO DE TAREFAS ---
             df_tasks_alocadas = pd.DataFrame()
             if len(todas_bases_records) > 0:
                 df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
@@ -1209,7 +1205,6 @@ def app_roteirizador():
 
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
                 
-                # ADICIONANDO AS OBRAS REJEITADAS PELA DENSIDADE (MODO PRODUTIVIDADE) NA LISTA DE ÓRFÃS
                 if not df_sparse_global.empty:
                     df_unallocated = pd.concat([df_unallocated, df_sparse_global], ignore_index=True)
                 
@@ -1360,7 +1355,7 @@ def app_roteirizador():
             st.info("Neste modo, o sistema lê a coluna **FISCAL** e agrupa as obras organicamente, priorizando e colorindo os mapas com base na **QTD PREVISTA DE POSTES**. Obras 'APTO PARA CAMPO' e 'EM CAMPO' furam a fila.")
             
             with st.container(border=True):
-                pre_file = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], help="A planilha deve conter FISCAL, MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZAÇÃO e NOTA.")
+                pre_file = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], help="A planilha deve conter FISCAL, MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
             
             ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False)
 
@@ -1370,22 +1365,103 @@ def app_roteirizador():
                 st.session_state.colunas_originais = df_tasks.columns.tolist()
                 df_tasks['_ORIGEM_BASE'] = 'LISTA_CONTINUA_FISCALIZACAO'
                 
-                if 'FISCAL' not in df_tasks.columns:
-                    st.error("🚨 A planilha precisa da coluna 'FISCAL'."); st.stop()
-                if 'MUNICIPIO' not in df_tasks.columns:
-                    st.error("🚨 A planilha precisa da coluna 'MUNICIPIO'."); st.stop()
-                if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
-                    st.error("🚨 A planilha precisa das colunas 'LATITUDE' e 'LONGITUDE'."); st.stop()
-                if 'NOTA' not in df_tasks.columns:
-                    st.error("🚨 A planilha precisa da coluna 'NOTA'."); st.stop()
+                # --- VALIDAÇÕES OBRIGATÓRIAS ---
+                cols_obrigatorias = ['FISCAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'NOTA']
+                faltando = [c for c in cols_obrigatorias if c not in df_tasks.columns]
+                if faltando:
+                    st.error(f"🚨 A planilha precisa das colunas: {', '.join(faltando)}."); st.stop()
                 
-                # --- QUADRO DASHBOARD: PRIORIDADES DA FISCALIZAÇÃO ---
-                if 'STATUS DA FISCALIZAÇÃO' in df_tasks.columns:
+                df_tasks['MOTIVO_REJEICAO'] = ''
+                df_rejeitadas = pd.DataFrame()
+                
+                # --- 1. FILTRO DE VAZIOS (FISCAL, MUNICIPIO, STATUS) ---
+                m_f = df_tasks['FISCAL'].isna() | (df_tasks['FISCAL'].astype(str).str.strip() == '') | (df_tasks['FISCAL'].astype(str).str.strip().str.upper() == 'NAN')
+                m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
+                
+                col_st = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
+                if col_st in df_tasks.columns:
+                    m_s = df_tasks[col_st].isna() | (df_tasks[col_st].astype(str).str.strip() == '') | (df_tasks[col_st].astype(str).str.strip().str.upper() == 'NAN')
+                else:
+                    m_s = pd.Series([False]*len(df_tasks))
+                    
+                mask_vazios = m_f | m_m | m_s
+                
+                if mask_vazios.sum() > 0:
+                    df_tasks.loc[mask_vazios, 'MOTIVO_REJEICAO'] = 'Célula Vazia (FISCAL, MUNICIPIO ou STATUS)'
+                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_vazios].copy()], ignore_index=True)
+                    df_tasks = df_tasks[~mask_vazios].copy()
+                
+                # --- 2. FILTRO DE COORDENADAS (Zerada, Positiva, Invertida) ---
+                if not df_tasks.empty:
+                    df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                    df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                    
+                    m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
+                    df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
+                    
+                    m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
+                    df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
+                    
+                    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
+                    df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o "-")'
+                    
+                    m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
+                    df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat x Lon)'
+                    
+                    mask_coords = m_na | m_zero | m_pos | m_inv
+                    
+                    if mask_coords.sum() > 0:
+                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
+                        df_tasks = df_tasks[~mask_coords].copy()
+                        
+                    df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
+                    df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
+                    df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+                    
+                # --- 3. GEOFENCING (Fora do Município > 70km) ---
+                if not df_tasks.empty:
+                    mun_dict = {}
+                    for m in df_tasks['MUNICIPIO'].unique():
+                        lat_m, lon_m = obter_coordenadas_municipio_cached(m)
+                        mun_dict[m] = (lat_m, lon_m)
+                        
+                    def is_outside(row):
+                        lm, lom = mun_dict.get(row['MUNICIPIO'], (np.nan, np.nan))
+                        if pd.isna(lm) or pd.isna(lom): return False # Ignora se nao achar a cidade
+                        dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
+                        return dist > 70.0
+                        
+                    mask_out = df_tasks.apply(is_outside, axis=1)
+                    if mask_out.sum() > 0:
+                        df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Coordenada Excedeu 70km do Centro do Município'
+                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_out].copy()], ignore_index=True)
+                        df_tasks = df_tasks[~mask_out].copy()
+                        
+                # SALVAR PLANILHA DE CORREÇÃO NA MEMÓRIA
+                st.session_state.df_correcao_fiscalizacao = df_rejeitadas
+                
+                if not df_rejeitadas.empty:
+                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município) e foram abortadas para sua segurança. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
+                
+                # SE TUDO ESTIVER QUEBRADO, PARA AQUI
+                if df_tasks.empty:
+                    st.error("🚨 Nenhuma obra restou após os filtros de integridade (Todas falharam). Verifique sua planilha e a tabela de Correção.")
+                    st.stop()
+                
+                # --- PREPARANDO AS COLUNAS PRO MOTOR (SOBREVIVENTES) ---
+                df_tasks.rename(columns={'FISCAL': 'LEVANTADOR', 'NOTA': 'PROTOCOLO'}, inplace=True)
+                df_tasks.drop(columns=['MOTIVO_REJEICAO'], inplace=True, errors='ignore')
+                
+                # --- QUADRO DASHBOARD E FILTRO (OBRAS VÁLIDAS APENAS) ---
+                if col_st in df_tasks.columns:
+                    df_tasks[col_st] = df_tasks[col_st].astype(str).str.strip().str.upper()
+                    
                     st.markdown("#### 📊 Obras Prioritárias por Fiscal (Apto/Em Campo)")
-                    df_dash = df_tasks[df_tasks['STATUS DA FISCALIZAÇÃO'].isin(['APTO PARA CAMPO', 'EM CAMPO'])]
+                    df_dash = df_tasks[df_tasks[col_st].isin(['APTO PARA CAMPO', 'EM CAMPO'])].copy()
+                    
                     if not df_dash.empty:
-                        dash_count = df_dash.groupby('FISCAL')['NOTA'].count().reset_index()
-                        dash_count.columns = ['Fiscal', 'Qtd Obras']
+                        dash_count = df_dash.groupby('LEVANTADOR')['PROTOCOLO'].count().reset_index()
+                        dash_count.columns = ['Fiscal', 'Qtd Obras válidas']
                         
                         c_dash1, c_dash2 = st.columns([2, 1])
                         with c_dash1:
@@ -1393,10 +1469,27 @@ def app_roteirizador():
                         with c_dash2:
                             st.dataframe(dash_count, hide_index=True, use_container_width=True)
                     else:
-                        st.info("Nenhuma obra com status 'APTO PARA CAMPO' ou 'EM CAMPO' encontrada para exibir no gráfico.")
+                        st.info("Nenhuma obra com status 'APTO PARA CAMPO' ou 'EM CAMPO' (que seja válida geograficamente) foi encontrada.")
                 
-                # PREPARANDO AS COLUNAS PRO MOTOR INTERNO
-                df_tasks.rename(columns={'FISCAL': 'LEVANTADOR', 'NOTA': 'PROTOCOLO'}, inplace=True)
+                    st.markdown("---")
+                    st.markdown("#### 📌 Filtro de Status para Roteirização")
+                    
+                    status_unicos = sorted([str(x) for x in df_tasks[col_st].unique() if str(x) != 'NAN'])
+                    status_default = [s for s in status_unicos if s in ['APTO PARA CAMPO', 'EM CAMPO']]
+                    
+                    status_selecionados = st.multiselect(
+                        "Selecione os status que devem ser roteirizados (Padrão: Apto/Em Campo):", 
+                        options=status_unicos, 
+                        default=status_default
+                    )
+                    
+                    if not status_selecionados:
+                        st.warning("⚠️ Você precisa selecionar pelo menos um status para roteirizar.")
+                        st.stop()
+                        
+                    # FILTRO REAL APLICADO NO DATAFRAME
+                    df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
+                # -------------------------------------------------------------
                 
                 if 'PROTOCOLO' in df_tasks.columns:
                     df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
@@ -1409,43 +1502,29 @@ def app_roteirizador():
                 if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
                     mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
                     df_tasks = df_tasks[~mask_despacho]
-                        
-                df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                
-                erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
-                df_tasks = df_tasks[~erros_coords_mask]
                 
                 if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "FISCALIZAÇÃO GERAL"
                 
                 df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
-                lixos_lev = ['NAN', 'NONE', '', '-', 'SEM FISCAL', '0', '0.0', 'N/A', 'NULO']
-                df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
 
                 # REGRAS DE PRIORIDADE FISCALIZAÇÃO
                 if 'QTD PREVISTA DE POSTES' in df_tasks.columns:
-                    df_tasks['QTD PREVISTA DE POSTES'] = pd.to_numeric(df_tasks['QTD PREVISTA DE POSTES'], errors='coerce').fillna(0)
+                    df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
                     df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
                 else:
-                    df_tasks['QTD PREVISTA DE POSTES'] = 0
+                    df_tasks['QTD PREVISTA DE POSTES'] = 0.0
                     df_tasks['COR_ICONE'] = 'gray'
 
-                df_tasks['PRIORIDADE'] = 'Não'
-                if 'STATUS DA FISCALIZAÇÃO' in df_tasks.columns:
-                    mask_prio_fisc = df_tasks['STATUS DA FISCALIZAÇÃO'].isin(['APTO PARA CAMPO', 'EM CAMPO'])
-                    df_tasks.loc[mask_prio_fisc, 'PRIORIDADE'] = 'Sim'
+                df_tasks['PRIORIDADE'] = 'Sim' 
                 
                 # Fundindo os pontos
                 df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=True)
 
                 if df_tasks.empty:
-                    st.error("🚨 Nenhuma obra restou após os filtros. Verifique sua planilha.")
+                    st.error("🚨 Nenhuma obra restou após o filtro de Status selecionado.")
                 else:
                     df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
                     df_tasks_alocadas = df_tasks.copy()
-                    
-                    st.session_state.df_unallocated = pd.DataFrame()
-                    st.session_state.tot_obras_nao_alocadas = 0
                     
                     bases_records = []
                     for lev in df_tasks_alocadas['LEVANTADOR'].unique():
@@ -1478,9 +1557,8 @@ def app_roteirizador():
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_') and c not in ['COR_ICONE']]
                 
-                # Define colunas padrão baseadas no modo de operação
                 if modo_operacao == "3":
-                    cols_desejadas = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZAÇÃO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZAÇÃO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZAÇÃO', 'OBSERVAÇÃO']
+                    cols_desejadas = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DE FISCALIZACAO', 'OBSERVACAO']
                 else:
                     cols_desejadas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
 
@@ -1664,18 +1742,47 @@ def app_roteirizador():
                                     curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                 return sorted_pts
 
-                            # Lógica Especial para Fiscalização: Tratar tudo como um único pacote para limpar áreas (Sweep)
                             if len(obs) > 0 and obs[0].get('_ORIGEM_BASE') == 'LISTA_CONTINUA_FISCALIZACAO':
-                                # Ordena para que as obras gigantes sejam o "imã" inicial se estiverem na mesma distância
-                                def extrair_qtd(val):
-                                    try:
-                                        if pd.isna(val) or val == '' or val is None: return 0.0
-                                        return float(str(val).replace(',', '.'))
-                                    except:
-                                        return 0.0
+                                
+                                def greedy_sort_fiscalizacao(pts, start_lat, start_lon, reverse_first=False):
+                                    if not pts: return []
+                                    sorted_pts = []
+                                    curr_lat, curr_lon = start_lat, start_lon
+                                    unvisited_pts = list(pts)
+                                    
+                                    if reverse_first and unvisited_pts:
+                                        best_idx = 0
+                                        best_score = -1
+                                        for i, p in enumerate(unvisited_pts):
+                                            d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
+                                            qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
+                                            score = d * (1 + (qtd / 50.0))
+                                            if score > best_score:
+                                                best_score = score
+                                                best_idx = i
+                                        nxt = unvisited_pts.pop(best_idx)
+                                        sorted_pts.append(nxt)
+                                        curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                    
+                                    while unvisited_pts:
+                                        best_idx = 0
+                                        best_score = float('inf')
+                                        for i, p in enumerate(unvisited_pts):
+                                            d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
+                                            qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
+                                            
+                                            score = d / (1 + (qtd / 50.0))
+                                            
+                                            if score < best_score:
+                                                best_score = score
+                                                best_idx = i
                                         
-                                obs_ordenadas = sorted(obs, key=lambda x: (x.get('PRIORIDADE') != 'Sim', -extrair_qtd(x.get('QTD PREVISTA DE POSTES', 0))))
-                                ordered_tasks.extend(greedy_sort(obs_ordenadas, base_lat, base_lon, is_reversa))
+                                        nxt = unvisited_pts.pop(best_idx)
+                                        sorted_pts.append(nxt)
+                                        curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                    return sorted_pts
+                                    
+                                ordered_tasks.extend(greedy_sort_fiscalizacao(obs, base_lat, base_lon, is_reversa))
                             else:
                                 sub_sim = greedy_sort(prio_sim, base_lat, base_lon, is_reversa)
                                 ordered_tasks.extend(sub_sim)
@@ -2044,7 +2151,7 @@ def app_roteirizador():
         
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
-        total_steps = len(bases_unicas) * 2 + 3
+        total_steps = len(bases_unicas) * 2 + 4
         current_step = 0
         
         if 'start_time_pkg' not in st.session_state:
@@ -2126,6 +2233,19 @@ def app_roteirizador():
                     })
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
+                
+                # --- EXPORTAÇÃO DA PLANILHA DE CORREÇÃO (Obras Ignoradas na Fiscalização) ---
+                df_correcao = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
+                if not df_correcao.empty:
+                    update_ui("Gerando Planilha de Obras para Correção...")
+                    # Limpa colunas temporárias usadas no cálculo
+                    df_correcao.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True, errors='ignore')
+                    
+                    # Converte para bytes sem usar a função estrita de roteamento
+                    out_err = io.BytesIO()
+                    with pd.ExcelWriter(out_err, engine='xlsxwriter') as writer:
+                        df_correcao.to_excel(writer, index=False, sheet_name='Obras com Erro')
+                    zip_xl.writestr(f"Planilha_de_Correcao - {data_atual_formatada}.xlsx", out_err.getvalue())
                 
                 cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE']
                 cols_to_hide_popup = ['HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'BASE_ATRIBUIDA', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'COR_ICONE']
