@@ -71,7 +71,6 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
-    # Limpeza de buffers temporários
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated', 'df_correcao_fiscalizacao']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -84,18 +83,24 @@ def limpar_roteirizador():
 # FUNÇÕES AUXILIARES DE ROTEAMENTO
 # ==========================================
 def formatar_valor_coluna(col_name, val):
-    if pd.isna(val) or val == '' or val == '-':
-        return '-'
+    try:
+        if pd.isna(val) or val == '' or val == '-':
+            return '-'
+    except ValueError:
+        pass 
+
     try:
         val_float = float(val)
         if 'DISTANCIA' in col_name.upper():
             return f"{val_float:.2f} Metros"
-        elif 'POSTE PREVISTO' in col_name.upper() or 'POSTES PREVISTOS' in col_name.upper():
+        elif 'POSTE' in col_name.upper(): # Corrige a quebra decimal da Fiscalização
             return f"{int(round(val_float))}"
         else:
             return formata_campo_html(val)
-    except ValueError:
-        return formata_campo_html(val)
+    except (ValueError, TypeError):
+        if isinstance(val, (datetime, pd.Timestamp)):
+            return formata_campo_html(val.strftime('%d/%m/%Y'))
+        return formata_campo_html(str(val))
 
 def count_real_obras(row):
     if isinstance(row.get('_ORIGINAL_ROWS'), list):
@@ -169,6 +174,74 @@ def gerar_gpx_simples(df_kml, nome_rota):
         
     gpx.append('</gpx>')
     return "\n".join(gpx)
+
+# ==========================================
+# NOVO MÓDULO EXCLUSIVO: KML FISCALIZAÇÃO
+# ==========================================
+def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir):
+    kml = ['<?xml version="1.0" encoding="UTF-8"?>']
+    kml.append('<kml xmlns="http://www.opengis.net/kml/2.2">')
+    kml.append('  <Document>')
+    kml.append(f'    <name>{html.escape(str(nome_rota))}</name>')
+
+    # Definição Estrita de Cores Customizadas
+    styles = {
+        'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png',
+        'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
+        'beige': 'http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png', # Amarelo para Beige
+        'orange': 'http://maps.google.com/mapfiles/kml/paddle/orange-blank.png',
+        'red': 'http://maps.google.com/mapfiles/kml/paddle/red-blank.png',
+        'gray': 'http://maps.google.com/mapfiles/kml/paddle/wht-blank.png'
+    }
+    for color, url in styles.items():
+        kml.append(f'    <Style id="style_{color}">')
+        kml.append(f'      <IconStyle><Icon><href>{url}</href></Icon></IconStyle>')
+        kml.append('    </Style>')
+
+    coords_linha = []
+    
+    for idx, row in df_kml.iterrows():
+        if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        
+        lat = row.get('LATITUDE')
+        lon = row.get('LONGITUDE')
+        if pd.isna(lat) or pd.isna(lon): continue
+        
+        coords_linha.append(f"{lon},{lat},0")
+        
+        nome = str(row.get('PROTOCOLO', 'Ponto'))
+        qtd = float(row.get('QTD PREVISTA DE POSTES', 0))
+        cor = row.get('COR_ICONE', 'gray')
+        
+        desc = '<table border="1" style="border-collapse:collapse; width:100%;">'
+        for c in colunas_exibir:
+            val = formatar_valor_coluna(c, row.get(c, ''))
+            desc += f'<tr><td style="padding:3px;"><b>{html.escape(c)}</b></td><td style="padding:3px;">{val}</td></tr>'
+        desc += '</table>'
+
+        kml.append('    <Placemark>')
+        kml.append(f'      <name>[{int(qtd)} Postes] {html.escape(nome)}</name>')
+        kml.append(f'      <styleUrl>#style_{cor}</styleUrl>')
+        kml.append(f'      <description><![CDATA[{desc}]]></description>')
+        kml.append('      <Point>')
+        kml.append(f'        <coordinates>{lon},{lat},0</coordinates>')
+        kml.append('      </Point>')
+        kml.append('    </Placemark>')
+
+    # Linha vetorial para a Rota
+    if coords_linha:
+        kml.append('    <Placemark>')
+        kml.append('      <name>Traçado da Rota</name>')
+        kml.append('      <Style><LineStyle><color>ff00ffff</color><width>3</width></LineStyle></Style>') # Linha Amarela p/ contraste
+        kml.append('      <LineString><tessellate>1</tessellate><coordinates>')
+        kml.append(' '.join(coords_linha))
+        kml.append('      </coordinates></LineString>')
+        kml.append('    </Placemark>')
+
+    kml.append('  </Document>')
+    kml.append('</kml>')
+    return '\n'.join(kml)
+
 
 def definir_cor_fiscalizacao(qtd):
     try:
@@ -1841,7 +1914,8 @@ def app_roteirizador():
                                             d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
                                             qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
                                             
-                                            score = d / (1 + (qtd / 50.0))
+                                            discount = min(d * 0.8, qtd * 0.1) 
+                                            score = d - discount
                                             
                                             if score < best_score:
                                                 best_score = score
@@ -2050,7 +2124,7 @@ def app_roteirizador():
                     mun_anterior = mun_atual 
 
                 if estado['obras_hoje'] > 0:
-                    dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
+                    dist_ret = haversine_vectorized(estado['lat'], lon_base, base_lat, base_lon)
                     viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
                     ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
                     rotas_flat.append({
@@ -2227,6 +2301,7 @@ def app_roteirizador():
         buf_zip_gpx = io.BytesIO()
         
         tipo_periodo_atual = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Dia')
+        is_fiscal = st.session_state.vrp_state.get('config', {}).get('is_lista_continua') and 'STATUS DA FISCALIZACAO' in df_routed.columns
         
         try:
             with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, \
@@ -2298,7 +2373,6 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
-                # --- EXPORTAÇÃO DA PLANILHA DE CORREÇÃO (Obras Ignoradas na Fiscalização) ---
                 df_correcao = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
                 if not df_correcao.empty:
                     update_ui("Gerando Planilha de Obras para Correção...")
@@ -2306,7 +2380,8 @@ def app_roteirizador():
                     df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
                     out_err = io.BytesIO()
-                    df_correcao.to_excel(out_err, index=False, sheet_name='Obras com Erro')
+                    with pd.ExcelWriter(out_err, engine='openpyxl') as writer:
+                        df_correcao.to_excel(writer, index=False, sheet_name='Obras com Erro')
                     zip_xl.writestr(f"Obras_para_Correcao - {data_atual_formatada}.xlsx", out_err.getvalue())
                 
                 cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE']
@@ -2315,7 +2390,7 @@ def app_roteirizador():
                 
                 update_ui("Gerando Arquivo Excel de Demanda Geral e Pacote GPX Offline...")
                 df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns and c != 'BASE_ATRIBUIDA'], errors='ignore')
-                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
                     if col in df_demanda_geral.columns:
                         df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
                 for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
@@ -2331,19 +2406,21 @@ def app_roteirizador():
                 
                 df_routed_kml = df_routed_kml[~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 
-                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
                     if col in df_routed_kml.columns:
                         df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
-                kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                if is_fiscal:
+                    kml_geral_str = gerar_kml_fiscalizacao(df_routed_kml, f"ROTA TOTAL FISCAIS - {data_atual_formatada}", colunas_exibir_kml)
+                else:
+                    kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                    kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                    padrao_base = r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>'
+                    kml_geral_str = re.sub(padrao_base, '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 
-                padrao_base = r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>'
-                kml_geral_str = re.sub(padrao_base, '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
-                
-                zip_kml.writestr(f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
+                zip_kml.writestr(f"ROTA_TOTAL - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 df_unallocated = st.session_state.get('df_unallocated', pd.DataFrame())
                 if not df_unallocated.empty:
@@ -2371,7 +2448,7 @@ def app_roteirizador():
                     df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     df_lev_kml = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     
-                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
                         if col in df_lev_xl.columns:
                             df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
                     for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
@@ -2381,14 +2458,16 @@ def app_roteirizador():
                     df_lev_xl = limpar_colunas_excel(df_lev_xl, st.session_state.colunas_originais)
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, df_lev_xl.columns.tolist()))
                     
-                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS']:
+                    for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
                         if col in df_lev_kml.columns:
                             df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
-                    kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
-                    
-                    kml_lev_str = re.sub(padrao_base, '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                    if is_fiscal:
+                        kml_lev_str = gerar_kml_fiscalizacao(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml)
+                    else:
+                        kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
+                        kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                        kml_lev_str = re.sub(padrao_base, '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
                     
