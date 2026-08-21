@@ -239,7 +239,6 @@ def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir):
     kml.append('</kml>')
     return '\n'.join(kml)
 
-
 def definir_cor_fiscalizacao(qtd):
     try:
         q = float(qtd)
@@ -313,40 +312,19 @@ def app_roteirizador():
     with st.sidebar:
         with st.expander("⚙️ Esforço e Limites Diários", expanded=True):
             trava_global_obras = st.number_input("Trava Total de Operação (Bolo Geral da Empresa)", min_value=0, value=0, step=50, disabled=is_locked)
-            st.caption("⚠️ **Aviso:** Se o valor for **0**, o sistema levará em consideração **todas** as obras compatíveis. Se ficar em qualquer outro valor, apenas esta exata quantidade será roteirizada.")
-            
             sentido_rota = st.radio("Sentido do Roteamento Diário:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
-            raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked, help="Agrupa obras que estiverem dentro desta distância em um único pino.")
-            
+            raio_super_ponto = st.slider("Raio do Super Ponto (Metros)", min_value=10, max_value=1000, value=100, step=10, disabled=is_locked)
             st.markdown("---")
             modo_produtividade = st.checkbox("🔥 Focar em Alta Densidade (Produtividade)", value=False, disabled=is_locked)
-            st.caption("⚠️ **Aviso:** Se ativado, a IA rejeita obras isoladas e foca a equipe apenas em 'bolsões' com muitas notas.")
-            if modo_produtividade:
-                min_vizinhos = st.slider("Mínimo de obras próximas (Raio 2km):", min_value=2, max_value=50, value=10, step=1, disabled=is_locked)
-            else:
-                min_vizinhos = 0
+            if modo_produtividade: min_vizinhos = st.slider("Mínimo de obras próximas (Raio 2km):", min_value=2, max_value=50, value=10, step=1, disabled=is_locked)
+            else: min_vizinhos = 0
             st.markdown("---")
-
             tipo_periodo = st.radio("Agrupamento de percurso:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
             tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
             
-            if tipo_periodo_clean == "Dia":
-                st.caption("A IA encerra o roteiro no fim do dia.")
-            else:
-                st.caption("A IA monta jornadas contínuas de segunda a sexta.")
-            
             dias_semana_selecionados = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
             if tipo_periodo_clean == "Semana":
-                dias_semana_selecionados = st.multiselect(
-                    "Dias úteis na semana:",
-                    ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"],
-                    default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"],
-                    disabled=is_locked
-                )
-                if not dias_semana_selecionados:
-                    st.warning("⚠️ Selecione pelo menos 1 dia da semana para o cálculo.")
-                else:
-                    st.caption(f"ℹ️ Cada semana terá **{len(dias_semana_selecionados)} dias** alocados.")
+                dias_semana_selecionados = st.multiselect("Dias úteis na semana:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked)
             
             data_inicio_roteiro = st.date_input("📅 Data de Início do Roteiro:", value=datetime.today(), disabled=is_locked)
             obras_por_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
@@ -360,9 +338,8 @@ def app_roteirizador():
             custo_hora_equipe = st.number_input("Hora-Homem da Equipe (R$)", min_value=0.0, value=0.0, step=1.0, disabled=is_locked)
             
         with st.expander("📡 Conexão de Rede (Avançado)", expanded=False):
-            url_osrm_base = st.text_input("Endpoint OSRM ⚠️ (NÃO APAGUE OU EDITE):", value="http://router.project-osrm.org", disabled=is_locked)
-            st.caption("Este link conecta o sistema à malha viária real de ruas do mundo.")
-            tracado_real = st.checkbox("🛣️ Desenhar Traçado de Ruas no Mapa (Lento)", value=False, disabled=is_locked, help="Desmarque para usar o modo Vetorial Rápido (Altamente recomendado para bases grandes).")
+            url_osrm_base = st.text_input("Endpoint OSRM ⚠️:", value="http://router.project-osrm.org", disabled=is_locked)
+            tracado_real = st.checkbox("🛣️ Desenhar Traçado de Ruas no Mapa (Lento)", value=False, disabled=is_locked)
             
         st.markdown("---")
         sidebar_html_placeholder = st.empty()
@@ -379,15 +356,11 @@ def app_roteirizador():
         st.download_button("🗺️ 2. Baixar Mapas (KML)", data=bytes_zip_kml if bytes_zip_kml else b"vazio", file_name=f"Mapas_Rotas - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         st.download_button("🛰️ 3. Baixar GPS Offline (GPX)", data=bytes_zip_gpx if bytes_zip_gpx else b"vazio", file_name=f"GPS_Offline_GPX - {data_atual_formatada}.zip", mime="application/zip", use_container_width=True, disabled=botoes_desabilitados)
         
-        if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
-            limpar_roteirizador()
-
-    # RESULTADOS FINAIS
+        if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): limpar_roteirizador()
+# RESULTADOS FINAIS
     if is_done and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Otimização")
-
         st.session_state.df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
-
         df_routed = st.session_state.df_routed.copy()
         bases_records = st.session_state.bases_records
         colunas_exibir = st.session_state.colunas_exibir
@@ -395,7 +368,6 @@ def app_roteirizador():
         
         tot_paradas = len(df_real_tasks)
         tot_obras_reais = sum(count_real_obras(r) for _, r in df_real_tasks.iterrows())
-        
         tot_equipes = df_routed['BASE_ATRIBUIDA'].nunique()
         tot_km = f"{df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
         tot_prio = sum(count_real_obras(r) for _, r in df_real_tasks[df_real_tasks['PRIORIDADE'] == 'Sim'].iterrows()) if 'PRIORIDADE' in df_real_tasks else 0
@@ -404,18 +376,14 @@ def app_roteirizador():
         is_saneamento_puro = False
         if '_ORIGEM_BASE' in df_routed.columns:
             origens = df_routed['_ORIGEM_BASE'].unique()
-            if 'SANEAMENTO' in origens and 'LEVANTAMENTO' not in origens:
-                is_saneamento_puro = True
+            if 'SANEAMENTO' in origens and 'LEVANTAMENTO' not in origens: is_saneamento_puro = True
 
         c_m1, c_m2, c_m3, c_m4 = st.columns(4)
         c_m1.markdown(f'<div class="metric-card" style="border-left: 5px solid #0D256C;"><div class="metric-icon" style="background: rgba(13, 37, 108, 0.12);">🎯</div><div class="metric-content"><div class="metric-title">TOTAL DE OBRAS ROTEIRIZADAS</div><div class="metric-value">{tot_obras_reais} <span style="font-size:12px;color:#888;">(Em {tot_paradas} Pontos)</span></div></div></div>', unsafe_allow_html=True)
         c_m2.markdown(f'<div class="metric-card" style="border-left: 5px solid #8b5cf6;"><div class="metric-icon" style="background: rgba(139, 92, 246, 0.15);">👥</div><div class="metric-content"><div class="metric-title">Equipes Alocadas</div><div class="metric-value">{tot_equipes}</div></div></div>', unsafe_allow_html=True)
         c_m3.markdown(f'<div class="metric-card" style="border-left: 5px solid #55B929;"><div class="metric-icon" style="background: rgba(85, 185, 41, 0.15);">🛣️</div><div class="metric-content"><div class="metric-title">KM Total Projetado</div><div class="metric-value">{tot_km}</div></div></div>', unsafe_allow_html=True)
-        
-        if is_saneamento_puro:
-            c_m4.markdown(f'<div class="metric-card" style="border-left: 5px solid #eab308;"><div class="metric-icon" style="background: rgba(234, 179, 8, 0.15);">🏢</div><div class="metric-content"><div class="metric-title">Pontos Agrupados (Super Pontos)</div><div class="metric-value">{tot_super_pontos}</div></div></div>', unsafe_allow_html=True)
-        else:
-            c_m4.markdown(f'<div class="metric-card" style="border-left: 5px solid #ef4444;"><div class="metric-icon" style="background: rgba(239, 68, 68, 0.15);">🚨</div><div class="metric-content"><div class="metric-title">Prioridades</div><div class="metric-value">{tot_prio}</div></div></div>', unsafe_allow_html=True)
+        if is_saneamento_puro: c_m4.markdown(f'<div class="metric-card" style="border-left: 5px solid #eab308;"><div class="metric-icon" style="background: rgba(234, 179, 8, 0.15);">🏢</div><div class="metric-content"><div class="metric-title">Pontos Agrupados (Super Pontos)</div><div class="metric-value">{tot_super_pontos}</div></div></div>', unsafe_allow_html=True)
+        else: c_m4.markdown(f'<div class="metric-card" style="border-left: 5px solid #ef4444;"><div class="metric-icon" style="background: rgba(239, 68, 68, 0.15);">🚨</div><div class="metric-content"><div class="metric-title">Prioridades</div><div class="metric-value">{tot_prio}</div></div></div>', unsafe_allow_html=True)
 
         cfg_atual = st.session_state.vrp_state.get('config', {})
         obras_dia_meta = cfg_atual.get('obras_por_dia', 30)
@@ -437,7 +405,6 @@ def app_roteirizador():
         if trava_global > 0: meta_global_exata = min(meta_global_exata, trava_global)
         
         obras_por_equipe = {b['LEVANTADOR']: 0 for b in st.session_state.bases_records}
-            
         for _, r in df_real_tasks.iterrows():
             b_name = r['BASE_ATRIBUIDA']
             qtd = count_real_obras(r)
@@ -448,73 +415,37 @@ def app_roteirizador():
         
         if roteirizar_tudo_meta:
              if obras_sobrando_na_planilha > 0:
-                 st.markdown(f'''
-                 <div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px;">
-                     <h3 style="margin-top: 0; color: #856404;">⚠️ Modo Lista Contínua: {tot_obras_reais} Obras Roteirizadas</h3>
-                     <p>O sistema processou a lista ignorando limites de tempo. No entanto, <b>{obras_sobrando_na_planilha} obras</b> ficaram de fora pois pertencem a municípios que nenhum levantador atende de forma explícita. Faça o download do KML "OBRAS NÃO ALOCADAS" para visualizar as rejeitadas.</p>
-                 </div>
-                 ''', unsafe_allow_html=True)
+                 st.markdown(f'<div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px;"><h3 style="margin-top: 0; color: #856404;">⚠️ Modo Lista Contínua: {tot_obras_reais} Obras Roteirizadas</h3><p>O sistema processou a lista ignorando limites de tempo. No entanto, <b>{obras_sobrando_na_planilha} obras</b> ficaram de fora pois pertencem a municípios que nenhum levantador atende de forma explícita. Faça o download do KML "OBRAS NÃO ALOCADAS" para visualizar as rejeitadas.</p></div>', unsafe_allow_html=True)
              else:
-                 st.markdown(f'''
-                 <div style="background-color: #d4edda; color: #155724; padding: 15px; border-left: 5px solid #c3e6cb; margin-bottom: 20px; border-radius: 4px;">
-                     <h4 style="margin-top: 0; margin-bottom: 5px;">✅ Modo Lista Contínua Concluído!</h4>
-                     <p style="margin: 0;">100% da sua planilha compatível (<b>{tot_obras_reais} obras</b>) foi roteirizada para os levantadores definidos no arquivo. O limite de semanas foi desativado e os cronogramas estendidos automaticamente.</p>
-                 </div>
-                 ''', unsafe_allow_html=True)
+                 st.markdown(f'<div style="background-color: #d4edda; color: #155724; padding: 15px; border-left: 5px solid #c3e6cb; margin-bottom: 20px; border-radius: 4px;"><h4 style="margin-top: 0; margin-bottom: 5px;">✅ Modo Lista Contínua Concluído!</h4><p style="margin: 0;">100% da sua planilha compatível (<b>{tot_obras_reais} obras</b>) foi roteirizada para os levantadores definidos no arquivo. O limite de semanas foi desativado e os cronogramas estendidos automaticamente.</p></div>', unsafe_allow_html=True)
         else:
             if obras_faltantes > 0:
-                if obras_sobrando_na_planilha > 0:
-                    dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem (ou foram rejeitadas pelo filtro de densidade). A meta de {meta_global_exata} não foi atingida. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real. Faça o download do <b>KML de Obras Não Alocadas</b> para inspecionar.</li>"
-                else:
-                    dica_extra = f"<li><b>Falta de Obras na Planilha Geral:</b> O estoque total de obras válidas esgotou antes de fechar a meta operacional. Faltaram obras nos municípios de atuação. O sistema roteirizou a quantidade máxima encontrada ({tot_obras_reais} obras).</li>"
-                
-                st.markdown(f'''
-                <div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                    <h3 style="margin-top: 0; color: #856404; display: flex; align-items: center;"><span style="font-size: 24px; margin-right: 10px;">⚠️</span> Quadro de Aviso: Quantidade de Obras Limitada pelo Estoque</h3>
-                    <p style="font-size: 16px;">Você configurou o sistema para roteirizar <b>{meta_global_exata} obras</b> no total <i>({obras_dia_meta} obras/dia × {dias_multiplicador * limite_periodos_meta} dias × {tot_equipes_cadastradas} equipes)</i>.</p>
-                    <p style="font-size: 16px;">No entanto, <b>não havia obras suficientes nos municípios e raio de 100km</b>. O algoritmo roteirizou a quantidade máxima encontrada e compatível: <b>{tot_obras_reais} obras</b>. <br>
-                    <span style="color: #d9534f; font-weight: bold; font-size: 18px;">❌ Faltaram {obras_faltantes} obras para atingir a meta global escolhida.</span></p>
-                    <hr style="border-top: 1px solid #ffeeba; margin: 15px 0;">
-                    <h4 style="margin-bottom: 10px; color: #856404;">🔍 Resumo do Cenário:</h4>
-                    <ul style="font-size: 14px; line-height: 1.6;">
-                        {dica_extra}
-                        <li>Verifique a aba <b>"Relatório de Déficit por Levantador"</b> abaixo para ver exatamente quantos e quais técnicos ficaram ociosos e em quais cidades você precisa adicionar mais notas no Excel.</li>
-                    </ul>
-                </div>
-                ''', unsafe_allow_html=True)
+                if obras_sobrando_na_planilha > 0: dica_extra = f"<li><b>Falta de Obras nos Municípios Atendidos:</b> O sistema detectou que sobraram <b>{obras_sobrando_na_planilha} obras</b> na planilha, mas elas pertencem a cidades que os seus levantadores atuais não atendem (ou foram rejeitadas pelo filtro de densidade). A meta de {meta_global_exata} não foi atingida. O sistema roteirizou o máximo possível ({tot_obras_reais} obras) com base na disponibilidade real. Faça o download do <b>KML de Obras Não Alocadas</b> para inspecionar.</li>"
+                else: dica_extra = f"<li><b>Falta de Obras na Planilha Geral:</b> O estoque total de obras válidas esgotou antes de fechar a meta operacional. Faltaram obras nos municípios de atuação. O sistema roteirizou a quantidade máxima encontrada ({tot_obras_reais} obras).</li>"
+                st.markdown(f'<div style="background-color: #fff3cd; color: #856404; padding: 20px; border-left: 6px solid #ffeeba; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><h3 style="margin-top: 0; color: #856404; display: flex; align-items: center;"><span style="font-size: 24px; margin-right: 10px;">⚠️</span> Quadro de Aviso: Quantidade de Obras Limitada pelo Estoque</h3><p style="font-size: 16px;">Você configurou o sistema para roteirizar <b>{meta_global_exata} obras</b> no total.</p><p style="font-size: 16px;">No entanto, <b>não havia obras suficientes nos municípios e raio de 100km</b>. O algoritmo roteirizou a quantidade máxima encontrada e compatível: <b>{tot_obras_reais} obras</b>. <br><span style="color: #d9534f; font-weight: bold; font-size: 18px;">❌ Faltaram {obras_faltantes} obras para atingir a meta global escolhida.</span></p><hr style="border-top: 1px solid #ffeeba; margin: 15px 0;"><h4 style="margin-bottom: 10px; color: #856404;">🔍 Resumo do Cenário:</h4><ul style="font-size: 14px; line-height: 1.6;">{dica_extra}<li>Verifique a aba <b>"Relatório de Déficit por Levantador"</b> abaixo.</li></ul></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'''
-                <div style="background-color: #d4edda; color: #155724; padding: 15px; border-left: 5px solid #c3e6cb; margin-bottom: 20px; border-radius: 4px;">
-                    <h4 style="margin-top: 0; margin-bottom: 5px;">✅ Meta de Despacho 100% Atingida!</h4>
-                    <p style="margin: 0;">O sistema logístico preencheu perfeitamente a meta exata de <b>{meta_global_exata} obras</b>.</p>
-                </div>
-                ''', unsafe_allow_html=True)
+                st.markdown(f'<div style="background-color: #d4edda; color: #155724; padding: 15px; border-left: 5px solid #c3e6cb; margin-bottom: 20px; border-radius: 4px;"><h4 style="margin-top: 0; margin-bottom: 5px;">✅ Meta de Despacho 100% Atingida!</h4><p style="margin: 0;">O sistema logístico preencheu perfeitamente a meta exata de <b>{meta_global_exata} obras</b>.</p></div>', unsafe_allow_html=True)
 
         cf_comb = st.session_state.config_financeira.get('custo_combustivel', 0.0)
         cf_cons = st.session_state.config_financeira.get('consumo_veiculo', 0.0)
         cf_hora = st.session_state.config_financeira.get('custo_hora_equipe', 0.0)
         
         mostrar_financeiro = (cf_comb > 0) or (cf_hora > 0)
-
         if mostrar_financeiro:
             tot_km_val = df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum()
             litros_gastos = tot_km_val / cf_cons if cf_cons > 0 else 0
             custo_total_combustivel = litros_gastos * cf_comb
-            
             df_financeiro = df_routed.copy()
             df_financeiro['_HORA_INICIO_DT'] = pd.to_datetime(df_financeiro['_HORA_INICIO_DT'])
             df_financeiro['_HORA_FIM_DT'] = pd.to_datetime(df_financeiro['_HORA_FIM_DT'])
-            
             custo_total_mao_de_obra = 0.0
             horas_totais = 0.0
-            
             for (eq, periodo_f), group in df_financeiro.groupby(['BASE_ATRIBUIDA', 'PERIODO']):
                 h_inicio = group['_HORA_INICIO_DT'].min()
                 h_fim = group['_HORA_FIM_DT'].max()
                 h_trab = (h_fim - h_inicio).total_seconds() / 3600.0
                 horas_totais += h_trab
                 custo_total_mao_de_obra += (h_trab * cf_hora)
-                
             custo_operacao_total = custo_total_combustivel + custo_total_mao_de_obra
             custo_por_obra = custo_operacao_total / tot_obras_reais if tot_obras_reais > 0 else 0.0
 
@@ -525,10 +456,8 @@ def app_roteirizador():
             c_fin4.markdown(f'<div class="metric-card" style="border-left: 5px solid #55B929;"><div class="metric-icon" style="background: rgba(85, 185, 41, 0.15);">📊</div><div class="metric-content"><div class="metric-title">Custo Médio por Obra</div><div class="metric-value">R$ {formatar_moeda(custo_por_obra)}</div></div></div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-
         st.markdown("### 🗺️ Mapa Geográfico de Rotas")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        
         cores_folium = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#ff9800', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548']
         lista_bases_mapa = df_routed['BASE_ATRIBUIDA'].unique().tolist()
         
@@ -540,12 +469,10 @@ def app_roteirizador():
             idx_cor = lista_bases_mapa.index(base_nome)
             cor_rota = cores_folium[idx_cor % len(cores_folium)]
             df_base_rota = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome]
-            
             fg_linhas = folium.FeatureGroup(name=f"Rota: {base_nome}", show=False)
             
             for periodo_val in df_base_rota['PERIODO'].unique():
                 df_periodo = df_base_rota[df_base_rota['PERIODO'] == periodo_val]
-                
                 pontos_linha_folium = []
                 for _, r in df_periodo.iterrows():
                     if isinstance(r.get('ROTA_GEOMETRIA'), list):
@@ -557,7 +484,6 @@ def app_roteirizador():
                 for r in df_periodo.to_dict('records'):
                     if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                     icone = identificar_icone_folium(r, df_routed.columns)
-                    
                     is_super = str(r.get('SUPER_PONTO', '')).startswith('SIM')
                     if is_super:
                         cor_icone = 'orange'
@@ -576,7 +502,6 @@ def app_roteirizador():
                             pop_prio_txt = "🚨 OBRA PRIORITÁRIA" if r.get('PRIORIDADE') == "Sim" else "📍 Atendimento Padrão"
                     
                     dist_prox = r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)
-                    
                     extra_rows_list = []
                     for c in colunas_exibir:
                         if c.upper() not in ['NOME_DIA', 'DIA_MES', 'SEMANA', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'BASE_ATRIBUIDA', 'COR_ICONE']:
@@ -600,7 +525,6 @@ def app_roteirizador():
                         </div>
                     </div>"""
                     folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=cor_icone, icon=icone), popup=folium.Popup(popup_html, max_width=300)).add_to(marker_cluster)
-            
             fg_linhas.add_to(mapa)
             
         folium.LayerControl().add_to(mapa)
@@ -612,8 +536,7 @@ def app_roteirizador():
         with tab_dados:
             st.markdown("#### Detalhamento de Rotas")
             df_display = st.session_state.df_routed.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', 'COR_ICONE'], errors='ignore')
-            
-            df_editado_ui = st.data_editor(
+            st.data_editor(
                 df_display, use_container_width=True, height=400,
                 column_config={ 
                     "LATITUDE": st.column_config.NumberColumn(disabled=True), "LONGITUDE": st.column_config.NumberColumn(disabled=True),
@@ -624,14 +547,11 @@ def app_roteirizador():
 
         with tab_relatorio:
             st.markdown("#### Análise de Ociosidade e Falta de Obras por Técnico")
-            
             dados_relatorio = []
             for b_record in st.session_state.bases_records:
                 nome_lev = b_record['LEVANTADOR']
                 muns_atendidos = str(b_record.get('MUNICIPIO', b_record.get('RESIDENCIA', 'DESCONHECIDO')))
-                
                 qtd_roteirizada = obras_por_equipe.get(nome_lev, 0)
-                
                 if roteirizar_tudo_meta:
                     meta_exibicao = "Ilimitada"
                     deficit = 0
@@ -642,74 +562,35 @@ def app_roteirizador():
                     status_meta = "✅ Meta Atingida" if deficit <= 0 else "❌ Faltam Obras"
                 
                 dados_relatorio.append({
-                    "Levantador": nome_lev,
-                    "Municípios de Atuação": muns_atendidos,
-                    "Meta (Obras)": meta_exibicao,
-                    "Roteirizadas": qtd_roteirizada,
-                    "Faltantes (Déficit)": deficit if deficit > 0 else 0,
-                    "Status": status_meta
+                    "Levantador": nome_lev, "Municípios de Atuação": muns_atendidos, "Meta (Obras)": meta_exibicao,
+                    "Roteirizadas": qtd_roteirizada, "Faltantes (Déficit)": deficit if deficit > 0 else 0, "Status": status_meta
                 })
             
-            df_relatorio = pd.DataFrame(dados_relatorio)
-            df_relatorio = df_relatorio.sort_values(by="Faltantes (Déficit)", ascending=False).reset_index(drop=True)
-            
-            if roteirizar_tudo_meta:
-                st.info("O modo 'Lista Contínua Direta' foi utilizado. Nenhuma equipe teve limite de obras ou dias; os roteiros foram criados para abraçar 100% da planilha fornecida.")
-            else:
-                st.info("Abaixo estão os levantadores que não atingiram a quantidade de obras solicitada porque o estoque de notas da sua cidade de atuação esgotou na planilha e num raio de 100km.")
+            df_relatorio = pd.DataFrame(dados_relatorio).sort_values(by="Faltantes (Déficit)", ascending=False).reset_index(drop=True)
+            if roteirizar_tudo_meta: st.info("O modo 'Lista Contínua Direta' foi utilizado. Nenhuma equipe teve limite de obras ou dias.")
+            else: st.info("Abaixo estão os levantadores que não atingiram a quantidade de obras solicitada.")
             
             max_v = int(meta_exata_por_equipe) if not roteirizar_tudo_meta else int(max(df_relatorio["Roteirizadas"].max(), 1))
-            st.dataframe(
-                df_relatorio,
-                use_container_width=True,
-                column_config={
-                    "Faltantes (Déficit)": st.column_config.NumberColumn(
-                        "Faltantes (Déficit)",
-                        help="Quantas obras faltaram para bater a meta deste técnico.",
-                        format="%d ⚠️"
-                    ),
-                    "Roteirizadas": st.column_config.ProgressColumn(
-                        "Obras Roteirizadas",
-                        format="%d",
-                        min_value=0,
-                        max_value=max_v
-                    )
-                }
-            )
+            st.dataframe(df_relatorio, use_container_width=True, column_config={"Faltantes (Déficit)": st.column_config.NumberColumn("Faltantes (Déficit)", format="%d ⚠️"), "Roteirizadas": st.column_config.ProgressColumn("Obras Roteirizadas", format="%d", min_value=0, max_value=max_v)})
 
         with tab_hospedagem:
             st.markdown("#### 🏨 Análise de Distância Extrema e Pernoite")
-            st.markdown("O sistema calcula o **Centro de Gravidade** (Centroid) do bloco de obras atribuído a cada levantador. Se a massa de trabalho estiver concentrada a mais de **60 km** da base do técnico, o sistema sugere opções de hospedagem na região para evitar o desgaste diário com deslocamento em rodovias.")
-            
             hospedagens_sugeridas = False
             for base_record in st.session_state.bases_records:
                 nome_tec = base_record['LEVANTADOR']
                 lat_base = base_record.get('LATITUDE')
                 lon_base = base_record.get('LONGITUDE')
-                
                 df_tec = df_real_tasks[df_real_tasks['BASE_ATRIBUIDA'] == nome_tec]
                 if not df_tec.empty and pd.notna(lat_base) and pd.notna(lon_base):
                     centro_lat = df_tec['LATITUDE'].mean()
                     centro_lon = df_tec['LONGITUDE'].mean()
-                    
                     distancia_base_polo = haversine_scalar(float(lat_base), float(lon_base), centro_lat, centro_lon)
-                    
                     if distancia_base_polo > 60:
                         hospedagens_sugeridas = True
                         mun_polo = df_tec['MUNICIPIO'].mode().iloc[0] if 'MUNICIPIO' in df_tec.columns else "Região Afastada"
                         qtd_obras_polo = len(df_tec)
-                        
                         link_hoteis = f"https://www.google.com/maps/search/hoteis+pousadas/@{centro_lat:.6f},{centro_lon:.6f},12z"
-                        
-                        st.markdown(f"""
-                        <div style="background-color: #f8f9fa; border-left: 5px solid #0D256C; padding: 15px; margin-bottom: 15px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                            <h4 style="margin-top: 0; color: #0D256C;">👨‍🔧 {nome_tec}</h4>
-                            <p style="margin-bottom: 5px;"><b>Polo de Obras:</b> {mun_polo} ({qtd_obras_polo} paradas programadas)</p>
-                            <p style="margin-bottom: 5px; color: #d9534f;"><b>⚠️ Distância da Base:</b> {distancia_base_polo:.1f} KM</p>
-                            <a href="{link_hoteis}" target="_blank" style="display: inline-block; margin-top: 10px; padding: 8px 15px; background-color: #55B929; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">🏨 Buscar Hotéis no Centro da Operação</a>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
+                        st.markdown(f'<div style="background-color: #f8f9fa; border-left: 5px solid #0D256C; padding: 15px; margin-bottom: 15px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><h4 style="margin-top: 0; color: #0D256C;">👨‍🔧 {nome_tec}</h4><p style="margin-bottom: 5px;"><b>Polo de Obras:</b> {mun_polo} ({qtd_obras_polo} paradas programadas)</p><p style="margin-bottom: 5px; color: #d9534f;"><b>⚠️ Distância da Base:</b> {distancia_base_polo:.1f} KM</p><a href="{link_hoteis}" target="_blank" style="display: inline-block; margin-top: 10px; padding: 8px 15px; background-color: #55B929; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">🏨 Buscar Hotéis no Centro da Operação</a></div>', unsafe_allow_html=True)
             if not hospedagens_sugeridas:
                 st.success("✅ Logística Segura: Nenhuma equipe recebeu um pacote de obras cujo centro de gravidade fique a mais de 60km de sua residência atual.")
 
@@ -718,25 +599,19 @@ def app_roteirizador():
 
     if status_exec == "IDLE" and not is_done:
         st.markdown("### ⚙️ Selecione a Estratégia de Roteirização")
-        modo_selecionado = st.radio(
-            "Modo:",
-            ["🎯 1. Planejamento Tático (IA Automática)", "♾️ 2. Lista Contínua (Técnico Fixo)", "📋 3. Planejamento Tático (Fiscalização)"],
-            horizontal=True,
-            label_visibility="collapsed"
-        )
+        modo_selecionado = st.radio("Modo:", ["🎯 1. Planejamento Tático (IA Automática)", "♾️ 2. Lista Contínua (Técnico Fixo)", "📋 3. Planejamento Tático (Fiscalização)"], horizontal=True, label_visibility="collapsed")
 
         if "Tático" in modo_selecionado and not "Fiscalização" in modo_selecionado:
-            st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis, agrupando-as pela melhor rota geográfica e acionando o raio de 100km caso falte obras na cidade base.")
+            st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis.")
             modo_operacao = "1"
         elif "Fixo" in modo_selecionado:
-            st.info("💡 **Como funciona a Lista Contínua:** O sistema respeita estritamente a coluna 'LEVANTADOR' da sua planilha. A IA apenas calcula as distâncias e roteiriza 100% da lista de cada técnico, gerando quantos dias forem necessários.")
+            st.info("💡 **Como funciona a Lista Contínua:** O sistema respeita estritamente a coluna 'LEVANTADOR' da sua planilha. A IA apenas calcula as distâncias e roteiriza 100% da lista.")
             modo_operacao = "2"
         else:
-            st.info("💡 **Planejamento Tático (Fiscalização):** O sistema aloca as obras de fiscalização entre os fiscais disponíveis, priorizando áreas com maior densidade de postes e equilibrando a carga de trabalho no mesmo município. Obras 'APTO PARA CAMPO' e 'EM CAMPO' furam a fila.")
+            st.info("💡 **Planejamento Tático (Fiscalização):** O sistema aloca as obras de fiscalização entre os fiscais disponíveis, priorizando áreas com maior densidade de postes e equilibrando a carga.")
             modo_operacao = "3"
 
         st.markdown("---")
-        
         df_tasks_alocadas = pd.DataFrame()
         bases_records = []
         colunas_originais = []
@@ -747,9 +622,7 @@ def app_roteirizador():
             with col_up_1:
                 st.markdown(f"### 👥 1. {'Fiscais' if modo_operacao == '3' else 'Levantadores'} Principais")
                 df_bases = pd.DataFrame()
-                with st.container(border=True):
-                    base_file = st.file_uploader(f"Suba a planilha {'Fiscais_MA' if modo_operacao == '3' else 'Levantadores_MA'}", type=["xlsx", "xls"])
-                
+                with st.container(border=True): base_file = st.file_uploader(f"Suba a planilha {'Fiscais_MA' if modo_operacao == '3' else 'Levantadores_MA'}", type=["xlsx", "xls"])
                 if base_file:
                     try:
                         df_bases_temp_ui = ler_planilha_cached(base_file.getvalue())
@@ -757,12 +630,10 @@ def app_roteirizador():
                         if 'LEVANTADOR' not in df_bases_temp_ui.columns:
                             for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR', 'FISCAL']:
                                 if p_nome in df_bases_temp_ui.columns:
-                                    df_bases_temp_ui = df_bases_temp_ui.rename(columns={p_nome: 'LEVANTADOR'})
-                                    break
+                                    df_bases_temp_ui = df_bases_temp_ui.rename(columns={p_nome: 'LEVANTADOR'}); break
                         if 'LEVANTADOR' in df_bases_temp_ui.columns:
                             opcoes_levs = sorted([str(x) for x in df_bases_temp_ui['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
                             levs_selecionados = st.multiselect(f"Selecione as Equipes {'Fiscais' if modo_operacao == '3' else 'Principais'}:", opcoes_levs, default=opcoes_levs)
-                            
                             if levs_selecionados:
                                 df_bases = df_bases_temp_ui[df_bases_temp_ui['LEVANTADOR'].isin(levs_selecionados)].copy()
                                 if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
@@ -785,19 +656,15 @@ def app_roteirizador():
                                 df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
                         else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR' ou 'FISCAL'.")
                     except Exception as e: st.error(f"Erro ao ler a planilha: {e}")
-
-                st.markdown("##### Regra de Atribuição Territorial")
                 tipo_atribuicao = st.radio("Regra", ["Por Municípios Atendidos (Lê texto da planilha)", "Por Proximidade Geográfica das Coordenadas (Ignora texto)", "Clusterização Inteligente por IA (K-Means)"], index=0, label_visibility="collapsed")
 
             with col_up_2:
                 st.markdown("### 📁 2. Upload de Demandas (Obras)")
-                
                 if modo_operacao == "1":
                     with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
                     with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
-                    with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
+                    with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
                     with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
-                    
                     df_status_upload = pd.DataFrame()
                     coluna_status_selecionada = None
                     if status_file:
@@ -845,17 +712,14 @@ def app_roteirizador():
                                     df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE'])
                                     df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
                         except Exception as e: st.error(f"Erro: {e}")
-                
                 else: 
                     with st.container(border=True): 
-                        task_files = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], accept_multiple_files=True, help="A planilha deve conter MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
-                    saneamento_files = None
-                    generica_files = None
-                    status_file = None
+                        task_files = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], accept_multiple_files=True, help="Deve conter MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
+                    saneamento_files, generica_files, status_file = None, None, None
                     df_status_upload = pd.DataFrame()
                     df_bases_temp = pd.DataFrame()
 
-                ignorar_despacho_m1 = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida.")
+                ignorar_despacho_m1 = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False)
 
             qtd_eq_princ = df_bases['LEVANTADOR'].nunique() if 'df_bases' in locals() and not df_bases.empty else 0
             qtd_eq_temp = df_bases_temp['LEVANTADOR'].nunique() if 'df_bases_temp' in locals() and not df_bases_temp.empty else 0
@@ -866,7 +730,6 @@ def app_roteirizador():
             dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
             cap_por_eq_live = obras_por_dia * dias_multiplier * limite_periodos
             cap_total_estimada_live = cap_por_eq_live * (qtd_eq_atual_live if qtd_eq_atual_live > 0 else 1)
-            
             sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
 
             if not task_files and not saneamento_files and not generica_files: 
@@ -884,9 +747,7 @@ def app_roteirizador():
                         if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
                         if 'PROTOCOLO' not in df_temp.columns:
                             for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
-                                if col_candidata in df_temp.columns:
-                                    df_temp['PROTOCOLO'] = df_temp[col_candidata]
-                                    break
+                                if col_candidata in df_temp.columns: df_temp['PROTOCOLO'] = df_temp[col_candidata]; break
                         dfs.append(df_temp)
                         
                 if saneamento_files:
@@ -900,9 +761,7 @@ def app_roteirizador():
                         if 'LONGITUDE PROJETO' in df_temp.columns and 'LONGITUDE' not in df_temp.columns: df_temp['LONGITUDE'] = df_temp['LONGITUDE PROJETO']
                         if 'PROTOCOLO' not in df_temp.columns:
                             for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
-                                if col_candidata in df_temp.columns:
-                                    df_temp['PROTOCOLO'] = df_temp[col_candidata]
-                                    break
+                                if col_candidata in df_temp.columns: df_temp['PROTOCOLO'] = df_temp[col_candidata]; break
                         dfs.append(df_temp)
 
                 if generica_files:
@@ -921,15 +780,12 @@ def app_roteirizador():
                             found_id = False
                             for c in id_cols:
                                 if c in df_temp.columns:
-                                    df_temp['PROTOCOLO'] = df_temp[c]
-                                    found_id = True
-                                    break
+                                    df_temp['PROTOCOLO'] = df_temp[c]; found_id = True; break
                             if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
                         dfs.append(df_temp)
                         
                 if not dfs: return
                 df_tasks = pd.concat(dfs, ignore_index=True)
-                
                 if 'PROTOCOLO' in df_tasks.columns:
                     df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
                     df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
@@ -940,42 +796,31 @@ def app_roteirizador():
                 cols_orig_san = st.session_state.get('colunas_originais_san', [])
                 cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
                 st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
-                
                 for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
                     if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                        
             except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
 
             if modo_operacao == "1":
                 st.markdown("##### 🗂️ Triagem Dinâmica de Notas (Bolo Geral)")
                 col_dash1, col_dash2, col_dash3, col_dash4 = st.columns(4)
-                
                 if 'TIPO NOTA' in df_tasks.columns:
                     tipos_counts = df_tasks['TIPO NOTA'].value_counts()
-                    t_unr = tipos_counts.get('UNR', 0)
-                    t_mgd = tipos_counts.get('MGD', 0)
-                    t_asc = tipos_counts.get('ASC', 0)
-                    t_dif = tipos_counts.get('DIF', 0)
-                    
-                    col_dash1.metric("Notas UNR", f"{t_unr}")
-                    col_dash2.metric("Notas MGD", f"{t_mgd}")
-                    col_dash3.metric("Notas ASC", f"{t_asc}")
-                    col_dash4.metric("Notas DIF", f"{t_dif}")
-                    
+                    col_dash1.metric("Notas UNR", f"{tipos_counts.get('UNR', 0)}")
+                    col_dash2.metric("Notas MGD", f"{tipos_counts.get('MGD', 0)}")
+                    col_dash3.metric("Notas ASC", f"{tipos_counts.get('ASC', 0)}")
+                    col_dash4.metric("Notas DIF", f"{tipos_counts.get('DIF', 0)}")
                     tipos_unicos_na_base = [str(x) for x in df_tasks['TIPO NOTA'].dropna().unique()]
-                    tipos_rejeitados = st.multiselect("🗑️ Selecione Tipos de Nota para DESCARTAR temporariamente da operação:", options=tipos_unicos_na_base, default=[])
+                    tipos_rejeitados = st.multiselect("🗑️ Selecione Tipos de Nota para DESCARTAR temporariamente:", options=tipos_unicos_na_base, default=[])
                     if tipos_rejeitados:
                         df_tasks = df_tasks[~df_tasks['TIPO NOTA'].isin(tipos_rejeitados)]
                         st.info(f"Omitindo obras do tipo {tipos_rejeitados}.")
-
                 if not df_status_upload.empty and coluna_status_selecionada:
                     df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
 
             if modo_operacao == "3":
                 cols_obrigatorias = ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO']
                 faltando = [c for c in cols_obrigatorias if c not in df_tasks.columns]
-                if faltando:
-                    st.error(f"🚨 A planilha de Fiscalização precisa das colunas: {', '.join(faltando)}."); st.stop()
+                if faltando: st.error(f"🚨 A planilha de Fiscalização precisa das colunas: {', '.join(faltando)}."); st.stop()
                 
                 col_st = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
                 if col_st in df_tasks.columns:
@@ -986,14 +831,12 @@ def app_roteirizador():
                         st.success(f"Foram encontradas {len(df_dash)} obras marcadas como APTO PARA CAMPO ou EM CAMPO prontas para serem alocadas aos Fiscais.")
                     else:
                         st.info("Nenhuma obra com status 'APTO PARA CAMPO' ou 'EM CAMPO' encontrada.")
-                
                     st.markdown("---")
                     st.markdown("#### 📌 Filtro de Status para Roteirização")
                     status_unicos = sorted([str(x) for x in df_tasks[col_st].unique() if str(x) != 'NAN'])
                     status_default = [s for s in status_unicos if s in ['APTO PARA CAMPO', 'EM CAMPO']]
                     status_selecionados = st.multiselect("Selecione os status que devem ser roteirizados:", options=status_unicos, default=status_default)
-                    if not status_selecionados: 
-                        st.warning("⚠️ Selecione pelo menos um status."); st.stop()
+                    if not status_selecionados: st.warning("⚠️ Selecione pelo menos um status."); st.stop()
                     df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
 
             if ignorar_despacho_m1 and 'DATA DESPACHO CAMPO' in df_tasks.columns:
@@ -1016,14 +859,12 @@ def app_roteirizador():
                 col_reg_real = 'Regional' if 'Regional' in df_tasks.columns else 'REGIONAL'
                 regs_unicas = [str(x) for x in df_tasks[col_reg_real].dropna().unique()]
                 regs_selecionadas = col_escopo1.multiselect("🌍 Filtrar por REGIONAL (Deixe vazio para roteirizar todas):", options=regs_unicas, default=[])
-                if regs_selecionadas:
-                    df_tasks = df_tasks[df_tasks[col_reg_real].isin(regs_selecionadas)]
+                if regs_selecionadas: df_tasks = df_tasks[df_tasks[col_reg_real].isin(regs_selecionadas)]
                     
             if 'PAT' in df_tasks.columns:
                 pats_unicos = [str(x) for x in df_tasks['PAT'].dropna().unique()]
                 pats_selecionados = col_escopo2.multiselect("🏗️ Filtrar por PAT (Deixe vazio para roteirizar todos):", options=pats_unicos, default=[])
-                if pats_selecionados:
-                    df_tasks = df_tasks[df_tasks['PAT'].isin(pats_selecionados)]
+                if pats_selecionados: df_tasks = df_tasks[df_tasks['PAT'].isin(pats_selecionados)]
                     
             st.markdown("---")
             
@@ -1106,33 +947,20 @@ def app_roteirizador():
                 df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
             
             if '_PRIORIDADE_ORIGINAL' in df_tasks.columns:
-                mask_not_zero = (
-                    df_tasks['_PRIORIDADE_ORIGINAL'].notna() & 
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '') & 
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0') & 
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0.0') & 
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAN') &
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NÃO') &
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAO') &
-                    (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE')
-                )
+                mask_not_zero = (df_tasks['_PRIORIDADE_ORIGINAL'].notna() & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0.0') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAN') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NÃO') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAO') & (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE'))
                 df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
 
             df_rejeitadas = pd.DataFrame()
             if modo_operacao == "3":
                 col_geo1, col_geo2 = st.columns([4, 1])
-                with col_geo1:
-                    st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
+                with col_geo1: st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
                 with col_geo2:
-                    if st.button("⏹️ Abortar Operação", key="abort_geo_3", use_container_width=True):
-                        limpar_roteirizador()
-                        st.stop()
+                    if st.button("⏹️ Abortar Operação", key="abort_geo_3", use_container_width=True): limpar_roteirizador(); st.stop()
                         
                 prog_bar_geo = st.progress(0.0)
                 timer_geo_placeholder = st.empty()
                 status_geo_text = st.empty()
                 start_time_geo = time.time()
-                
                 df_tasks['MOTIVO_REJEICAO'] = ''
                 
                 status_geo_text.info("⏳ Validando Integridade das Células...")
@@ -1146,25 +974,20 @@ def app_roteirizador():
                 st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'.")
                 st.stop()
 
-            if modo_operacao == "3":
-                status_geo_text.info("⏳ Validando Formatação Geográfica...")
+            if modo_operacao == "3": status_geo_text.info("⏳ Validando Formatação Geográfica...")
                 
             df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-            
             m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
             m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
             
             if modo_operacao == "3":
                 df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
                 df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
-                
                 m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
                 df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o sinal de -)'
-                
                 m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
                 df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat no lugar da Lon)'
-                
                 mask_coords = m_na | m_zero | m_pos | m_inv
                 if mask_coords.sum() > 0:
                     df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
@@ -1173,8 +996,7 @@ def app_roteirizador():
                 erros_coords_mask = m_na | m_zero
                 qtd_erros_coords_finais = erros_coords_mask.sum()
                 df_tasks = df_tasks[~erros_coords_mask]
-                if qtd_erros_coords_finais > 0:
-                    st.warning(f"⚠️ {qtd_erros_coords_finais} obras foram ignoradas pois estavam sem coordenadas válidas na planilha original.")
+                if qtd_erros_coords_finais > 0: st.warning(f"⚠️ {qtd_erros_coords_finais} obras ignoradas pois estavam sem coordenadas válidas.")
                 
             df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
             df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
@@ -1184,39 +1006,18 @@ def app_roteirizador():
                 muns_unicos = df_tasks['MUNICIPIO'].unique()
                 total_muns = len(muns_unicos)
                 mun_dict = {}
-                
                 for i, m in enumerate(muns_unicos):
                     elapsed = time.time() - start_time_geo
                     fraction = (i + 1) / max(1, total_muns)
                     rem = (elapsed / fraction) - elapsed if fraction > 0.05 else 0
-                        
-                    e_m, e_s = divmod(int(elapsed), 60)
-                    r_m, r_s = divmod(int(rem), 60)
+                    e_m, e_s = divmod(int(elapsed), 60); r_m, r_s = divmod(int(rem), 60)
                     r_str = f"{r_m:02d}m {r_s:02d}s" if fraction > 0.05 else "Calculando..."
-                    
-                    html_timer = f"""
-                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                            <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
-                            <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
-                        </div>
-                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                            <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
-                            <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
-                        </div>
-                    </div>
-                    """
+                    html_timer = f"""<div style="display: flex; gap: 10px; margin-bottom: 15px;"><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div><div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div></div><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div><div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div></div></div>"""
                     timer_geo_placeholder.markdown(html_timer, unsafe_allow_html=True)
                     prog_bar_geo.progress(fraction)
-                    
                     status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
-                    
-                    try:
-                        lat_m, lon_m = obter_coordenadas_municipio_cached(m)
-                        time.sleep(0.3)
-                    except:
-                        lat_m, lon_m = np.nan, np.nan
-                        
+                    try: lat_m, lon_m = obter_coordenadas_municipio_cached(m); time.sleep(0.3)
+                    except: lat_m, lon_m = np.nan, np.nan
                     mun_dict[m] = (lat_m, lon_m)
                     
                 status_geo_text.info("📏 Aplicando Cálculo Vetorial de Cerca Eletrônica...")
@@ -1225,7 +1026,6 @@ def app_roteirizador():
                     if pd.isna(lm) or pd.isna(lom): return False
                     dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
                     return dist > 70.0
-                    
                 mask_out = df_tasks.apply(is_outside, axis=1)
                 if mask_out.sum() > 0:
                     df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km de distância)'
@@ -1236,15 +1036,10 @@ def app_roteirizador():
                 timer_geo_placeholder.empty()
                 status_geo_text.empty()
                 st.markdown("---")
-                
                 st.session_state.df_correcao_fiscalizacao = df_rejeitadas
+                if not df_rejeitadas.empty: st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município). Elas foram isoladas na 'Planilha_de_Correcao' do ZIP final.")
                 
-                if not df_rejeitadas.empty:
-                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município) e foram abortadas para sua segurança. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
-                
-            if df_tasks.empty:
-                st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica. Operação abortada.")
-                st.stop()
+            if df_tasks.empty: st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica. Operação abortada."); st.stop()
             
             erros_nome = 0
             if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
@@ -1262,8 +1057,7 @@ def app_roteirizador():
                     df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
                     df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
                 else:
-                    df_tasks['QTD PREVISTA DE POSTES'] = 0.0
-                    df_tasks['COR_ICONE'] = 'gray'
+                    df_tasks['QTD PREVISTA DE POSTES'] = 0.0; df_tasks['COR_ICONE'] = 'gray'
                 df_tasks['PRIORIDADE'] = 'Sim'
 
             df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=False)
@@ -1271,11 +1065,7 @@ def app_roteirizador():
 
             st.markdown("#### 📊 Raio-X da Base de Dados Carregada")
             tot_obras_aprovadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks.iterrows())
-            st.markdown(f"""
-            <div class="profiling-box">
-                <b>Análise Estrutural:</b> Das {total_obras_inicial} linhas originais, o sistema aprovou <b style="color: #0D256C;">{tot_obras_aprovadas} obras reais e validadas</b> (compactadas em {len(df_tasks)} paradas físicas no mapa). <br>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f'<div class="profiling-box"><b>Análise Estrutural:</b> Das {total_obras_inicial} linhas originais, o sistema aprovou <b style="color: #0D256C;">{tot_obras_aprovadas} obras reais e validadas</b> (compactadas em {len(df_tasks)} paradas físicas no mapa). <br></div>', unsafe_allow_html=True)
             if df_tasks.empty: return
             
             bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
@@ -1283,10 +1073,8 @@ def app_roteirizador():
             todas_bases_records = bases_principais_records + bases_temporarias_records
             
             col_mun_name = 'MUNICIPIO' if 'MUNICIPIO' in df_tasks.columns else ('CIDADE' if 'CIDADE' in df_tasks.columns else None)
-            if col_mun_name:
-                df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks[col_mun_name].fillna(''))
-            else:
-                df_tasks['MUN_LIMPO'] = ''
+            if col_mun_name: df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks[col_mun_name].fillna(''))
+            else: df_tasks['MUN_LIMPO'] = ''
                 
             mun_to_main = {}
             mun_to_all = {}
@@ -1309,55 +1097,38 @@ def app_roteirizador():
             if trava_global_obras > 0:
                 if tot_obras_aprovadas > trava_global_obras:
                     st.info(f"✂️ A Trava Global de Operação foi ativada. O sistema limitará o roteamento às primeiras {trava_global_obras} obras prioritárias/próximas e descartará o excedente ({tot_obras_aprovadas - trava_global_obras} obras).")
-                    
                     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
-                    
                     obras_aceitas_fisicas = []
                     contador_real = 0
                     for idx, r in df_tasks.iterrows():
                         qtd = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
                         if contador_real + qtd <= trava_global_obras:
-                            obras_aceitas_fisicas.append(r)
-                            contador_real += qtd
-                        else:
-                            break
-                            
+                            obras_aceitas_fisicas.append(r); contador_real += qtd
+                        else: break
                     df_tasks = pd.DataFrame(obras_aceitas_fisicas)
 
             df_sparse_global = pd.DataFrame()
             if modo_produtividade:
                 c_prod1, c_prod2 = st.columns([4, 1])
                 c_prod1.markdown("#### 🔥 Modo Produtividade (Alta Densidade)")
-                if c_prod2.button("⏹️ Abortar Operação", key="abort_prod_13", use_container_width=True):
-                    limpar_roteirizador()
-                    st.stop()
-                    
+                if c_prod2.button("⏹️ Abortar Operação", key="abort_prod_13", use_container_width=True): limpar_roteirizador(); st.stop()
                 with st.spinner("Mapeando bolsões e obedecendo municípios das equipes..."):
                     lats = df_tasks['LATITUDE'].values
                     lons = df_tasks['LONGITUDE'].values
                     prio_mask = (df_tasks['PRIORIDADE'] == 'Sim').values
                     mun_vals = df_tasks['MUN_LIMPO'].values
-                    
                     keep_mask = np.copy(prio_mask)
-                    
                     for i in range(len(df_tasks)):
-                        if muns_atendidos_global and mun_vals[i] not in muns_atendidos_global:
-                            keep_mask[i] = False
-                            continue
-                            
+                        if muns_atendidos_global and mun_vals[i] not in muns_atendidos_global: keep_mask[i] = False; continue
                         if not keep_mask[i]:
                             dists = haversine_vectorized(lats[i], lons[i], lats, lons)
-                            if np.sum(dists <= 2.0) >= min_vizinhos:
-                                keep_mask[i] = True
-                            
+                            if np.sum(dists <= 2.0) >= min_vizinhos: keep_mask[i] = True
                     df_sparse_global = df_tasks[~keep_mask].copy()
                     if not df_sparse_global.empty:
                         df_sparse_global['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
                         df_sparse_global['MOTIVO_REJEICAO'] = "Fora da Área de Cobertura ou Obra Isolada"
                     df_tasks = df_tasks[keep_mask].copy()
-                    
-                    if not df_sparse_global.empty:
-                        st.toast(f"🔥 {len(df_sparse_global)} obras isoladas ou de outros municípios ignoradas!")
+                    if not df_sparse_global.empty: st.toast(f"🔥 {len(df_sparse_global)} obras isoladas ou de outros municípios ignoradas!")
 
             df_tasks_alocadas = pd.DataFrame()
             if len(todas_bases_records) > 0:
@@ -1371,73 +1142,51 @@ def app_roteirizador():
 
                 def assign_load_balanced_strict_and_fallback(df_sub_prio, df_sub_comum, allowed_bases, is_fiscal=False):
                     if df_sub_prio.empty and df_sub_comum.empty: return pd.DataFrame(), pd.DataFrame()
-                    
-                    assigned_tasks = []
-                    unassigned_tasks = []
-                    
+                    assigned_tasks, unassigned_tasks = [], []
                     df_combinado = pd.concat([df_sub_prio, df_sub_comum], ignore_index=True)
-                    if is_fiscal:
-                        df_combinado = df_combinado.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
-                    else:
-                        df_combinado = df_combinado.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                    if is_fiscal: df_combinado = df_combinado.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                    else: df_combinado = df_combinado.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
                         
                     lista_obras = df_combinado.to_dict('records')
-                    
                     for row in lista_obras:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
                         mun_str = str(row.get('MUN_LIMPO', ''))
                         is_prio = row.get('PRIORIDADE') == 'Sim'
-                        
                         precisa_4x4 = str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4'
-                        
-                        if is_fiscal:
-                            valid_names = set(mun_to_all.get(mun_str, []))
-                        else:
-                            valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
+                        if is_fiscal: valid_names = set(mun_to_all.get(mun_str, []))
+                        else: valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
                             
                         valid_bases = [b for b in allowed_bases if b['LEVANTADOR'] in valid_names]
-                        
-                        if precisa_4x4:
-                            valid_bases = [b for b in valid_bases if str(b.get('VEICULO', '')).upper() == '4X4']
+                        if precisa_4x4: valid_bases = [b for b in valid_bases if str(b.get('VEICULO', '')).upper() == '4X4']
                             
-                        best_base = None
-                        best_dist = float('inf')
-                        
+                        best_base, best_dist = None, float('inf')
                         if pd.notna(lat) and pd.notna(lon):
                             valid_bases = sorted(valid_bases, key=lambda b: base_counts[b['LEVANTADOR']])
-                            
                             for b in valid_bases:
                                 b_name = b['LEVANTADOR']
                                 if base_counts[b_name] + qtd_real <= cap_por_eq_live:
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                        if d < best_dist:
-                                            best_dist = d
-                                            best_base = b_name
+                                        if d < best_dist: best_dist = d; best_base = b_name
                                             
                         if best_base:
                             base_counts[best_base] += qtd_real
                             row['BASE_ATRIBUIDA'] = best_base
                             assigned_tasks.append(row)
-                        else:
-                            unassigned_tasks.append(row)
+                        else: unassigned_tasks.append(row)
                             
                     still_unassigned = []
                     for row in unassigned_tasks:
                         qtd_real = len(row.get('_ORIGINAL_ROWS', [1])) if isinstance(row.get('_ORIGINAL_ROWS'), list) else 1
                         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-                        
                         precisa_4x4 = str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4'
                         valid_bases_fallback = allowed_bases
-                        
-                        if precisa_4x4:
-                            valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
+                        if precisa_4x4: valid_bases_fallback = [b for b in valid_bases_fallback if str(b.get('VEICULO', '')).upper() == '4X4']
                             
                         best_base_fb = None
                         valid_bases_fallback = sorted(valid_bases_fallback, key=lambda b: base_counts[b['LEVANTADOR']])
-                        
                         if pd.notna(lat) and pd.notna(lon):
                             for b in valid_bases_fallback:
                                 b_name = b['LEVANTADOR']
@@ -1445,9 +1194,7 @@ def app_roteirizador():
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
-                                        if d <= 100.0: 
-                                            best_base_fb = b_name
-                                            break
+                                        if d <= 100.0: best_base_fb = b_name; break
                                             
                         if best_base_fb:
                             base_counts[best_base_fb] += qtd_real
@@ -1457,13 +1204,10 @@ def app_roteirizador():
                             row['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
                             row['MOTIVO_REJEICAO'] = "Estoque do Técnico Lotado ou > 100km"
                             still_unassigned.append(row)
-
                     return pd.DataFrame(assigned_tasks), pd.DataFrame(still_unassigned)
 
                 df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records, is_fiscal=(modo_operacao=="3"))
-                
-                if not df_sparse_global.empty:
-                    df_unallocated = pd.concat([df_unallocated, df_sparse_global], ignore_index=True)
+                if not df_sparse_global.empty: df_unallocated = pd.concat([df_unallocated, df_sparse_global], ignore_index=True)
                 
                 df_tasks_alocadas = df_tasks_alocadas.drop(columns=['COORD_KEY', 'PRECISA_PRINCIPAL', 'MUN_LIMPO'], errors='ignore')
                 st.session_state.df_unallocated = df_unallocated
@@ -1478,202 +1222,40 @@ def app_roteirizador():
                 bases_records = todas_bases_records 
                 col_prioridade = "PRIORIDADE" if modo_operacao == "3" else st.session_state.get('col_prioridade_lev', "Nenhuma")
 
-        elif modo_operacao == "2":
-            st.markdown("### 📥 1. Planilha de Demanda (Lista Contínua)")
-            st.info("Neste modo, o sistema apenas lê as colunas **LEVANTADOR**, **REGIONAL** e **MUNICIPIO** da sua planilha. Nenhuma equipe receberá obras de outro levantador. A IA vai roteirizar 100% da lista ignorando o limite de dias.")
-            
-            with st.container(border=True):
-                pre_file = st.file_uploader("Planilha de Obras", type=["xlsx", "xls", "csv"], help="A planilha deve conter LEVANTADOR, MUNICIPIO, LATITUDE e LONGITUDE.")
-            
-            ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida. (Deixe desmarcado para roteirizar tudo).")
-
-            if pre_file:
-                df_tasks = ler_planilha_cached(pre_file.getvalue()) if not pre_file.name.endswith('.csv') else pd.read_csv(pre_file)
-                df_tasks.columns = normalize_cols(df_tasks.columns)
-                st.session_state.colunas_originais = df_tasks.columns.tolist()
-                df_tasks['_ORIGEM_BASE'] = 'LISTA_CONTINUA'
-                if 'PRIORIDADE' in df_tasks.columns: df_tasks['_PRIORIDADE_ORIGINAL'] = df_tasks['PRIORIDADE']
-                
-                if 'LEVANTADOR' not in df_tasks.columns:
-                    if 'NOME DO LEVANTADOR' in df_tasks.columns: df_tasks.rename(columns={'NOME DO LEVANTADOR': 'LEVANTADOR'}, inplace=True)
-                    else: st.error("🚨 A planilha precisa da coluna 'LEVANTADOR'."); st.stop()
-                if 'MUNICIPIO' not in df_tasks.columns:
-                    if 'CIDADE' in df_tasks.columns: df_tasks.rename(columns={'CIDADE': 'MUNICIPIO'}, inplace=True)
-                    else: st.error("🚨 A planilha precisa da coluna 'MUNICIPIO'."); st.stop()
-                if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
-                    st.error("🚨 A planilha precisa das colunas 'LATITUDE' e 'LONGITUDE'."); st.stop()
-                    
-                if 'PROTOCOLO' not in df_tasks.columns:
-                    for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
-                        if col_candidata in df_tasks.columns:
-                            df_tasks['PROTOCOLO'] = df_tasks[col_candidata]
-                            break
-                    if 'PROTOCOLO' not in df_tasks.columns:
-                        df_tasks['PROTOCOLO'] = [f"LC-{i+1}" for i in range(len(df_tasks))]
-                        
-                if 'PROTOCOLO' in df_tasks.columns:
-                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-                    df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
-                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
-                        
-                for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
-                    if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                
-                if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
-                    mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
-                    obras_despachadas = mask_despacho.sum()
-                    if obras_despachadas > 0:
-                        st.info(f"⏭️ {obras_despachadas} obras ignoradas (DATA DESPACHO CAMPO preenchida).")
-                        df_tasks = df_tasks[~mask_despacho]
-                        
-                if 'STATUS SAP' in df_tasks.columns:
-                    mask_sap = df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])
-                    qtd_canceladas = mask_sap.sum()
-                    if qtd_canceladas > 0:
-                        st.info(f"🗑️ {qtd_canceladas} obras ignoradas (Status SAP: CANC ou FINL).")
-                        df_tasks = df_tasks[~mask_sap]
-
-                df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                
-                erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
-                qtd_erros_coords_finais = erros_coords_mask.sum()
-                df_tasks = df_tasks[~erros_coords_mask]
-                
-                if qtd_erros_coords_finais > 0:
-                    st.toast(f"⚠️ {qtd_erros_coords_finais} obras ignoradas por falta de coordenadas válidas (vazias ou 0.0).")
-                
-                if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
-                
-                df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
-                lixos_lev = ['NAN', 'NONE', '', '-', 'SEM LEVANTADOR', '0', '0.0', 'N/A', 'NULO']
-                df_tasks = df_tasks[~df_tasks['LEVANTADOR'].isin(lixos_lev)]
-
-                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=True)
-                if qtd_condensada > 0: st.toast(f"✅ {qtd_condensada} obras repetidas no mesmo endereço viraram 'Super Pontos'.")
-                
-                if 'PRIORIDADE' not in df_tasks.columns:
-                    df_tasks['PRIORIDADE'] = 'Não'
-                else:
-                    df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].astype(str).str.strip().str.upper().apply(lambda x: 'Sim' if x == 'SIM' else 'Não')
-                
-                if 'STATUS LIST' in df_tasks.columns:
-                    mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
-                    df_tasks.loc[mask_correcao, 'PRIORIDADE'] = 'Sim'
-                
-                if '_PRIORIDADE_ORIGINAL' in df_tasks.columns:
-                    mask_not_zero = (
-                        df_tasks['_PRIORIDADE_ORIGINAL'].notna() & 
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '') & 
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0') & 
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip() != '0.0') & 
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAN') &
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NÃO') &
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'NAO') &
-                        (df_tasks['_PRIORIDADE_ORIGINAL'].astype(str).str.strip().str.upper() != 'FALSE')
-                    )
-                    df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
-
-                if df_tasks.empty:
-                    st.error("🚨 Nenhuma obra restou após os filtros de coordenadas. Verifique sua planilha.")
-                else:
-                    df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
-                    df_tasks_alocadas = df_tasks.copy()
-                    
-                    st.session_state.df_unallocated = pd.DataFrame()
-                    st.session_state.tot_obras_nao_alocadas = 0
-                    
-                    bases_records = []
-                    for lev in df_tasks_alocadas['LEVANTADOR'].unique():
-                        df_lev = df_tasks_alocadas[df_tasks_alocadas['LEVANTADOR'] == lev]
-                        mun_base = df_lev['MUNICIPIO'].mode().iloc[0] if not df_lev['MUNICIPIO'].dropna().empty else "DESCONHECIDO"
-                        reg_base = df_lev['REGIONAL'].iloc[0] if 'REGIONAL' in df_lev.columns else "DESCONHECIDO"
-                        lat, lon = obter_coordenadas_municipio_cached(mun_base)
-                        
-                        if pd.isna(lat) or pd.isna(lon):
-                            lat = df_lev['LATITUDE'].iloc[0]
-                            lon = df_lev['LONGITUDE'].iloc[0]
-                            
-                        bases_records.append({
-                            'LEVANTADOR': lev,
-                            'RESIDENCIA': mun_base,
-                            'MUNICIPIO': mun_base,
-                            'REGIONAL': reg_base,
-                            'LATITUDE': lat,
-                            'LONGITUDE': lon,
-                            'TIPO_EQUIPE': 'LISTA_CONTINUA'
-                        })
-                    
-                    tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
-                    sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
-                    st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
-                    
-                    col_prioridade = "PRIORIDADE"
-
-
         if not df_tasks_alocadas.empty:
             with st.expander("🛠️ 5. Configuração de Saída", expanded=True):
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_') and c not in ['COR_ICONE']]
-                
-                if modo_operacao == "3":
-                    cols_desejadas = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
-                else:
-                    cols_desejadas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
-
+                if modo_operacao == "3": cols_desejadas = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
+                else: cols_desejadas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'TIPO NOTA', 'FASE']
                 cols_padrao = [c for c in cols_desejadas if c in todas_cols_limpas]
-                
                 colunas_exibir = st.multiselect("Colunas Visíveis nos Cartões (KML/Mapa)", todas_cols_limpas, default=cols_padrao)
-                
                 reference_order = cols_desejadas + [c for c in todas_cols_limpas if c not in cols_desejadas]
                 colunas_exibir.sort(key=lambda x: reference_order.index(x) if x in reference_order else 999)
-                
-                st.info("⚡ **Deduplicação Ativa:** Obras baseadas no raio definido no menu lateral foram condensadas para otimização.")
 
             if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
                 tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
-                if tipo_periodo_clean == "Semana" and not dias_semana_selecionados:
-                    st.error("Selecione os dias da semana na barra lateral antes de continuar.")
-                    return
-
+                if tipo_periodo_clean == "Semana" and not dias_semana_selecionados: st.error("Selecione os dias da semana na barra lateral."); return
                 st.session_state.tarefas_alocadas_inicialmente = len(df_tasks_alocadas)
                 st.session_state.bases_records = bases_records
                 st.session_state.tipo_periodo = tipo_periodo_clean
                 st.session_state.colunas_exibir = colunas_exibir
                 st.session_state.col_prioridade = col_prioridade
-                
-                st.session_state.config_financeira = {
-                    'custo_combustivel': custo_combustivel,
-                    'consumo_veiculo': consumo_veiculo,
-                    'custo_hora_equipe': custo_hora_equipe
-                }
-                
+                st.session_state.config_financeira = {'custo_combustivel': custo_combustivel, 'consumo_veiculo': consumo_veiculo, 'custo_hora_equipe': custo_hora_equipe}
                 keys_to_clear = ['start_time_run', 'tempo_processamento', 'start_time_pkg']
                 for k in keys_to_clear:
                     if k in st.session_state: del st.session_state[k]
-                
                 st.session_state.vrp_state = {
                     'config': {
-                        'velocidade_media_kmh': velocidade_media_kmh,
-                        'tempo_medio_obra': tempo_medio_obra, 
-                        'obras_por_dia': obras_por_dia, 
-                        'tipo_periodo': tipo_periodo_clean, 
-                        'limite_periodos': limite_periodos,
-                        'roteirizar_tudo': True if modo_operacao in ["2", "3"] else False,
-                        'is_lista_continua': True if modo_operacao in ["2", "3"] else False,
-                        'dias_selecionados': dias_semana_selecionados,
-                        'url_osrm_base': url_osrm_base,
-                        'tracado_real': tracado_real,
-                        'data_inicio': data_inicio_roteiro,
-                        'sentido_rota': sentido_rota,
-                        'raio_super_ponto': raio_super_ponto,
-                        'trava_global_obras': trava_global_obras
+                        'velocidade_media_kmh': velocidade_media_kmh, 'tempo_medio_obra': tempo_medio_obra, 'obras_por_dia': obras_por_dia, 
+                        'tipo_periodo': tipo_periodo_clean, 'limite_periodos': limite_periodos, 'roteirizar_tudo': True if modo_operacao in ["2", "3"] else False,
+                        'is_lista_continua': True if modo_operacao in ["2", "3"] else False, 'dias_selecionados': dias_semana_selecionados,
+                        'url_osrm_base': url_osrm_base, 'tracado_real': tracado_real, 'data_inicio': data_inicio_roteiro,
+                        'sentido_rota': sentido_rota, 'raio_super_ponto': raio_super_ponto, 'trava_global_obras': trava_global_obras
                     },
-                    'b_names': list(set([b['LEVANTADOR'] for b in bases_records])),
-                    'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
+                    'b_names': list(set([b['LEVANTADOR'] for b in bases_records])), 'b_idx': 0, 'unvisited': df_tasks_alocadas.copy(), 'routed_data': [],
                 }
-                st.session_state.vrp_status = "RUNNING"
-                tentar_rerun()
+                st.session_state.vrp_status = "RUNNING"; tentar_rerun()
 
     if status_exec in ["RUNNING"]:
         state = st.session_state.vrp_state
@@ -1683,21 +1265,16 @@ def app_roteirizador():
         
         titulo_motor = "🚀 Execução do Motor Leve Vetorial (Lista Contínua)" if is_lista_continua else "🚀 Execução do Motor de Inteligência (OR-Tools VRP)"
         st.markdown(f"## {titulo_motor}")
-        st.markdown("Calculando Matrizes Vetoriais e Otimizando Rotas...")
-        
         if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
             
         b_names = state['b_names']
         total_equipes = len(b_names)
         b_idx = state.get('b_idx', 0)
         
-        if 'start_time_run' not in st.session_state:
-            st.session_state.start_time_run = time.time()
-        if 'tempo_processamento' not in st.session_state:
-            st.session_state.tempo_processamento = 0.0
+        if 'start_time_run' not in st.session_state: st.session_state.start_time_run = time.time()
+        if 'tempo_processamento' not in st.session_state: st.session_state.tempo_processamento = 0.0
             
         global_start_time = st.session_state.start_time_run
-        
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         timer_placeholder = st.empty()
@@ -1705,58 +1282,29 @@ def app_roteirizador():
         def update_running_timer(b_index, inner_idx, inner_total):
             elapsed = time.time() - global_start_time
             fraction = (b_index + (inner_idx / max(1, inner_total))) / max(1, total_equipes)
-            
             if fraction > 0.02: 
-                est_total = elapsed / fraction
-                rem = max(0, est_total - elapsed)
-                r_m, r_s = divmod(int(rem), 60)
-                r_str = f"{r_m:02d}m {r_s:02d}s"
-            else:
-                r_str = "Calculando..."
-                
-            e_m, e_s = divmod(int(elapsed), 60)
-            e_str = f"{e_m:02d}m {e_s:02d}s"
-            
-            html_timer = f"""
-            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                    <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
-                    <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_str}</div>
-                </div>
-                <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                    <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
-                    <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
-                </div>
-            </div>
-            """
+                est_total = elapsed / fraction; rem = max(0, est_total - elapsed); r_m, r_s = divmod(int(rem), 60); r_str = f"{r_m:02d}m {r_s:02d}s"
+            else: r_str = "Calculando..."
+            e_m, e_s = divmod(int(elapsed), 60); e_str = f"{e_m:02d}m {e_s:02d}s"
+            html_timer = f"""<div style="display: flex; gap: 10px; margin-bottom: 15px;"><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div><div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_str}</div></div><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div><div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div></div></div>"""
             timer_placeholder.markdown(html_timer, unsafe_allow_html=True)
 
         if b_idx < total_equipes:
             b_name = b_names[b_idx]
             start_iter = time.time()
-            
-            progresso = b_idx / max(1, total_equipes)
-            progress_bar.progress(progresso)
-            
+            progress_bar.progress(b_idx / max(1, total_equipes))
             texto_acao = "Mapeando e sequenciando" if is_lista_continua else "IA Analisando nós e traçando rotas para"
             status_text.info(f"🧠 {texto_acao} **{b_name}**... ({b_idx + 1}/{total_equipes})")
-            
             update_running_timer(b_idx, 0, 1)
             
             if 'current_rotas_flat' not in state:
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 unvisited = state['unvisited']
-                
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
                 if pd.isna(base_ref.get('LATITUDE')): 
-                    state['b_idx'] += 1
-                    st.session_state.vrp_state = state
-                    tentar_rerun()
-                    return
-                    
+                    state['b_idx'] += 1; st.session_state.vrp_state = state; tentar_rerun(); return
                 base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
                 obras_equipe = unvisited[unvisited['BASE_ATRIBUIDA'] == b_name].to_dict('records')
-                
                 ordered_tasks = []
                 if obras_equipe:
                     if is_lista_continua:
@@ -1774,83 +1322,49 @@ def app_roteirizador():
                             
                             def greedy_sort(pts, start_lat, start_lon, reverse_first=False):
                                 if not pts: return []
-                                sorted_pts = []
-                                curr_lat, curr_lon = start_lat, start_lon
-                                unvisited_pts = list(pts)
-                                
+                                sorted_pts = []; curr_lat, curr_lon = start_lat, start_lon; unvisited_pts = list(pts)
                                 if reverse_first and unvisited_pts:
-                                    best_idx = 0
-                                    best_d = -1
+                                    best_idx, best_d = 0, -1
                                     for i, p in enumerate(unvisited_pts):
                                         d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
-                                        if d > best_d:
-                                            best_d = d; best_idx = i
-                                    nxt = unvisited_pts.pop(best_idx)
-                                    sorted_pts.append(nxt)
-                                    curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
-                                    
+                                        if d > best_d: best_d, best_idx = d, i
+                                    nxt = unvisited_pts.pop(best_idx); sorted_pts.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                 while unvisited_pts:
-                                    best_idx = 0
-                                    best_d = float('inf')
+                                    best_idx, best_d = 0, float('inf')
                                     for i, p in enumerate(unvisited_pts):
                                         d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
-                                        if d < best_d:
-                                            best_d = d; best_idx = i
-                                    nxt = unvisited_pts.pop(best_idx)
-                                    sorted_pts.append(nxt)
-                                    curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                        if d < best_d: best_d, best_idx = d, i
+                                    nxt = unvisited_pts.pop(best_idx); sorted_pts.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                 return sorted_pts
 
                             if len(obs) > 0 and obs[0].get('_ORIGEM_BASE') == 'LISTA_CONTINUA_FISCALIZACAO':
-                                
                                 def greedy_sort_fiscalizacao(pts, start_lat, start_lon, reverse_first=False):
                                     if not pts: return []
-                                    sorted_pts = []
-                                    curr_lat, curr_lon = start_lat, start_lon
-                                    unvisited_pts = list(pts)
-                                    
+                                    sorted_pts = []; curr_lat, curr_lon = start_lat, start_lon; unvisited_pts = list(pts)
                                     if reverse_first and unvisited_pts:
-                                        best_idx = 0
-                                        best_score = -1
+                                        best_idx, best_score = 0, -1
                                         for i, p in enumerate(unvisited_pts):
                                             d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
                                             qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
                                             score = d * (1 + (qtd / 50.0))
-                                            if score > best_score:
-                                                best_score = score
-                                                best_idx = i
-                                        nxt = unvisited_pts.pop(best_idx)
-                                        sorted_pts.append(nxt)
-                                        curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
-                                    
+                                            if score > best_score: best_score, best_idx = score, i
+                                        nxt = unvisited_pts.pop(best_idx); sorted_pts.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                     while unvisited_pts:
-                                        best_idx = 0
-                                        best_score = float('inf')
+                                        best_idx, best_score = 0, float('inf')
                                         for i, p in enumerate(unvisited_pts):
                                             d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
                                             qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
-                                            
                                             discount = min(d * 0.8, qtd * 0.1) 
                                             score = d - discount
-                                            
-                                            if score < best_score:
-                                                best_score = score
-                                                best_idx = i
-                                        
-                                        nxt = unvisited_pts.pop(best_idx)
-                                        sorted_pts.append(nxt)
-                                        curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+                                            if score < best_score: best_score, best_idx = score, i
+                                        nxt = unvisited_pts.pop(best_idx); sorted_pts.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
                                     return sorted_pts
-                                    
                                 ordered_tasks.extend(greedy_sort_fiscalizacao(obs, base_lat, base_lon, is_reversa))
                             else:
                                 sub_sim = greedy_sort(prio_sim, base_lat, base_lon, is_reversa)
                                 ordered_tasks.extend(sub_sim)
-                                if ordered_tasks:
-                                    last = ordered_tasks[-1]
-                                    ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE'], False))
-                                else:
-                                    ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon, is_reversa))
+                                if ordered_tasks: last = ordered_tasks[-1]; ordered_tasks.extend(greedy_sort(prio_nao, last['LATITUDE'], last['LONGITUDE'], False))
+                                else: ordered_tasks.extend(greedy_sort(prio_nao, base_lat, base_lon, is_reversa))
 
                     else:
                         coords_dict = {}
@@ -1858,63 +1372,50 @@ def app_roteirizador():
                             k = (round(float(o['LATITUDE']), 4), round(float(o['LONGITUDE']), 4))
                             if k not in coords_dict: coords_dict[k] = []
                             coords_dict[k].append(o)
-                            
                         macro_obras = []
                         for k, lista in coords_dict.items():
                             tem_prio = any(x.get('PRIORIDADE') == 'Sim' for x in lista)
-                            rep = lista[0].copy()
-                            rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
+                            rep = lista[0].copy(); rep['PRIORIDADE'] = 'Sim' if tem_prio else 'Não'
                             mun_raw = rep.get('MUNICIPIO', rep.get('CIDADE', 'DESCONHECIDO'))
                             rep['MUN_LIMPO'] = normalizar_municipios(pd.Series([mun_raw])).iloc[0] if pd.notna(mun_raw) and str(mun_raw).strip() != '' else 'DESCONHECIDO'
                             rep['_sub_obras'] = lista
                             macro_obras.append(rep)
-
                         macros_by_mun = {}
                         for m in macro_obras:
                             mun = m['MUN_LIMPO']
                             if mun not in macros_by_mun: macros_by_mun[mun] = []
                             macros_by_mun[mun].append(m)
-
                         mun_stats = []
                         for mun, m_list in macros_by_mun.items():
                             prio_count = sum(1 for x in m_list if x['PRIORIDADE'] == 'Sim')
                             mun_stats.append({'mun': mun, 'prio_count': prio_count, 'total_count': len(m_list)})
-
                         mun_stats.sort(key=lambda x: (x['prio_count'] > 0, x['prio_count'], x['total_count']), reverse=True)
-
                         ordered_macros = []
                         for stat in mun_stats:
                             mun = stat['mun']
                             m_list = macros_by_mun[mun]
                             prio_macros = [m for m in m_list if m['PRIORIDADE'] == 'Sim']
                             comum_macros = [m for m in m_list if m['PRIORIDADE'] != 'Sim']
-                            
                             if prio_macros: 
                                 tsp_res = resolver_tsp_ortools(prio_macros, base_lat, base_lon, cfg['url_osrm_base'])
                                 if is_reversa and tsp_res:
                                     farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, float(tsp_res[i]['LATITUDE']), float(tsp_res[i]['LONGITUDE'])))
                                     tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
                                 ordered_macros.extend(tsp_res)
-                                
                             if comum_macros: 
                                 tsp_res = resolver_tsp_ortools(comum_macros, base_lat, base_lon, cfg['url_osrm_base'])
                                 if is_reversa and tsp_res:
                                     farthest_idx = max(range(len(tsp_res)), key=lambda i: haversine_scalar(base_lat, base_lon, float(tsp_res[i]['LATITUDE']), float(tsp_res[i]['LONGITUDE'])))
                                     tsp_res = tsp_res[farthest_idx:] + tsp_res[:farthest_idx]
                                 ordered_macros.extend(tsp_res)
-                            
                         for macro in ordered_macros:
                             subs = sorted(macro['_sub_obras'], key=lambda x: 0 if x.get('PRIORIDADE') == 'Sim' else 1)
                             for s in subs: s['MUN_LIMPO_CALC'] = macro['MUN_LIMPO']
                             ordered_tasks.extend(subs)
                 
                 rotas_flat = []
-                dia_absoluto = 1
-                semana_atual = 1
-                dia_da_semana = 1
-                obras_no_periodo_macro = 0
+                dia_absoluto, semana_atual, dia_da_semana = 1, 1, 1
                 mun_anterior = None
-                
                 agora_dt = datetime.combine(cfg['data_inicio'], datetime.min.time())
                 data_base_inicio = agora_dt.replace(hour=8, minute=0, second=0, microsecond=0)
                 
@@ -1922,150 +1423,79 @@ def app_roteirizador():
                     pt_to_idx = {"Segunda": 0, "Terça": 1, "Quarta": 2, "Quinta": 3, "Sexta": 4, "Sábado": 5, "Domingo": 6}
                     allowed = [pt_to_idx[d] for d in valid_days_list] if valid_days_list else [0,1,2,3,4]
                     curr = start_dt
-                    while curr.weekday() not in allowed:
-                        curr += pd.Timedelta(days=1)
+                    while curr.weekday() not in allowed: curr += pd.Timedelta(days=1)
                     count = 1
                     while count < dia_abs:
                         curr += pd.Timedelta(days=1)
-                        if curr.weekday() in allowed:
-                            count += 1
+                        if curr.weekday() in allowed: count += 1
                     return curr
 
                 def iniciar_dia(dia_abs):
                     data_atual = get_workday_date(data_base_inicio, dia_abs, cfg['dias_selecionados'])
-                    return {
-                        'lat': base_lat, 'lon': base_lon,
-                        'time': data_atual, 'date_obj': data_atual,
-                        'obras_hoje': 0, 'km_hoje': 0.0, 'lunch': False
-                    }
+                    return {'lat': base_lat, 'lon': base_lon, 'time': data_atual, 'date_obj': data_atual, 'obras_hoje': 0, 'km_hoje': 0.0, 'lunch': False}
                     
                 estado = iniciar_dia(dia_absoluto)
                 
                 for obra in ordered_tasks:
                     mun_atual = obra.get('MUN_LIMPO_CALC', 'DESCONHECIDO')
                     qtd_real = len(obra.get('_ORIGINAL_ROWS', [1])) if isinstance(obra.get('_ORIGINAL_ROWS'), list) else 1
-                    
                     viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
                     viagem_km = viagem_km_reta * 1.3 
                     obra['ALERTA_TOPOLOGIA'] = 'OK'
                     
-                    if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
-                        viagem_min = 0.0
-                        exec_min = 30.0 
+                    if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0: viagem_min = 0.0; exec_min = 30.0 
                     else:
                         vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
-                        viagem_min = (viagem_km / vel_dinamica) * 60
-                        exec_min = cfg['tempo_medio_obra'] * 60
+                        viagem_min = (viagem_km / vel_dinamica) * 60; exec_min = cfg['tempo_medio_obra'] * 60
                     
                     chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
-                    
                     if chegada_prevista.hour >= 12 and not estado['lunch']:
-                        lunch_start = max(estado['time'], estado['date_obj'].replace(hour=12))
-                        lunch_end = lunch_start + pd.Timedelta(hours=1)
-                        rotas_flat.append({
-                            'obra': None, 'is_lunch': True, 'is_retorno': False,
-                            'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                            'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 
-                            'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                            'hora_inicio': lunch_start, 'hora_fim': lunch_end,
-                            'viagem_min': 0.0, 'dist_km': 0.0
-                        })
-                        estado['time'] = lunch_end
-                        estado['lunch'] = True
+                        lunch_start = max(estado['time'], estado['date_obj'].replace(hour=12)); lunch_end = lunch_start + pd.Timedelta(hours=1)
+                        rotas_flat.append({'obra': None, 'is_lunch': True, 'is_retorno': False, 'lat_ant': estado['lat'], 'lon_ant': estado['lon'], 'lat_atual': estado['lat'], 'lon_atual': estado['lon'], 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana, 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'), 'hora_inicio': lunch_start, 'hora_fim': lunch_end, 'viagem_min': 0.0, 'dist_km': 0.0})
+                        estado['time'] = lunch_end; estado['lunch'] = True
                         chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                         
                     fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
-                    
                     virar_dia = False
                     limite_diario_atual = cfg['obras_por_dia']
-                    
-                    if estado['obras_hoje'] > 0 and (estado['obras_hoje'] + qtd_real > limite_diario_atual):
-                        virar_dia = True
+                    if estado['obras_hoje'] > 0 and (estado['obras_hoje'] + qtd_real > limite_diario_atual): virar_dia = True
                     elif mun_anterior is not None and mun_atual != mun_anterior and estado['obras_hoje'] > 0:
-                        if viagem_km_reta > 100.0:
-                            virar_dia = True 
+                        if viagem_km_reta > 100.0: virar_dia = True 
                             
                     if virar_dia:
                         dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
-                        viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
-                        ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
-                        rotas_flat.append({
-                            'obra': None, 'is_lunch': False, 'is_retorno': True,
-                            'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                            'lat_atual': base_lat, 'lon_atual': base_lon,
-                            'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                            'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                            'hora_inicio': estado['time'], 'hora_fim': ret_fim,
-                            'viagem_min': viagem_ret, 'dist_km': dist_ret
-                        })
-                        
+                        viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60; ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
+                        rotas_flat.append({'obra': None, 'is_lunch': False, 'is_retorno': True, 'lat_ant': estado['lat'], 'lon_ant': estado['lon'], 'lat_atual': base_lat, 'lon_atual': base_lon, 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana, 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'), 'hora_inicio': estado['time'], 'hora_fim': ret_fim, 'viagem_min': viagem_ret, 'dist_km': dist_ret})
                         dia_absoluto += 1
-                        
                         if cfg['tipo_periodo'] == "Semana":
                             dia_da_semana += 1
-                            if dia_da_semana > len(cfg['dias_selecionados']):
-                                semana_atual += 1
-                                dia_da_semana = 1
-                                
+                            if dia_da_semana > len(cfg['dias_selecionados']): semana_atual += 1; dia_da_semana = 1
                         estado = iniciar_dia(dia_absoluto)
-                        
                         viagem_km_reta = haversine_vectorized(estado['lat'], estado['lon'], obra['LATITUDE'], obra['LONGITUDE'])
                         viagem_km = viagem_km_reta * 1.3
-                        
-                        if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0:
-                            viagem_min = 0.0; exec_min = 30.0 
+                        if viagem_km_reta < 0.05 and estado['obras_hoje'] > 0: viagem_min = 0.0; exec_min = 30.0 
                         else:
                             vel_dinamica = cfg['velocidade_media_kmh'] * 1.5 if viagem_km > 20 else cfg['velocidade_media_kmh']
                             viagem_min = (viagem_km / vel_dinamica) * 60; exec_min = cfg['tempo_medio_obra'] * 60
-                        
                         chegada_prevista = estado['time'] + pd.Timedelta(minutes=viagem_min)
                         fim_previsto = chegada_prevista + pd.Timedelta(minutes=exec_min)
                         
-                    rotas_flat.append({
-                        'obra': obra, 'is_lunch': False, 'is_retorno': False,
-                        'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                        'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'],
-                        'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                        'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
-                        'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                        'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto,
-                        'viagem_min': viagem_min, 'dist_km': viagem_km
-                    })
-                    estado['lat'] = obra['LATITUDE']
-                    estado['lon'] = obra['LONGITUDE']
-                    estado['time'] = fim_previsto
-                    estado['obras_hoje'] += qtd_real
-                    estado['km_hoje'] += viagem_km
-                    mun_anterior = mun_atual 
+                    rotas_flat.append({'obra': obra, 'is_lunch': False, 'is_retorno': False, 'lat_ant': estado['lat'], 'lon_ant': estado['lon'], 'lat_atual': obra['LATITUDE'], 'lon_atual': obra['LONGITUDE'], 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana, 'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()], 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'), 'hora_inicio': chegada_prevista, 'hora_fim': fim_previsto, 'viagem_min': viagem_min, 'dist_km': viagem_km})
+                    estado['lat'], estado['lon'], estado['time'] = obra['LATITUDE'], obra['LONGITUDE'], fim_previsto
+                    estado['obras_hoje'] += qtd_real; estado['km_hoje'] += viagem_km; mun_anterior = mun_atual 
 
                 if estado['obras_hoje'] > 0:
                     dist_ret = haversine_vectorized(estado['lat'], estado['lon'], base_lat, base_lon)
-                    viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60
-                    ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
-                    rotas_flat.append({
-                        'obra': None, 'is_lunch': False, 'is_retorno': True,
-                        'lat_ant': estado['lat'], 'lon_ant': estado['lon'],
-                        'lat_atual': base_lat, 'lon_atual': base_lon,
-                        'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana,
-                        'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()],
-                        'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'),
-                        'hora_inicio': estado['time'], 'hora_fim': ret_fim,
-                        'viagem_min': viagem_ret, 'dist_km': dist_ret
-                    })
+                    viagem_ret = (dist_ret / cfg['velocidade_media_kmh']) * 60; ret_fim = estado['time'] + pd.Timedelta(minutes=viagem_ret)
+                    rotas_flat.append({'obra': None, 'is_lunch': False, 'is_retorno': True, 'lat_ant': estado['lat'], 'lon_ant': estado['lon'], 'lat_atual': base_lat, 'lon_atual': base_lon, 'semana': semana_atual, 'dia': dia_absoluto, 'dia_semana_idx': dia_da_semana, 'dia_semana_nome': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][estado['date_obj'].weekday()], 'dia_mes': estado['date_obj'].strftime('%d/%m/%Y'), 'hora_inicio': estado['time'], 'hora_fim': ret_fim, 'viagem_min': viagem_ret, 'dist_km': dist_ret})
 
-                state['current_rotas_flat'] = rotas_flat
-                state['current_osrm_idx'] = 0
-                state['current_geoms'] = []
-                st.session_state.vrp_state = state
-                tentar_rerun()
-                return
+                state['current_rotas_flat'] = rotas_flat; state['current_osrm_idx'] = 0; state['current_geoms'] = []
+                st.session_state.vrp_state = state; tentar_rerun(); return
 
             else:
                 rotas_flat = state['current_rotas_flat']
                 osrm_idx = state['current_osrm_idx']
                 geoms_and_durs = state['current_geoms']
-                
                 batch_size = 30 if cfg.get('tracado_real', False) else len(rotas_flat)
                 end_idx = min(osrm_idx + batch_size, len(rotas_flat))
                 
@@ -2077,25 +1507,17 @@ def app_roteirizador():
                         geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
                         geoms_and_durs.append((geom, dur_sec))
                     else:
-                        if i % 5 == 0:
-                            status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{len(rotas_flat)})")
-                        update_running_timer(b_idx, i, len(rotas_flat))
-                        time.sleep(0.05) 
-                        try:
-                            geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                        if i % 5 == 0: status_text.info(f"🛣️ Desenhando curvas reais para **{b_name}**... (Trecho {i}/{len(rotas_flat)})")
+                        update_running_timer(b_idx, i, len(rotas_flat)); time.sleep(0.05) 
+                        try: geom, dur_sec = obter_rota_ruas(item['lat_ant'], item['lon_ant'], item['lat_atual'], item['lon_atual'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
                         except:
                             dist_m = item['dist_km'] * 1000
                             geom = [[item['lon_ant'], item['lat_ant']], [item['lon_atual'], item['lat_atual']]]
                             dur_sec = (dist_m / 1000.0 / cfg['velocidade_media_kmh']) * 3600
                         geoms_and_durs.append((geom, dur_sec))
 
-                state['current_osrm_idx'] = end_idx
-                state['current_geoms'] = geoms_and_durs
-                
-                if end_idx < len(rotas_flat):
-                    st.session_state.vrp_state = state
-                    tentar_rerun()
-                    return
+                state['current_osrm_idx'] = end_idx; state['current_geoms'] = geoms_and_durs
+                if end_idx < len(rotas_flat): st.session_state.vrp_state = state; tentar_rerun(); return
                 
                 df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
                 base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
@@ -2106,150 +1528,67 @@ def app_roteirizador():
                 dias_pt = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
                 for item, (geom, dur_sec) in zip(rotas_flat, geoms_and_durs):
                     periodo_val = item['semana'] if cfg['tipo_periodo'] == "Semana" else item['dia']
-                    
                     data_do_item = datetime.strptime(item['dia_mes'], '%d/%m/%Y')
                     dia_nome_str = dias_pt[data_do_item.weekday()] if cfg['tipo_periodo'] == "Semana" else f"Dia {item['dia']}"
                     
                     if item['is_lunch']:
-                        routed_data_final_team.append({
-                            'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO DA EQUIPE', 
-                            'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
-                            'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                            'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
-                            'SEMANA': item['semana'], 'DIA': item['dia'], 
-                            'PERIODO': periodo_val,
-                            'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'TEMPO_VIAGEM_MINUTOS': 0.0,
-                            'ROTA_GEOMETRIA': geom,
-                            'PRIORIDADE': 'Não',
-                            'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
-                            'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
-                            '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
-                        })
+                        routed_data_final_team.append({'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO DA EQUIPE', 'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'], 'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'], 'SEMANA': item['semana'], 'DIA': item['dia'], 'PERIODO': periodo_val, 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'TEMPO_VIAGEM_MINUTOS': 0.0, 'ROTA_GEOMETRIA': geom, 'PRIORIDADE': 'Não', 'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'), 'HORA_FIM': item['hora_fim'].strftime('%H:%M'), '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']})
                     elif item['is_retorno']:
-                        routed_data_final_team.append({
-                            'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 
-                            'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'],
-                            'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 
-                            'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'],
-                            'SEMANA': item['semana'], 'DIA': item['dia'], 
-                            'PERIODO': periodo_val,
-                            'DISTANCIA_PONTO_ANTERIOR_KM': round(item['dist_km'], 2), 
-                            'TEMPO_VIAGEM_MINUTOS': round(item['viagem_min'], 1),
-                            'ROTA_GEOMETRIA': geom,
-                            'PRIORIDADE': 'Não',
-                            'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'),
-                            'HORA_FIM': item['hora_fim'].strftime('%H:%M'),
-                            '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']
-                        })
+                        routed_data_final_team.append({'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 'LATITUDE': item['lat_atual'], 'LONGITUDE': item['lon_atual'], 'BASE_ATRIBUIDA': b_name, 'ORDEM': ordem_global, 'NOME_DIA': dia_nome_str, 'DIA_MES': item['dia_mes'], 'SEMANA': item['semana'], 'DIA': item['dia'], 'PERIODO': periodo_val, 'DISTANCIA_PONTO_ANTERIOR_KM': round(item['dist_km'], 2), 'TEMPO_VIAGEM_MINUTOS': round(item['viagem_min'], 1), 'ROTA_GEOMETRIA': geom, 'PRIORIDADE': 'Não', 'HORA_INICIO': item['hora_inicio'].strftime('%H:%M'), 'HORA_FIM': item['hora_fim'].strftime('%H:%M'), '_HORA_INICIO_DT': item['hora_inicio'], '_HORA_FIM_DT': item['hora_fim']})
                     else:
                         obra = item['obra']
-                        obra['ORDEM'] = ordem_global
-                        obra['NOME_DIA'] = dia_nome_str
-                        obra['DIA_MES'] = item['dia_mes']
-                        obra['SEMANA'] = item['semana']
-                        obra['DIA'] = item['dia']
-                        obra['PERIODO'] = periodo_val
-                        obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2)
-                        obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
-                        
-                        if item['lat_ant'] == base_lat and item['lon_ant'] == base_lon:
-                            obra['ROTA_GEOMETRIA'] = [[item['lon_atual'], item['lat_atual']], [item['lon_atual'], item['lat_atual']]]
-                        else:
-                            obra['ROTA_GEOMETRIA'] = geom
-                            
-                        obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M')
-                        obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M')
-                        obra['_HORA_INICIO_DT'] = item['hora_inicio']
-                        obra['_HORA_FIM_DT'] = item['hora_fim']
-                        
+                        obra['ORDEM'] = ordem_global; obra['NOME_DIA'] = dia_nome_str; obra['DIA_MES'] = item['dia_mes']; obra['SEMANA'] = item['semana']; obra['DIA'] = item['dia']; obra['PERIODO'] = periodo_val
+                        obra['DISTANCIA_PONTO_ANTERIOR_KM'] = round(item['dist_km'], 2); obra['TEMPO_VIAGEM_MINUTOS'] = round(item['viagem_min'], 1)
+                        if item['lat_ant'] == base_lat and item['lon_ant'] == base_lon: obra['ROTA_GEOMETRIA'] = [[item['lon_atual'], item['lat_atual']], [item['lon_atual'], item['lat_atual']]]
+                        else: obra['ROTA_GEOMETRIA'] = geom
+                        obra['HORA_INICIO'] = item['hora_inicio'].strftime('%H:%M'); obra['HORA_FIM'] = item['hora_fim'].strftime('%H:%M'); obra['_HORA_INICIO_DT'] = item['hora_inicio']; obra['_HORA_FIM_DT'] = item['hora_fim']
                         routed_data_final_team.append(obra)
                     ordem_global += 1
 
                 state['routed_data'].extend(routed_data_final_team)
-                del state['current_rotas_flat']
-                del state['current_osrm_idx']
-                del state['current_geoms']
+                del state['current_rotas_flat']; del state['current_osrm_idx']; del state['current_geoms']
                 state['b_idx'] += 1
-                
                 st.session_state.tempo_processamento += (time.time() - start_iter)
-                st.session_state.vrp_state = state
-                gc.collect() 
-                tentar_rerun()
-                return
+                st.session_state.vrp_state = state; gc.collect(); tentar_rerun(); return
 
         else:
             status_text.success("✅ Matrizes Resolvidas! Preparando empacotamento...")
             progress_bar.progress(1.0)
-            
             df_final_route = pd.DataFrame(state['routed_data'])
-            if not df_final_route.empty:
-                df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
-                
-            st.session_state.df_routed = df_final_route
-            st.session_state.vrp_status = "PACKAGING"
-            time.sleep(1)
-            tentar_rerun()
+            if not df_final_route.empty: df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+            st.session_state.df_routed = df_final_route; st.session_state.vrp_status = "PACKAGING"
+            time.sleep(1); tentar_rerun()
 
     if status_exec == "PACKAGING":
         st.markdown("## 📦 Etapa Final: Construção de Arquivos (Excel e KML)")
-        st.markdown("A inteligência já finalizou as rotas. Compilando os dados para o download...")
-        
         if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
             
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         timer_placeholder = st.empty()
-        
         df_routed = st.session_state.df_routed
         data_atual_formatada = datetime.now().strftime("%d.%m.%Y")
-        
         bases_unicas = df_routed['BASE_ATRIBUIDA'].unique().tolist()
-        
         total_steps = len(bases_unicas) * 2 + 4
         current_step = 0
-        
-        if 'start_time_pkg' not in st.session_state:
-            st.session_state.start_time_pkg = time.time()
+        if 'start_time_pkg' not in st.session_state: st.session_state.start_time_pkg = time.time()
         start_time = st.session_state.start_time_pkg
-        
-        buf_zip_xl = io.BytesIO()
-        buf_zip_kml = io.BytesIO()
-        buf_zip_gpx = io.BytesIO()
-        
+        buf_zip_xl, buf_zip_kml, buf_zip_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
         tipo_periodo_atual = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Dia')
         is_fiscal = st.session_state.vrp_state.get('config', {}).get('is_lista_continua') and 'STATUS DA FISCALIZACAO' in df_routed.columns
         
         try:
-            with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, \
-                 zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml, \
-                 zipfile.ZipFile(buf_zip_gpx, 'w', zipfile.ZIP_DEFLATED) as zip_gpx:
-                 
+            with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl, zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml, zipfile.ZipFile(buf_zip_gpx, 'w', zipfile.ZIP_DEFLATED) as zip_gpx:
                 def update_ui(msg):
                     nonlocal current_step
                     current_step += 1
-                    progresso = min(current_step / total_steps, 1.0)
-                    progress_bar.progress(progresso)
+                    progress_bar.progress(min(current_step / total_steps, 1.0))
                     status_text.info(f"⏳ {msg}")
-                    
                     elapsed = time.time() - start_time
                     avg_time = elapsed / current_step if current_step > 0 else 0
                     rem_time = max(0, avg_time * (total_steps - current_step))
-                    
-                    e_m, e_s = divmod(int(elapsed), 60)
-                    r_m, r_s = divmod(int(rem_time), 60)
-                    
-                    html_timer = f"""
-                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                            <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
-                            <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
-                        </div>
-                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                            <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🗂️ Empacotando (Restante)</div>
-                            <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_m:02d}m {r_s:02d}s</div>
-                        </div>
-                    </div>
-                    """
+                    e_m, e_s = divmod(int(elapsed), 60); r_m, r_s = divmod(int(rem_time), 60)
+                    html_timer = f"""<div style="display: flex; gap: 10px; margin-bottom: 15px;"><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div><div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div></div><div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🗂️ Empacotando (Restante)</div><div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_m:02d}m {r_s:02d}s</div></div></div>"""
                     timer_placeholder.markdown(html_timer, unsafe_allow_html=True)
 
                 update_ui("Gerando Painel de Resumo Operacional...")
@@ -2259,18 +1598,14 @@ def app_roteirizador():
                     df_base_real = df_base[~df_base['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     base_ref = next((b for b in st.session_state.bases_records if b['LEVANTADOR'] == base), None)
                     tipo_eq = base_ref.get('TIPO_EQUIPE', 'PRINCIPAL') if base_ref else 'DESCONHECIDO'
-                    
                     qtd_comum = sum(count_real_obras(r) for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Não'].iterrows())
                     qtd_prio = sum(count_real_obras(r) for _, r in df_base_real[df_base_real['PRIORIDADE'] == 'Sim'].iterrows())
                     qtd_super = len(df_base_real[df_base_real['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in df_base_real.columns else 0
                     
                     p_bt = pd.to_numeric(df_base_real['POSTE PREVISTO BT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO BT' in df_base_real.columns else pd.Series(dtype=float)
                     p_mt = pd.to_numeric(df_base_real['POSTE PREVISTO MT'], errors='coerce').replace(0, np.nan) if 'POSTE PREVISTO MT' in df_base_real.columns else pd.Series(dtype=float)
-                    if not p_bt.empty or not p_mt.empty:
-                        poste_min_series = pd.concat([p_bt, p_mt], axis=1).min(axis=1).fillna(0).round().astype(int)
-                    else:
-                        poste_min_series = pd.to_numeric(df_base_real['POSTES PREVISTOS'], errors='coerce').fillna(0).round().astype(int) if 'POSTES PREVISTOS' in df_base_real.columns else pd.Series([0]*len(df_base_real))
-                        
+                    if not p_bt.empty or not p_mt.empty: poste_min_series = pd.concat([p_bt, p_mt], axis=1).min(axis=1).fillna(0).round().astype(int)
+                    else: poste_min_series = pd.to_numeric(df_base_real['POSTES PREVISTOS'], errors='coerce').fillna(0).round().astype(int) if 'POSTES PREVISTOS' in df_base_real.columns else pd.Series([0]*len(df_base_real))
                     qtd_postes_min_sum = int(poste_min_series.sum())
                     
                     dias_unicos = df_base_real['DIA_MES'].nunique() if 'DIA_MES' in df_base_real.columns else df_base_real['DIA'].nunique()
@@ -2278,26 +1613,19 @@ def app_roteirizador():
                     postes_por_dia = int(round(qtd_postes_min_sum / dias_unicos)) if dias_unicos > 0 else 0
                     postes_por_semana = int(round(qtd_postes_min_sum / semanas_unicas)) if semanas_unicas > 0 else 0
                     
-                    resumo_levantadores.append({
-                        'LEVANTADOR': base, 'TIPO EQUIPE': tipo_eq, 'OBRAS COMUNS': qtd_comum,
-                        'OBRAS PRIORITARIAS': qtd_prio, 'SUPER PONTOS': qtd_super, 'TOTAL OBRAS': qtd_comum + qtd_prio,
-                        'POSTES PREVISTOS TOTAIS': qtd_postes_min_sum,
-                        'POSTES PREVISTOS / DIA': postes_por_dia,
-                        'POSTES PREVISTOS / SEMANA': postes_por_semana,
-                        'KM TOTAL PREVISTO': round(df_base['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
-                    })
+                    resumo_levantadores.append({'LEVANTADOR': base, 'TIPO EQUIPE': tipo_eq, 'OBRAS COMUNS': qtd_comum, 'OBRAS PRIORITARIAS': qtd_prio, 'SUPER PONTOS': qtd_super, 'TOTAL OBRAS': qtd_comum + qtd_prio, 'POSTES PREVISTOS TOTAIS': qtd_postes_min_sum, 'POSTES PREVISTOS / DIA': postes_por_dia, 'POSTES PREVISTOS / SEMANA': postes_por_semana, 'KM TOTAL PREVISTO': round(df_base['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
                 df_correcao = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
                 if not df_correcao.empty:
                     update_ui("Gerando Planilha de Obras para Correção...")
+                    df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     df_correcao = df_correcao.loc[:, ~df_correcao.columns.duplicated()].copy()
                     df_correcao.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True, errors='ignore')
-                    df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
                     for c in df_correcao.columns:
-                        if df_correcao[c].dtype == 'object':
+                        if str(df_correcao[c].dtype) == 'object':
                             try: df_correcao[c] = df_correcao[c].astype(str).replace('nan', '')
                             except: pass
 
@@ -2312,17 +1640,15 @@ def app_roteirizador():
                 update_ui("Gerando Arquivo Excel de Demanda Geral e Pacote GPX Offline...")
                 df_demanda_geral = df_routed.drop(columns=[c for c in cols_to_drop_excel if c in df_routed.columns and c != 'BASE_ATRIBUIDA'], errors='ignore')
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
-                    if col in df_demanda_geral.columns:
-                        df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
+                    if col in df_demanda_geral.columns: df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round().fillna(0).astype(int)
                 for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
-                    if col in df_demanda_geral.columns:
-                        df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round(2)
+                    if col in df_demanda_geral.columns: df_demanda_geral[col] = pd.to_numeric(df_demanda_geral[col], errors='coerce').round(2)
                         
                 df_demanda_geral = limpar_colunas_excel(df_demanda_geral, st.session_state.colunas_originais)
                 df_demanda_geral = df_demanda_geral.loc[:, ~df_demanda_geral.columns.duplicated()].copy()
                 
                 for c in df_demanda_geral.columns:
-                    if df_demanda_geral[c].dtype == 'object':
+                    if str(df_demanda_geral[c].dtype) == 'object':
                         try: df_demanda_geral[c] = df_demanda_geral[c].astype(str).replace('nan', '')
                         except: pass
 
@@ -2331,34 +1657,27 @@ def app_roteirizador():
                 
                 update_ui("Gerando Mapa KML Consolidado de todas as rotas...")
                 df_routed_kml = df_routed.drop(columns=[c for c in cols_to_drop_kml_df if c in df_routed.columns], errors='ignore')
-                
                 df_routed_kml = df_routed_kml[~df_routed_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 
                 for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
-                    if col in df_routed_kml.columns:
-                        df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
+                    if col in df_routed_kml.columns: df_routed_kml[col] = pd.to_numeric(df_routed_kml[col], errors='coerce').round().fillna(0).astype(int)
                 
                 colunas_exibir_kml = [c for c in st.session_state.colunas_exibir if c not in cols_to_hide_popup]
                 
-                if is_fiscal:
-                    kml_geral_str = gerar_kml_fiscalizacao(df_routed_kml, f"ROTA TOTAL FISCAIS - {data_atual_formatada}", colunas_exibir_kml)
+                if is_fiscal: kml_geral_str = gerar_kml_fiscalizacao(df_routed_kml, f"ROTA TOTAL FISCAIS - {data_atual_formatada}", colunas_exibir_kml)
                 else:
                     kml_geral_str = gerar_kml_agrupado(df_routed_kml, st.session_state.bases_records, f"ROTA TOTAL LEVANTADORES - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                     kml_geral_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
-                    padrao_base = r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>'
-                    kml_geral_str = re.sub(padrao_base, '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
+                    kml_geral_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>', '', kml_geral_str, flags=re.IGNORECASE | re.DOTALL)
                 
                 zip_kml.writestr(f"ROTA_TOTAL - {data_atual_formatada}.kml", kml_geral_str.encode('utf-8'))
                 
                 df_unallocated = st.session_state.get('df_unallocated', pd.DataFrame())
                 if not df_unallocated.empty:
-                    kml_u = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>']
-                    kml_u.append('<Style id="white_pin"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>')
+                    kml_u = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>', '<Style id="white_pin"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>']
                     for _, r in df_unallocated.iterrows():
                         lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                        if pd.notna(lat) and pd.notna(lon):
-                            nome = html.escape(str(r.get('PROTOCOLO', 'Ponto Rejeitado')))
-                            kml_u.append(f'<Placemark><name>{nome}</name><styleUrl>#white_pin</styleUrl><Point><coordinates>{lon},{lat}</coordinates></Point></Placemark>')
+                        if pd.notna(lat) and pd.notna(lon): kml_u.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO", "Ponto Rejeitado")))}</name><styleUrl>#white_pin</styleUrl><Point><coordinates>{lon},{lat}</coordinates></Point></Placemark>')
                     kml_u.append('</Document></kml>')
                     zip_kml.writestr(f"OBRAS_NAO_ALOCADAS - {data_atual_formatada}.kml", "\n".join(kml_u).encode('utf-8'))
                 
@@ -2372,47 +1691,39 @@ def app_roteirizador():
                     
                     update_ui(f"Formatando rotas para: {base_nome}...")
                     df_lev_xl = df_lev.drop(columns=[c for c in cols_to_drop_excel if c in df_lev.columns] + ['BASE_ATRIBUIDA'], errors='ignore')
-                    
                     df_lev_kml = df_lev.drop(columns=[c for c in cols_to_drop_kml_df if c in df_lev.columns], errors='ignore')
                     df_lev_kml = df_lev_kml[~df_lev_kml['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
-                        if col in df_lev_xl.columns:
-                            df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
+                        if col in df_lev_xl.columns: df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round().fillna(0).astype(int)
                     for col in ['DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO']:
-                        if col in df_lev_xl.columns:
-                            df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round(2)
+                        if col in df_lev_xl.columns: df_lev_xl[col] = pd.to_numeric(df_lev_xl[col], errors='coerce').round(2)
                             
                     df_lev_xl = limpar_colunas_excel(df_lev_xl, st.session_state.colunas_originais)
                     df_lev_xl = df_lev_xl.loc[:, ~df_lev_xl.columns.duplicated()].copy()
                     
                     for c in df_lev_xl.columns:
-                        if df_lev_xl[c].dtype == 'object':
+                        if str(df_lev_xl[c].dtype) == 'object':
                             try: df_lev_xl[c] = df_lev_xl[c].astype(str).replace('nan', '')
                             except: pass
 
                     zip_xl.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.xlsx", gerar_excel_bytes(df_lev_xl, st.session_state.col_prioridade, df_lev_xl.columns.tolist()))
                     
                     for col in ['POSTE PREVISTO BT', 'POSTE PREVISTO MT', 'POSTES PREVISTOS', 'QTD PREVISTA DE POSTES']:
-                        if col in df_lev_kml.columns:
-                            df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
+                        if col in df_lev_kml.columns: df_lev_kml[col] = pd.to_numeric(df_lev_kml[col], errors='coerce').round().fillna(0).astype(int)
                             
-                    if is_fiscal:
-                        kml_lev_str = gerar_kml_fiscalizacao(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml)
+                    if is_fiscal: kml_lev_str = gerar_kml_fiscalizacao(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml)
                     else:
                         kml_lev_str = gerar_kml_agrupado(df_lev_kml, st.session_state.bases_records, f"ROTA_{nome_seguro} - {data_atual_formatada}", colunas_exibir_kml, bases_unicas, tipo_periodo_atual)
                         kml_lev_str = re.sub(r'<tr[^>]*>(?:(?!<tr).)*?Horário:(?:(?!</tr>).)*?</tr>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
-                        kml_lev_str = re.sub(padrao_base, '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
+                        kml_lev_str = re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>', '', kml_lev_str, flags=re.IGNORECASE | re.DOTALL)
                     
                     zip_kml.writestr(f"ROTA_{nome_seguro} - {data_atual_formatada}.kml", kml_lev_str.encode('utf-8'))
-                    
-                    gpx_lev_str = gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}")
-                    zip_gpx.writestr(f"GPS_ROTA_{nome_seguro} - {data_atual_formatada}.gpx", gpx_lev_str.encode('utf-8'))
+                    zip_gpx.writestr(f"GPS_ROTA_{nome_seguro} - {data_atual_formatada}.gpx", gerar_gpx_simples(df_lev_kml, f"ROTA_{nome_seguro} - {data_atual_formatada}").encode('utf-8'))
                     
             st.session_state.bytes_zip_xl = buf_zip_xl.getvalue()
             st.session_state.bytes_zip_kml = buf_zip_kml.getvalue()
             st.session_state.bytes_zip_gpx = buf_zip_gpx.getvalue()
-            
             status_text.success("✅ Pacotes gerados com sucesso! (Rotas extraídas integralmente para KML e GPX).")
             time.sleep(1.5)
             st.session_state.roteamento_concluido = True
@@ -2438,19 +1749,15 @@ def renderizar_faq():
     st.markdown("---")
     st.markdown("### 1. As Três Estratégias de Despacho (Modos)")
     c_faq1, c_faq2, c_faq3 = st.columns(3)
-    with c_faq1:
-        st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'><h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático</h4><b>A IA no Comando:</b> Você sobe a planilha de técnicos e joga milhares de obras brutas. O sistema lê onde cada técnico atua, calcula todas as distâncias cruzadas e distribui as obras do zero de forma otimizada.<br><br><b>A Regra dos 100km:</b> Se o técnico terminar a cota do município dele antes de bater a meta diária, a IA usa o radar de 100km para acionar obras de cidades vizinhas.</div>", unsafe_allow_html=True)
-    with c_faq2:
-        st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #55B929; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'><h4 style='color: #2e7d32; margin-top: 0;'>♾️ 2. Lista Contínua</h4><b>O Usuário no Comando:</b> A IA respeita estritamente o que você definiu. Sua planilha já deve ter a coluna <b>LEVANTADOR</b> preenchida.<br><br><b>Processamento:</b> A ferramenta ignora as travas de fim de expediente e desenha o caminho mais curto para conectar 100% da lista do profissional. Nenhuma nota é transferida de um técnico para outro.</div>", unsafe_allow_html=True)
-    with c_faq3:
-        st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #FF9800; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'><h4 style='color: #FF9800; margin-top: 0;'>📋 3. Fiscalização</h4><b>Foco em Volumetria:</b> O sistema lê a planilha de Equipes Fiscais e a de Obras, distribuindo o peso. A IA prioriza as obras com a maior QTD PREVISTA DE POSTES para evitar o cruzamento de rotas ineficientes.<br><br><b>Cerca Eletrônica:</b> Uma trava de segurança impede que obras com erro de digitação de coordenadas poluam o roteiro. Elas vão para a Planilha de Correção.</div>", unsafe_allow_html=True)
+    with c_faq1: st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #0D256C; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'><h4 style='color: #0D256C; margin-top: 0;'>🎯 1. Planejamento Tático</h4><b>A IA no Comando:</b> Você sobe a planilha de técnicos e joga milhares de obras brutas. O sistema lê onde cada técnico atua, calcula todas as distâncias cruzadas e distribui as obras do zero de forma otimizada.<br><br><b>A Regra dos 100km:</b> Se o técnico terminar a cota do município dele antes de bater a meta diária, a IA usa o radar de 100km para acionar obras de cidades vizinhas.</div>", unsafe_allow_html=True)
+    with c_faq2: st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #55B929; border-radius: 8px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05);'><h4 style='color: #2e7d32; margin-top: 0;'>♾️ 2. Lista Contínua</h4><b>O Usuário no Comando:</b> A IA respeita estritamente o que você definiu. Sua planilha já deve ter a coluna <b>LEVANTADOR</b> preenchida.<br><br><b>Processamento:</b> A ferramenta ignora as travas de fim de expediente e desenha o caminho mais curto para conectar 100% da lista do profissional. Nenhuma nota é transferida de um técnico para outro.</div>", unsafe_allow_html=True)
+    with c_faq3: st.markdown("<div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #FF9800; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'><h4 style='color: #FF9800; margin-top: 0;'>📋 3. Fiscalização</h4><b>Foco em Volumetria:</b> O sistema lê a planilha de Equipes Fiscais e a de Obras, distribuindo o peso. A IA prioriza as obras com a maior QTD PREVISTA DE POSTES para evitar o cruzamento de rotas ineficientes.<br><br><b>Cerca Eletrônica:</b> Uma trava de segurança impede que obras com erro de digitação de coordenadas poluam o roteiro. Elas vão para a Planilha de Correção.</div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("### 2. Baixar Modelos de Planilhas (Templates)")
-    st.markdown("Para garantir que a Inteligência consiga rastrear o endereço de cada nota perfeitamente, utilize os modelos padrão abaixo.")
     
     df_equipes = pd.DataFrame([{'MunicIpio': 'FORTUNA', 'Estado': 'Maranhão', 'Levantador': 'NOME DO TECNICO', 'Regional': 'CENTRO', 'Longitude': -44.0264, 'Latitude': -5.7335, 'Equipe': 'EQUIPE 17'}])
-    df_levantamento = pd.DataFrame([{'ID SISCO': 1982315, 'PROTOCOLO': 1081945188, 'TIPO NOTA': 'UNR', 'PRIORIDADE': 0, 'STATUS SAP': 'ATIV', 'STATUS SISCO': 'Liberado para Levantamento', 'STATUS LIST': 'Em levantamento', 'FASE': 'MO', 'PAT': 'PAT1', 'Regional': 'LESTE', 'Município': 'CODÓ', 'DISTANCIA BT': 248.78, 'DISTANCIA MT': 241.99, 'DISTANCIA TRAFO': 243.4, 'POSTE PREVISTO BT': 6, 'POSTE PREVISTO MT': 2, 'NOME': 'NOME DO CLIENTE', 'CONTA CONTRATO': 3019326160, 'INSTALAÇÃO': 2000876176, 'ENDEREÇO': 'ENDERECO COMPLETO', 'LOCALIDADE': 'RURAL', 'LATITUDE': -4.459156, 'LONGITUDE': -44.150418, 'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS', 'TEXTO': 'TEXTO DESCRITIVO', 'TEXTO_GERAL': 'TEXTO GERAL'}])
+    df_levantamento = pd.DataFrame([{'ID SISCO': 1982315, 'PROTOCOLO': 1081945188, 'TIPO NOTA': 'UNR', 'PRIORIDADE': 0, 'STATUS SAP': 'ATIV', 'STATUS SISCO': 'Liberado para Levantamento', 'STATUS LIST': 'Em levantamento', 'FASE': 'MO', 'PAT': 'PAT1', 'Regional': 'LESTE', 'Município': 'CODÓ', 'DISTANCIA BT': 248.78, 'DISTANCIA MT': 241.99, 'DISTANCIA TRAFO': 243.4, 'POSTE PREVISTO BT': 6, 'POSTE PREVISTO MT': 2, 'NOME': 'NOME DO CLIENTE', 'CONTA CONTRATO': 3019326160, 'INSTALAÇÃO': 2000876176, 'ENDEREÇO': 'ENDERECO COMPLETO', 'LOCALIDADE': 'RURAL', 'LATITUDE': -4.459156, 'LONGITUDE': -44.150418, 'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS'}])
     df_continua = pd.DataFrame([{'LEVANTADOR': 'NOME DO TECNICO', 'DATA DESPACHO': '17/08/2026', 'ID SISCO': 1982149, 'PROTOCOLO': 1076894592, 'TIPO NOTA': 'UNR', 'PRIORIDADE': 0, 'STATUS SAP': 'ATIV', 'STATUS SISCO': 'Pré Análise', 'STATUS LIST': 'Em levantamento', 'FASE': 'MO', 'PAT': 'PAT1', 'Regional': 'LESTE', 'Município': 'CAXIAS', 'DISTANCIA BT': 285.18, 'DISTANCIA MT': 212.99, 'DISTANCIA TRAFO': 224.66, 'POSTE PREVISTO BT': 7, 'POSTE PREVISTO MT': 2, 'NOME': 'NOME DO CLIENTE', 'CONTA CONTRATO': 3018299797, 'INSTALAÇÃO': 2000835041, 'ENDEREÇO': 'ENDERECO COMPLETO', 'LOCALIDADE': 'RURAL', 'LATITUDE': -5.060694, 'LONGITUDE': -43.438846, 'INFORMAÇÕES EXTRAS': 'INFORMACOES ADICIONAIS'}])
     df_fiscalizacao = pd.DataFrame([{'NOTA': 1081945188, 'FISCAL': 'NOME DO FISCAL', 'STATUS DA FISCALIZACAO': 'APTO PARA CAMPO', 'QTD PREVISTA DE POSTES': 45, 'MUNICIPIO': 'SAO LUIS', 'LATITUDE': -2.5297, 'LONGITUDE': -44.3028, 'VALOR DA OBRA': 15000.50, 'PREVISAO DE ENTREGA': '10/10/2026', 'TIPO DE FISCALIZACAO': 'NORMAL', 'TIPO DE PROJETO': 'EXTENSAO', 'REGIONAL': 'LESTE', 'ZONA': 'URBANA', 'BACKOFFICE DA FISCALIZACAO': 'NOME BACKOFFICE', 'OBSERVACAO': 'Atenção ao prazo'}])
 
@@ -2483,18 +1790,15 @@ def renderizar_faq():
 def main():
     with st.sidebar:
         if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, "rb") as f:
-                encoded_logo = base64.b64encode(f.read()).decode()
+            with open(LOGO_PATH, "rb") as f: encoded_logo = base64.b64encode(f.read()).decode()
             st.markdown(f'<div style="text-align: center; margin-bottom: 25px;"><img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;"></div>', unsafe_allow_html=True)
             
         st.markdown("### 🧭 Navegação")
         menu_selecionado = st.radio("Selecione a Página:", ["🚀 Roteirizador Logístico", "📖 FAQ & Guia de Uso"], label_visibility="collapsed")
         st.markdown("---")
 
-    if menu_selecionado == "📖 FAQ & Guia de Uso":
-        renderizar_faq()
-    else:
-        app_roteirizador()
+    if menu_selecionado == "📖 FAQ & Guia de Uso": renderizar_faq()
+    else: app_roteirizador()
 
 if __name__ == "__main__":
     main()
