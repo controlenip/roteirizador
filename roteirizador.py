@@ -724,19 +724,19 @@ def app_roteirizador():
         st.markdown("### ⚙️ Selecione a Estratégia de Roteirização")
         modo_selecionado = st.radio(
             "Modo:",
-            ["🎯 1. Planejamento Tático (IA Automática)", "♾️ 2. Lista Contínua (Técnico Fixo)", "📋 3. Lista Contínua (Fiscalização)"],
+            ["🎯 1. Planejamento Tático (IA Automática)", "♾️ 2. Lista Contínua (Técnico Fixo)", "📋 3. Planejamento Tático (Fiscalização)"],
             horizontal=True,
             label_visibility="collapsed"
         )
 
-        if "Tático" in modo_selecionado:
+        if "Tático" in modo_selecionado and not "Fiscalização" in modo_selecionado:
             st.info("💡 **Como funciona o Planejamento Tático:** A Inteligência Artificial assume o controle. Ela analisa todas as obras pendentes e as distribui de forma estratégica entre as equipes disponíveis, agrupando-as pela melhor rota geográfica e acionando o raio de 100km caso falte obras na cidade base.")
             modo_operacao = "1"
         elif "Fixo" in modo_selecionado:
             st.info("💡 **Como funciona a Lista Contínua:** O sistema respeita estritamente a coluna 'LEVANTADOR' da sua planilha. A IA apenas calcula as distâncias e roteiriza 100% da lista de cada técnico, gerando quantos dias forem necessários.")
             modo_operacao = "2"
         else:
-            st.info("💡 **Lista Contínua (Fiscalização):** Lógica exclusiva de volumetria de postes. O sistema prioriza e colore os mapas de acordo com a quantidade prevista de postes de cada projeto, agrupando organicamente notas comuns no percurso daquelas de alta prioridade.")
+            st.info("💡 **Planejamento Tático (Fiscalização):** O sistema aloca as obras de fiscalização entre os fiscais disponíveis, priorizando áreas com maior densidade de postes e equilibrando a carga de trabalho no mesmo município. Obras 'APTO PARA CAMPO' e 'EM CAMPO' furam a fila.")
             modo_operacao = "3"
 
         st.markdown("---")
@@ -746,26 +746,26 @@ def app_roteirizador():
         colunas_originais = []
         col_prioridade = "Nenhuma"
         
-        if modo_operacao == "1":
+        if modo_operacao in ["1", "3"]:
             col_up_1, col_up_2 = st.columns(2)
             with col_up_1:
-                st.markdown("### 👥 1. Levantadores Principais")
+                st.markdown(f"### 👥 1. {'Fiscais' if modo_operacao == '3' else 'Levantadores'} Principais")
                 df_bases = pd.DataFrame()
                 with st.container(border=True):
-                    base_file = st.file_uploader("Suba a planilha Levantadores_MA", type=["xlsx", "xls"])
+                    base_file = st.file_uploader(f"Suba a planilha {'Fiscais_MA' if modo_operacao == '3' else 'Levantadores_MA'}", type=["xlsx", "xls"])
                 
                 if base_file:
                     try:
                         df_bases_temp_ui = ler_planilha_cached(base_file.getvalue())
                         df_bases_temp_ui.columns = normalize_cols(df_bases_temp_ui.columns)
                         if 'LEVANTADOR' not in df_bases_temp_ui.columns:
-                            for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
+                            for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR', 'FISCAL']:
                                 if p_nome in df_bases_temp_ui.columns:
                                     df_bases_temp_ui = df_bases_temp_ui.rename(columns={p_nome: 'LEVANTADOR'})
                                     break
                         if 'LEVANTADOR' in df_bases_temp_ui.columns:
                             opcoes_levs = sorted([str(x) for x in df_bases_temp_ui['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
-                            levs_selecionados = st.multiselect("Selecione as Equipes Principais:", opcoes_levs, default=opcoes_levs)
+                            levs_selecionados = st.multiselect(f"Selecione as Equipes {'Fiscais' if modo_operacao == '3' else 'Principais'}:", opcoes_levs, default=opcoes_levs)
                             
                             if levs_selecionados:
                                 df_bases = df_bases_temp_ui[df_bases_temp_ui['LEVANTADOR'].isin(levs_selecionados)].copy()
@@ -787,7 +787,7 @@ def app_roteirizador():
                                     df_bases['LONGITUDE'] = np.nan
                                 df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
                                 df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
-                        else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR'.")
+                        else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR' ou 'FISCAL'.")
                     except Exception as e: st.error(f"Erro ao ler a planilha: {e}")
 
                 st.markdown("##### Regra de Atribuição Territorial")
@@ -795,149 +795,163 @@ def app_roteirizador():
 
             with col_up_2:
                 st.markdown("### 📁 2. Upload de Demandas (Obras)")
-                with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
-                with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
-                with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
-                with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
                 
-                df_status_upload = pd.DataFrame()
-                coluna_status_selecionada = None
-                if status_file:
-                    try:
-                        df_status_upload = ler_planilha_cached(status_file.getvalue())
-                        cols_status = df_status_upload.columns.tolist()
-                        coluna_status_selecionada = st.selectbox("📌 Coluna Status?", cols_status, index=4 if len(cols_status) >= 5 else 0)
-                    except Exception as e: st.error(f"Erro ao ler status: {e}")
-                
-                st.markdown("##### 🧑‍🤝‍🧑 3. Equipes de Apoio (Temporários)")
-                with st.container(border=True): temp_bases_files = st.file_uploader("Suba a(s) planilha(s) de Apoio", type=["xlsx", "xls"], accept_multiple_files=True)
-                df_bases_temp = pd.DataFrame()
-                if temp_bases_files:
-                    try:
-                        dfs_temp = []
-                        for f in temp_bases_files:
-                            df_t = ler_planilha_cached(f.getvalue())
-                            df_t.columns = normalize_cols(df_t.columns)
-                            if 'LEVANTADOR' not in df_t.columns:
-                                for p_nome in ['NOME', 'TECNICO', 'EQUIPE']:
-                                    if p_nome in df_t.columns: df_t = df_t.rename(columns={p_nome: 'LEVANTADOR'}); break
-                            dfs_temp.append(df_t)
-                        df_bases_temp_full = pd.concat(dfs_temp, ignore_index=True)
-                        if 'LEVANTADOR' in df_bases_temp_full.columns:
-                            opcoes_levs_temp = sorted([str(x) for x in df_bases_temp_full['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
-                            levs_temp_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs_temp, default=opcoes_levs_temp)
-                            if levs_temp_selecionados:
-                                df_bases_temp = df_bases_temp_full[df_bases_temp_full['LEVANTADOR'].isin(levs_temp_selecionados)].copy()
-                                if 'LATITUDE' in df_bases_temp.columns and 'LONGITUDE' in df_bases_temp.columns:
-                                    df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                                    df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                                elif 'RESIDENCIA' in df_bases_temp.columns or 'MUNICIPIO' in df_bases_temp.columns:
-                                    col_ref_temp = 'RESIDENCIA' if 'RESIDENCIA' in df_bases_temp.columns else 'MUNICIPIO'
-                                    muns_unicos_temp = df_bases_temp[col_ref_temp].dropna().unique()
-                                    mapa_coords_temp = {}
-                                    with st.spinner("🌍 Buscando coordenadas bases temporárias..."):
-                                        for mun in muns_unicos_temp:
-                                            lat, lon = obter_coordenadas_municipio_cached(mun)
-                                            mapa_coords_temp[mun] = (lat, lon)
-                                    df_bases_temp['LATITUDE'] = df_bases_temp[col_ref_temp].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[0])
-                                    df_bases_temp['LONGITUDE'] = df_bases_temp[col_ref_temp].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[1])
-                                else:
-                                    df_bases_temp['LATITUDE'] = np.nan
-                                    df_bases_temp['LONGITUDE'] = np.nan
-                                df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE'])
-                                df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
-                    except Exception as e: st.error(f"Erro: {e}")
-
-                qtd_eq_princ = df_bases['LEVANTADOR'].nunique() if 'df_bases' in locals() and not df_bases.empty else 0
-                qtd_eq_temp = df_bases_temp['LEVANTADOR'].nunique() if 'df_bases_temp' in locals() and not df_bases_temp.empty else 0
-                qtd_eq_atual_live = qtd_eq_princ + qtd_eq_temp
-                st.session_state.qtd_equipes_ativas = qtd_eq_atual_live
-                
-                tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
-                dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
-                cap_por_eq_live = obras_por_dia * dias_multiplier * limite_periodos
-                cap_total_estimada_live = cap_por_eq_live * (qtd_eq_atual_live if qtd_eq_atual_live > 0 else 1)
-                
-                sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
-
-                if not task_files and not saneamento_files and not generica_files: 
-                    st.info("Aguardando upload de obras para iniciar o roteamento.")
-                    return
-
-                try:
-                    dfs = []
-                    if task_files:
-                        for f in task_files:
-                            df_temp = ler_planilha_cached(f.getvalue())
-                            df_temp.columns = normalize_cols(df_temp.columns)
-                            if len(dfs) == 0: st.session_state.colunas_originais_lev = df_temp.columns.tolist()
-                            df_temp['_ORIGEM_BASE'] = 'LEVANTAMENTO'
-                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
-                            if 'PROTOCOLO' not in df_temp.columns:
-                                for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
-                                    if col_candidata in df_temp.columns:
-                                        df_temp['PROTOCOLO'] = df_temp[col_candidata]
-                                        break
-                            dfs.append(df_temp)
-                            
-                    if saneamento_files:
-                        for f in saneamento_files:
-                            df_temp = ler_planilha_cached(f.getvalue())
-                            df_temp.columns = normalize_cols(df_temp.columns)
-                            if len(dfs) == 0: st.session_state.colunas_originais_san = df_temp.columns.tolist()
-                            df_temp['_ORIGEM_BASE'] = 'SANEAMENTO'
-                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
-                            if 'LATITUDE PROJETO' in df_temp.columns and 'LATITUDE' not in df_temp.columns: df_temp['LATITUDE'] = df_temp['LATITUDE PROJETO']
-                            if 'LONGITUDE PROJETO' in df_temp.columns and 'LONGITUDE' not in df_temp.columns: df_temp['LONGITUDE'] = df_temp['LONGITUDE PROJETO']
-                            if 'PROTOCOLO' not in df_temp.columns:
-                                for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
-                                    if col_candidata in df_temp.columns:
-                                        df_temp['PROTOCOLO'] = df_temp[col_candidata]
-                                        break
-                            dfs.append(df_temp)
-
-                    if generica_files:
-                        for f in generica_files:
-                            if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
-                            else: df_temp = ler_planilha_cached(f.getvalue())
-                            df_temp.columns = normalize_cols(df_temp.columns)
-                            if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
-                            df_temp['_ORIGEM_BASE'] = 'GENERICA'
-                            if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
-                            if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
-                                st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
-                                continue
-                            if 'PROTOCOLO' not in df_temp.columns:
-                                id_cols = ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS', 'ID', 'CODIGO', 'CHAMADO', 'CHAVE']
-                                found_id = False
-                                for c in id_cols:
-                                    if c in df_temp.columns:
-                                        df_temp['PROTOCOLO'] = df_temp[c]
-                                        found_id = True
-                                        break
-                                if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
-                            dfs.append(df_temp)
-                            
-                    if not dfs: return
-
-                    df_tasks = pd.concat(dfs, ignore_index=True)
+                if modo_operacao == "1":
+                    with st.container(border=True): task_files = st.file_uploader("1️⃣ Base Levantamento", type=["xlsx", "xls"], accept_multiple_files=True, key="lev_uploader")
+                    with st.container(border=True): saneamento_files = st.file_uploader("2️⃣ Base Saneamento", type=["xlsx", "xls"], accept_multiple_files=True, key="san_uploader")
+                    with st.container(border=True): generica_files = st.file_uploader("3️⃣ Base Genérica / Livre (Qualquer Planilha)", type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="gen_uploader")
+                    with st.container(border=True): status_file = st.file_uploader("4️⃣ Planilha Atualizada SharePoint (Opcional)", type=["xlsx", "xls"])
                     
-                    if 'PROTOCOLO' in df_tasks.columns:
-                        df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-                        df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
-                        df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
+                    df_status_upload = pd.DataFrame()
+                    coluna_status_selecionada = None
+                    if status_file:
+                        try:
+                            df_status_upload = ler_planilha_cached(status_file.getvalue())
+                            cols_status = df_status_upload.columns.tolist()
+                            coluna_status_selecionada = st.selectbox("📌 Coluna Status?", cols_status, index=4 if len(cols_status) >= 5 else 0)
+                        except Exception as e: st.error(f"Erro ao ler status: {e}")
                     
-                    total_obras_inicial = len(df_tasks)
-                    cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
-                    cols_orig_san = st.session_state.get('colunas_originais_san', [])
-                    cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
-                    st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
-                    
-                    for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
-                        if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                            
-                except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
+                    st.markdown("##### 🧑‍🤝‍🧑 3. Equipes de Apoio (Temporários)")
+                    with st.container(border=True): temp_bases_files = st.file_uploader("Suba a(s) planilha(s) de Apoio", type=["xlsx", "xls"], accept_multiple_files=True)
+                    df_bases_temp = pd.DataFrame()
+                    if temp_bases_files:
+                        try:
+                            dfs_temp = []
+                            for f in temp_bases_files:
+                                df_t = ler_planilha_cached(f.getvalue())
+                                df_t.columns = normalize_cols(df_t.columns)
+                                if 'LEVANTADOR' not in df_t.columns:
+                                    for p_nome in ['NOME', 'TECNICO', 'EQUIPE']:
+                                        if p_nome in df_t.columns: df_t = df_t.rename(columns={p_nome: 'LEVANTADOR'}); break
+                                dfs_temp.append(df_t)
+                            df_bases_temp_full = pd.concat(dfs_temp, ignore_index=True)
+                            if 'LEVANTADOR' in df_bases_temp_full.columns:
+                                opcoes_levs_temp = sorted([str(x) for x in df_bases_temp_full['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
+                                levs_temp_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs_temp, default=opcoes_levs_temp)
+                                if levs_temp_selecionados:
+                                    df_bases_temp = df_bases_temp_full[df_bases_temp_full['LEVANTADOR'].isin(levs_temp_selecionados)].copy()
+                                    if 'LATITUDE' in df_bases_temp.columns and 'LONGITUDE' in df_bases_temp.columns:
+                                        df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                                        df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                                    elif 'RESIDENCIA' in df_bases_temp.columns or 'MUNICIPIO' in df_bases_temp.columns:
+                                        col_ref_temp = 'RESIDENCIA' if 'RESIDENCIA' in df_bases_temp.columns else 'MUNICIPIO'
+                                        muns_unicos_temp = df_bases_temp[col_ref_temp].dropna().unique()
+                                        mapa_coords_temp = {}
+                                        with st.spinner("🌍 Buscando coordenadas bases temporárias..."):
+                                            for mun in muns_unicos_temp:
+                                                lat, lon = obter_coordenadas_municipio_cached(mun)
+                                                mapa_coords_temp[mun] = (lat, lon)
+                                        df_bases_temp['LATITUDE'] = df_bases_temp[col_ref_temp].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[0])
+                                        df_bases_temp['LONGITUDE'] = df_bases_temp[col_ref_temp].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[1])
+                                    else:
+                                        df_bases_temp['LATITUDE'] = np.nan
+                                        df_bases_temp['LONGITUDE'] = np.nan
+                                    df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                                    df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
+                        except Exception as e: st.error(f"Erro: {e}")
+                
+                else: # Modo 3
+                    with st.container(border=True): 
+                        task_files = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], accept_multiple_files=True, help="A planilha deve conter MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
+                    saneamento_files = None
+                    generica_files = None
+                    status_file = None
+                    df_status_upload = pd.DataFrame()
+                    df_bases_temp = pd.DataFrame()
 
+                ignorar_despacho_m1 = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida.")
+
+            qtd_eq_princ = df_bases['LEVANTADOR'].nunique() if 'df_bases' in locals() and not df_bases.empty else 0
+            qtd_eq_temp = df_bases_temp['LEVANTADOR'].nunique() if 'df_bases_temp' in locals() and not df_bases_temp.empty else 0
+            qtd_eq_atual_live = qtd_eq_princ + qtd_eq_temp
+            st.session_state.qtd_equipes_ativas = qtd_eq_atual_live
+            
+            tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
+            dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
+            cap_por_eq_live = obras_por_dia * dias_multiplier * limite_periodos
+            cap_total_estimada_live = cap_por_eq_live * (qtd_eq_atual_live if qtd_eq_atual_live > 0 else 1)
+            
+            sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_por_eq_live, 0, qtd_eq_atual_live, cap_total_estimada_live), unsafe_allow_html=True)
+
+            if not task_files and not saneamento_files and not generica_files: 
+                st.info("Aguardando upload de Fiscais/Equipes e Obras para iniciar o roteamento.")
+                return
+
+            try:
+                dfs = []
+                if task_files:
+                    for f in task_files:
+                        df_temp = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
+                        df_temp.columns = normalize_cols(df_temp.columns)
+                        if len(dfs) == 0: st.session_state.colunas_originais_lev = df_temp.columns.tolist()
+                        df_temp['_ORIGEM_BASE'] = 'LISTA_CONTINUA_FISCALIZACAO' if modo_operacao == "3" else 'LEVANTAMENTO'
+                        if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
+                        if 'PROTOCOLO' not in df_temp.columns:
+                            for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
+                                if col_candidata in df_temp.columns:
+                                    df_temp['PROTOCOLO'] = df_temp[col_candidata]
+                                    break
+                        dfs.append(df_temp)
+                        
+                if saneamento_files:
+                    for f in saneamento_files:
+                        df_temp = ler_planilha_cached(f.getvalue())
+                        df_temp.columns = normalize_cols(df_temp.columns)
+                        if len(dfs) == 0: st.session_state.colunas_originais_san = df_temp.columns.tolist()
+                        df_temp['_ORIGEM_BASE'] = 'SANEAMENTO'
+                        if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
+                        if 'LATITUDE PROJETO' in df_temp.columns and 'LATITUDE' not in df_temp.columns: df_temp['LATITUDE'] = df_temp['LATITUDE PROJETO']
+                        if 'LONGITUDE PROJETO' in df_temp.columns and 'LONGITUDE' not in df_temp.columns: df_temp['LONGITUDE'] = df_temp['LONGITUDE PROJETO']
+                        if 'PROTOCOLO' not in df_temp.columns:
+                            for col_candidata in ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS']:
+                                if col_candidata in df_temp.columns:
+                                    df_temp['PROTOCOLO'] = df_temp[col_candidata]
+                                    break
+                        dfs.append(df_temp)
+
+                if generica_files:
+                    for f in generica_files:
+                        if f.name.endswith('.csv'): df_temp = pd.read_csv(f)
+                        else: df_temp = ler_planilha_cached(f.getvalue())
+                        df_temp.columns = normalize_cols(df_temp.columns)
+                        if len(dfs) == 0: st.session_state.colunas_originais_gen = df_temp.columns.tolist()
+                        df_temp['_ORIGEM_BASE'] = 'GENERICA'
+                        if 'PRIORIDADE' in df_temp.columns: df_temp['_PRIORIDADE_ORIGINAL'] = df_temp['PRIORIDADE']
+                        if 'LATITUDE' not in df_temp.columns or 'LONGITUDE' not in df_temp.columns:
+                            st.error(f"🚨 A planilha '{f.name}' foi ignorada: É obrigatório conter colunas chamadas 'LATITUDE' e 'LONGITUDE'.")
+                            continue
+                        if 'PROTOCOLO' not in df_temp.columns:
+                            id_cols = ['NOTA', 'NOTA CCS', 'NOTA SGO', 'ID SISCO', 'OS', 'ID', 'CODIGO', 'CHAMADO', 'CHAVE']
+                            found_id = False
+                            for c in id_cols:
+                                if c in df_temp.columns:
+                                    df_temp['PROTOCOLO'] = df_temp[c]
+                                    found_id = True
+                                    break
+                            if not found_id: df_temp['PROTOCOLO'] = [f"GEN-{i+1}" for i in range(len(df_temp))]
+                        dfs.append(df_temp)
+                        
+                if not dfs: return
+
+                df_tasks = pd.concat(dfs, ignore_index=True)
+                
+                if 'PROTOCOLO' in df_tasks.columns:
+                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+                    df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
+                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
+                
+                total_obras_inicial = len(df_tasks)
+                cols_orig_lev = st.session_state.get('colunas_originais_lev', [])
+                cols_orig_san = st.session_state.get('colunas_originais_san', [])
+                cols_orig_gen = st.session_state.get('colunas_originais_gen', [])
+                st.session_state.colunas_originais = list(dict.fromkeys(cols_orig_lev + cols_orig_san + cols_orig_gen))
+                
+                for c_nome in ['CONTA CONTRATO', 'INSTALACAO', 'PROTOCOLO']:
+                    if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
+                        
+            except Exception as e: st.error(f"Erro ao unificar planilhas: {e}"); return
+
+            if modo_operacao == "1":
                 st.markdown("##### 🗂️ Triagem Dinâmica de Notas (Bolo Geral)")
                 col_dash1, col_dash2, col_dash3, col_dash4 = st.columns(4)
                 
@@ -945,7 +959,7 @@ def app_roteirizador():
                     tipos_counts = df_tasks['TIPO NOTA'].value_counts()
                     t_unr = tipos_counts.get('UNR', 0)
                     t_mgd = tipos_counts.get('MGD', 0)
-                    t_asc = tipos_counts.get('ASC', 0)
+                    t_asc = counts.get('ASC', 0)
                     t_dif = tipos_counts.get('DIF', 0)
                     
                     col_dash1.metric("Notas UNR", f"{t_unr}")
@@ -962,13 +976,37 @@ def app_roteirizador():
                 if not df_status_upload.empty and coluna_status_selecionada:
                     df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
 
-                ignorar_despacho_m1 = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False, help="Se marcado, o sistema não roteirizará obras que já tenham data preenchida.")
-                if ignorar_despacho_m1 and 'DATA DESPACHO CAMPO' in df_tasks.columns:
-                    mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
-                    obras_despachadas = mask_despacho.sum()
-                    if obras_despachadas > 0:
-                        st.info(f"⏭️ {obras_despachadas} obras ignoradas (DATA DESPACHO CAMPO preenchida).")
-                        df_tasks = df_tasks[~mask_despacho]
+            if modo_operacao == "3":
+                cols_obrigatorias = ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO']
+                faltando = [c for c in cols_obrigatorias if c not in df_tasks.columns]
+                if faltando:
+                    st.error(f"🚨 A planilha de Fiscalização precisa das colunas: {', '.join(faltando)}."); st.stop()
+                
+                col_st = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
+                if col_st in df_tasks.columns:
+                    df_tasks[col_st] = df_tasks[col_st].astype(str).str.strip().str.upper()
+                    st.markdown("#### 📊 Obras Prioritárias na Base (Apto/Em Campo)")
+                    df_dash = df_tasks[df_tasks[col_st].isin(['APTO PARA CAMPO', 'EM CAMPO'])].copy()
+                    if not df_dash.empty:
+                        st.success(f"Foram encontradas {len(df_dash)} obras marcadas como APTO PARA CAMPO ou EM CAMPO prontas para serem alocadas aos Fiscais.")
+                    else:
+                        st.info("Nenhuma obra com status 'APTO PARA CAMPO' ou 'EM CAMPO' encontrada.")
+                
+                    st.markdown("---")
+                    st.markdown("#### 📌 Filtro de Status para Roteirização")
+                    status_unicos = sorted([str(x) for x in df_tasks[col_st].unique() if str(x) != 'NAN'])
+                    status_default = [s for s in status_unicos if s in ['APTO PARA CAMPO', 'EM CAMPO']]
+                    status_selecionados = st.multiselect("Selecione os status que devem ser roteirizados:", options=status_unicos, default=status_default)
+                    if not status_selecionados: 
+                        st.warning("⚠️ Selecione pelo menos um status."); st.stop()
+                    df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
+
+            if ignorar_despacho_m1 and 'DATA DESPACHO CAMPO' in df_tasks.columns:
+                mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
+                obras_despachadas = mask_despacho.sum()
+                if obras_despachadas > 0:
+                    st.info(f"⏭️ {obras_despachadas} obras ignoradas (DATA DESPACHO CAMPO preenchida).")
+                    df_tasks = df_tasks[~mask_despacho]
 
             st.markdown("---")
             has_levantamento = 'LEVANTAMENTO' in df_tasks['_ORIGEM_BASE'].values
@@ -1064,8 +1102,9 @@ def app_roteirizador():
                         st.session_state.col_prioridade_gen = "Nenhuma"
                     df_list.append(df_gen)
 
-            if not df_list: return
-            df_tasks = pd.concat(df_list, ignore_index=True)
+            if modo_operacao == "1":
+                if not df_list: return
+                df_tasks = pd.concat(df_list, ignore_index=True)
 
             if 'STATUS LIST' in df_tasks.columns:
                 mask_correcao = df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(['CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'])
@@ -1084,19 +1123,133 @@ def app_roteirizador():
                 )
                 df_tasks.loc[mask_not_zero, 'PRIORIDADE'] = 'Sim'
 
+            df_rejeitadas = pd.DataFrame()
+            if modo_operacao == "3":
+                col_geo1, col_geo2 = st.columns([4, 1])
+                with col_geo1:
+                    st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
+                with col_geo2:
+                    if st.button("⏹️ Abortar Operação", key="abort_geo_3", use_container_width=True):
+                        limpar_roteirizador()
+                        st.stop()
+                        
+                prog_bar_geo = st.progress(0.0)
+                timer_geo_placeholder = st.empty()
+                status_geo_text = st.empty()
+                start_time_geo = time.time()
+                
+                df_tasks['MOTIVO_REJEICAO'] = ''
+                
+                status_geo_text.info("⏳ Validando Integridade das Células...")
+                m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
+                if m_m.sum() > 0:
+                    df_tasks.loc[m_m, 'MOTIVO_REJEICAO'] = 'Célula Vazia (MUNICIPIO)'
+                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[m_m].copy()], ignore_index=True)
+                    df_tasks = df_tasks[~m_m].copy()
+                    
             if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
-                st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'. Verifique o cabeçalho dos arquivos enviados e certifique-se de que o sistema de mapeamento não foi comprometido na origem.")
+                st.error("🚨 ERRO GRAVE: As planilhas carregadas não possuem as colunas obrigatórias 'LATITUDE' e/ou 'LONGITUDE'.")
                 st.stop()
 
-            df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-            df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+            if modo_operacao == "3":
+                status_geo_text.info("⏳ Validando Formatação Geográfica...")
+                
+            df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+            df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
             
-            erros_coords_mask = df_tasks['LATITUDE'].isna() | df_tasks['LONGITUDE'].isna() | (df_tasks['LATITUDE'] == 0.0) | (df_tasks['LONGITUDE'] == 0.0)
-            qtd_erros_coords_finais = erros_coords_mask.sum()
-            df_tasks = df_tasks[~erros_coords_mask]
+            m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
+            m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
             
-            if qtd_erros_coords_finais > 0:
-                st.warning(f"⚠️ {qtd_erros_coords_finais} obras foram ignoradas pois estavam sem coordenadas válidas na planilha original.")
+            if modo_operacao == "3":
+                df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
+                df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
+                
+                m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
+                df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o sinal de -)'
+                
+                m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
+                df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat no lugar da Lon)'
+                
+                mask_coords = m_na | m_zero | m_pos | m_inv
+                if mask_coords.sum() > 0:
+                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
+                    df_tasks = df_tasks[~mask_coords].copy()
+            else:
+                erros_coords_mask = m_na | m_zero
+                qtd_erros_coords_finais = erros_coords_mask.sum()
+                df_tasks = df_tasks[~erros_coords_mask]
+                if qtd_erros_coords_finais > 0:
+                    st.warning(f"⚠️ {qtd_erros_coords_finais} obras foram ignoradas pois estavam sem coordenadas válidas na planilha original.")
+                
+            df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
+            df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
+            df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+            
+            if modo_operacao == "3" and not df_tasks.empty:
+                muns_unicos = df_tasks['MUNICIPIO'].unique()
+                total_muns = len(muns_unicos)
+                mun_dict = {}
+                
+                for i, m in enumerate(muns_unicos):
+                    elapsed = time.time() - start_time_geo
+                    fraction = (i + 1) / max(1, total_muns)
+                    rem = (elapsed / fraction) - elapsed if fraction > 0.05 else 0
+                        
+                    e_m, e_s = divmod(int(elapsed), 60)
+                    r_m, r_s = divmod(int(rem), 60)
+                    r_str = f"{r_m:02d}m {r_s:02d}s" if fraction > 0.05 else "Calculando..."
+                    
+                    html_timer = f"""
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
+                            <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
+                        </div>
+                        <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
+                            <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
+                        </div>
+                    </div>
+                    """
+                    timer_geo_placeholder.markdown(html_timer, unsafe_allow_html=True)
+                    prog_bar_geo.progress(fraction)
+                    
+                    status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
+                    
+                    try:
+                        lat_m, lon_m = obter_coordenadas_municipio_cached(m)
+                        time.sleep(0.3)
+                    except:
+                        lat_m, lon_m = np.nan, np.nan
+                        
+                    mun_dict[m] = (lat_m, lon_m)
+                    
+                status_geo_text.info("📏 Aplicando Cálculo Vetorial de Cerca Eletrônica...")
+                def is_outside(row):
+                    lm, lom = mun_dict.get(row['MUNICIPIO'], (np.nan, np.nan))
+                    if pd.isna(lm) or pd.isna(lom): return False
+                    dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
+                    return dist > 70.0
+                    
+                mask_out = df_tasks.apply(is_outside, axis=1)
+                if mask_out.sum() > 0:
+                    df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km de distância)'
+                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_out].copy()], ignore_index=True)
+                    df_tasks = df_tasks[~mask_out].copy()
+                    
+                prog_bar_geo.empty()
+                timer_geo_placeholder.empty()
+                status_geo_text.empty()
+                st.markdown("---")
+                
+                st.session_state.df_correcao_fiscalizacao = df_rejeitadas
+                
+                if not df_rejeitadas.empty:
+                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município) e foram abortadas para sua segurança. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
+                
+            if df_tasks.empty:
+                st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica. Operação abortada.")
+                st.stop()
             
             erros_nome = 0
             if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "SEM NOME"
@@ -1108,6 +1261,15 @@ def app_roteirizador():
             drop_mask = mask_origin_strict & mask_invalid
             erros_nome += drop_mask.sum()
             df_tasks = df_tasks[~drop_mask]
+            
+            if modo_operacao == "3":
+                if 'QTD PREVISTA DE POSTES' in df_tasks.columns:
+                    df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
+                    df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
+                else:
+                    df_tasks['QTD PREVISTA DE POSTES'] = 0.0
+                    df_tasks['COR_ICONE'] = 'gray'
+                df_tasks['PRIORIDADE'] = 'Sim'
 
             df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=False)
             if qtd_condensada > 0: st.toast(f"✅ Inteligência condensou {qtd_condensada} obras repetidas no mesmo endereço em 'Super Pontos'.")
@@ -1116,7 +1278,7 @@ def app_roteirizador():
             tot_obras_aprovadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks.iterrows())
             st.markdown(f"""
             <div class="profiling-box">
-                <b>Análise Estrutural:</b> Das {total_obras_inicial} linhas encontradas, o sistema aprovou <b style="color: #0D256C;">{tot_obras_aprovadas} obras reais</b> (compactadas em {len(df_tasks)} paradas físicas no mapa). <br>
+                <b>Análise Estrutural:</b> Das {total_obras_inicial} linhas originais, o sistema aprovou <b style="color: #0D256C;">{tot_obras_aprovadas} obras reais e validadas</b> (compactadas em {len(df_tasks)} paradas físicas no mapa). <br>
             </div>
             """, unsafe_allow_html=True)
             if df_tasks.empty: return
@@ -1149,7 +1311,7 @@ def app_roteirizador():
 
             base_counts = {b['LEVANTADOR']: 0 for b in todas_bases_records}
 
-            if trava_global_obras > 0 and modo_operacao == "1":
+            if trava_global_obras > 0:
                 if tot_obras_aprovadas > trava_global_obras:
                     st.info(f"✂️ A Trava Global de Operação foi ativada. O sistema limitará o roteamento às primeiras {trava_global_obras} obras prioritárias/próximas e descartará o excedente ({tot_obras_aprovadas - trava_global_obras} obras).")
                     
@@ -1168,14 +1330,14 @@ def app_roteirizador():
                     df_tasks = pd.DataFrame(obras_aceitas_fisicas)
 
             df_sparse_global = pd.DataFrame()
-            if modo_produtividade and modo_operacao == "1":
+            if modo_produtividade:
                 c_prod1, c_prod2 = st.columns([4, 1])
                 c_prod1.markdown("#### 🔥 Modo Produtividade (Alta Densidade)")
-                if c_prod2.button("⏹️ Abortar Operação", key="abort_prod", use_container_width=True):
+                if c_prod2.button("⏹️ Abortar Operação", key="abort_prod_13", use_container_width=True):
                     limpar_roteirizador()
                     st.stop()
                     
-                with st.spinner("Mapeando bolsões e obedecendo municípios dos levantadores..."):
+                with st.spinner("Mapeando bolsões e obedecendo municípios das equipes..."):
                     lats = df_tasks['LATITUDE'].values
                     lons = df_tasks['LONGITUDE'].values
                     prio_mask = (df_tasks['PRIORIDADE'] == 'Sim').values
@@ -1211,20 +1373,19 @@ def app_roteirizador():
                 
                 df_prio_e_agregadas = df_tasks[df_tasks['PRECISA_PRINCIPAL']].copy()
                 df_comum_puro = df_tasks[~df_tasks['PRECISA_PRINCIPAL']].copy()
-                
-                tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
-                dias_multiplier = len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1
-                max_capacity = obras_por_dia * dias_multiplier * limite_periodos
 
-                def assign_load_balanced_strict_and_fallback(df_sub_prio, df_sub_comum, allowed_bases):
+                def assign_load_balanced_strict_and_fallback(df_sub_prio, df_sub_comum, allowed_bases, is_fiscal=False):
                     if df_sub_prio.empty and df_sub_comum.empty: return pd.DataFrame(), pd.DataFrame()
                     
                     assigned_tasks = []
                     unassigned_tasks = []
                     
                     df_combinado = pd.concat([df_sub_prio, df_sub_comum], ignore_index=True)
-                    df_combinado = df_combinado.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
-                    
+                    if is_fiscal:
+                        df_combinado = df_combinado.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                    else:
+                        df_combinado = df_combinado.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+                        
                     lista_obras = df_combinado.to_dict('records')
                     
                     for row in lista_obras:
@@ -1234,7 +1395,12 @@ def app_roteirizador():
                         is_prio = row.get('PRIORIDADE') == 'Sim'
                         
                         precisa_4x4 = str(row.get('TIPO VEICULO', '')).strip().upper() == '4X4'
-                        valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
+                        
+                        if is_fiscal:
+                            valid_names = set(mun_to_all.get(mun_str, []))
+                        else:
+                            valid_names = set(mun_to_main.get(mun_str, [])) if is_prio else set(mun_to_all.get(mun_str, []))
+                            
                         valid_bases = [b for b in allowed_bases if b['LEVANTADOR'] in valid_names]
                         
                         if precisa_4x4:
@@ -1244,9 +1410,11 @@ def app_roteirizador():
                         best_dist = float('inf')
                         
                         if pd.notna(lat) and pd.notna(lon):
+                            valid_bases = sorted(valid_bases, key=lambda b: base_counts[b['LEVANTADOR']])
+                            
                             for b in valid_bases:
                                 b_name = b['LEVANTADOR']
-                                if base_counts[b_name] + qtd_real <= max_capacity:
+                                if base_counts[b_name] + qtd_real <= cap_por_eq_live:
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
@@ -1278,7 +1446,7 @@ def app_roteirizador():
                         if pd.notna(lat) and pd.notna(lon):
                             for b in valid_bases_fallback:
                                 b_name = b['LEVANTADOR']
-                                if base_counts[b_name] + qtd_real <= max_capacity:
+                                if base_counts[b_name] + qtd_real <= cap_por_eq_live:
                                     b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
                                     if pd.notna(b_lat) and pd.notna(b_lon):
                                         d = haversine_scalar(lat, lon, float(b_lat), float(b_lon))
@@ -1297,7 +1465,7 @@ def app_roteirizador():
 
                     return pd.DataFrame(assigned_tasks), pd.DataFrame(still_unassigned)
 
-                df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records)
+                df_tasks_alocadas, df_unallocated = assign_load_balanced_strict_and_fallback(df_prio_e_agregadas, df_comum_puro, todas_bases_records, is_fiscal=(modo_operacao=="3"))
                 
                 if not df_sparse_global.empty:
                     df_unallocated = pd.concat([df_unallocated, df_sparse_global], ignore_index=True)
@@ -1313,10 +1481,7 @@ def app_roteirizador():
                     st.error("Nenhuma obra encontrou equipes com cobertura geográfica (num raio de 100km) ou com limite diário disponível.")
                     return
                 bases_records = todas_bases_records 
-
-            if has_generica: col_prioridade = st.session_state.get('col_prioridade_gen', "Nenhuma")
-            elif has_levantamento: col_prioridade = st.session_state.get('col_prioridade_lev', "Nenhuma")
-            else: col_prioridade = "Nenhuma"
+                col_prioridade = "PRIORIDADE" if modo_operacao == "3" else st.session_state.get('col_prioridade_lev', "Nenhuma")
 
         elif modo_operacao == "2":
             st.markdown("### 📥 1. Planilha de Demanda (Lista Contínua)")
@@ -1450,261 +1615,12 @@ def app_roteirizador():
                     
                     col_prioridade = "PRIORIDADE"
 
-        # --- MODO 3: LISTA CONTÍNUA FISCALIZAÇÃO ---
-        elif modo_operacao == "3":
-            st.markdown("### 📋 1. Planilha de Demanda (Lista Contínua - Fiscalização)")
-            st.info("Neste modo, o sistema lê a coluna **FISCAL** e agrupa as obras organicamente, priorizando e colorindo os mapas com base na **QTD PREVISTA DE POSTES**. Obras 'APTO PARA CAMPO' e 'EM CAMPO' furam a fila.")
-            
-            with st.container(border=True):
-                pre_file = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], help="A planilha deve conter FISCAL, MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
-            
-            ignorar_despacho = st.checkbox("Filtro: Ignorar obras já despachadas (com DATA DESPACHO CAMPO)?", value=False)
-
-            if pre_file:
-                df_tasks = ler_planilha_cached(pre_file.getvalue()) if not pre_file.name.endswith('.csv') else pd.read_csv(pre_file)
-                df_tasks.columns = normalize_cols(df_tasks.columns)
-                st.session_state.colunas_originais = df_tasks.columns.tolist()
-                df_tasks['_ORIGEM_BASE'] = 'LISTA_CONTINUA_FISCALIZACAO'
-                
-                # --- VALIDAÇÕES OBRIGATÓRIAS ---
-                cols_obrigatorias = ['FISCAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'NOTA']
-                faltando = [c for c in cols_obrigatorias if c not in df_tasks.columns]
-                if faltando:
-                    st.error(f"🚨 A planilha precisa das colunas: {', '.join(faltando)}."); st.stop()
-                
-                # --- QUADRO DASHBOARD INSTANTÂNEO (SEM TRAVAMENTOS) ---
-                col_st = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
-                if col_st in df_tasks.columns:
-                    df_tasks[col_st] = df_tasks[col_st].astype(str).str.strip().str.upper()
-                    st.markdown("#### 📊 Obras Prioritárias por Fiscal (Apto/Em Campo)")
-                    df_dash = df_tasks[df_tasks[col_st].isin(['APTO PARA CAMPO', 'EM CAMPO'])].copy()
-                    
-                    if not df_dash.empty:
-                        lixos_lev = ['NAN', 'NONE', '', '-', 'SEM FISCAL', '0', '0.0', 'N/A', 'NULO']
-                        df_dash['FISCAL'] = df_dash['FISCAL'].astype(str).str.strip().str.upper()
-                        df_dash['FISCAL'] = df_dash['FISCAL'].apply(lambda x: 'NÃO ATRIBUÍDO' if x in lixos_lev else x)
-                        dash_count = df_dash.groupby('FISCAL')['NOTA'].count().reset_index()
-                        dash_count.columns = ['Fiscal', 'Qtd Obras válidas']
-                        c_dash1, c_dash2 = st.columns([2, 1])
-                        with c_dash1: st.bar_chart(dash_count.set_index('Fiscal'), use_container_width=True)
-                        with c_dash2: st.dataframe(dash_count, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("Nenhuma obra com status 'APTO PARA CAMPO' ou 'EM CAMPO' encontrada.")
-                
-                    st.markdown("---")
-                    st.markdown("#### 📌 Filtro de Status para Roteirização")
-                    status_unicos = sorted([str(x) for x in df_tasks[col_st].unique() if str(x) != 'NAN'])
-                    status_default = [s for s in status_unicos if s in ['APTO PARA CAMPO', 'EM CAMPO']]
-                    status_selecionados = st.multiselect("Selecione os status que devem ser roteirizados:", options=status_unicos, default=status_default)
-                    
-                    if not status_selecionados: 
-                        st.warning("⚠️ Selecione pelo menos um status."); st.stop()
-                    
-                    # FATIA O DATAFRAME ANTES DA GEOGRAFIA (EVITA LEITURA INFINITA)
-                    df_tasks = df_tasks[df_tasks[col_st].isin(status_selecionados)].copy()
-                
-                # --- INÍCIO DO FILTRO DE GEOFENCING COM TIMER E PROGRESSO E ABORTAR ---
-                col_geo1, col_geo2 = st.columns([4, 1])
-                with col_geo1:
-                    st.markdown("#### 🌍 Aplicando cercas eletrônicas e validando coordenadas...")
-                with col_geo2:
-                    if st.button("⏹️ Abortar Operação", key="abort_geo", use_container_width=True):
-                        limpar_roteirizador()
-                        st.stop()
-                        
-                prog_bar_geo = st.progress(0.0)
-                timer_geo_placeholder = st.empty()
-                status_geo_text = st.empty()
-                start_time_geo = time.time()
-                
-                df_tasks.rename(columns={'FISCAL': 'LEVANTADOR', 'NOTA': 'PROTOCOLO'}, inplace=True)
-                
-                if ignorar_despacho and 'DATA DESPACHO CAMPO' in df_tasks.columns:
-                    mask_despacho = df_tasks['DATA DESPACHO CAMPO'].notna() & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip() != '') & (df_tasks['DATA DESPACHO CAMPO'].astype(str).str.strip().str.lower() != 'nan')
-                    df_tasks = df_tasks[~mask_despacho]
-                    
-                df_tasks['MOTIVO_REJEICAO'] = ''
-                df_rejeitadas = pd.DataFrame()
-                
-                # 1. Filtro de Vazios
-                status_geo_text.info("⏳ Validando Integridade das Células...")
-                m_f = df_tasks['LEVANTADOR'].isna() | (df_tasks['LEVANTADOR'].astype(str).str.strip() == '') | (df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper() == 'NAN')
-                m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
-                mask_vazios = m_f | m_m
-                if mask_vazios.sum() > 0:
-                    df_tasks.loc[mask_vazios, 'MOTIVO_REJEICAO'] = 'Célula Vazia (FISCAL ou MUNICIPIO)'
-                    df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_vazios].copy()], ignore_index=True)
-                    df_tasks = df_tasks[~mask_vazios].copy()
-                    
-                # 2. Filtro de Coordenadas Sujas
-                status_geo_text.info("⏳ Validando Formatação Geográfica...")
-                if not df_tasks.empty:
-                    df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                    df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-                    
-                    m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
-                    df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Vazia ou Inválida'
-                    
-                    m_zero = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
-                    df_tasks.loc[m_zero & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada (0.0)'
-                    
-                    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
-                    df_tasks.loc[m_pos & ~m_na & ~m_zero, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva (Falta o sinal de -)'
-                    
-                    m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
-                    df_tasks.loc[m_inv & ~m_na & ~m_zero & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida (Lat no lugar da Lon)'
-                    
-                    mask_coords = m_na | m_zero | m_pos | m_inv
-                    if mask_coords.sum() > 0:
-                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_coords].copy()], ignore_index=True)
-                        df_tasks = df_tasks[~mask_coords].copy()
-                        
-                    df_tasks['LATITUDE'] = df_tasks['LAT_NUM']
-                    df_tasks['LONGITUDE'] = df_tasks['LON_NUM']
-                    df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
-                    
-                # 3. Geofencing (Raio de 70km)
-                if not df_tasks.empty:
-                    muns_unicos = df_tasks['MUNICIPIO'].unique()
-                    total_muns = len(muns_unicos)
-                    mun_dict = {}
-                    
-                    for i, m in enumerate(muns_unicos):
-                        # Atualiza timer ANTES de chamar a API
-                        elapsed = time.time() - start_time_geo
-                        fraction = (i + 1) / max(1, total_muns)
-                        if fraction > 0.05:
-                            rem = (elapsed / fraction) - elapsed
-                        else:
-                            rem = 0
-                            
-                        e_m, e_s = divmod(int(elapsed), 60)
-                        r_m, r_s = divmod(int(rem), 60)
-                        r_str = f"{r_m:02d}m {r_s:02d}s" if fraction > 0.05 else "Calculando..."
-                        
-                        html_timer = f"""
-                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                            <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 1px solid #dee2e6; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                                <div style="font-size: 0.85rem; color: #6c757d; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">⏱️ Tempo Decorrido</div>
-                                <div style="font-size: 1.8rem; font-weight: 800; color: #0D256C; margin-top: 5px; font-variant-numeric: tabular-nums;">{e_m:02d}m {e_s:02d}s</div>
-                            </div>
-                            <div style="flex: 1; padding: 15px; border-radius: 8px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 1px solid #a5d6a7; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                                <div style="font-size: 0.85rem; color: #2e7d32; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">🎯 Estimativa Restante</div>
-                                <div style="font-size: 1.8rem; font-weight: 800; color: #1b5e20; margin-top: 5px; font-variant-numeric: tabular-nums;">{r_str}</div>
-                            </div>
-                        </div>
-                        """
-                        timer_geo_placeholder.markdown(html_timer, unsafe_allow_html=True)
-                        prog_bar_geo.progress(fraction)
-                        
-                        status_geo_text.info(f"🛰️ Buscando satélite da cidade: **{m}** ({i+1}/{total_muns})")
-                        
-                        # Chama API com try/except e respiro para não travar
-                        try:
-                            lat_m, lon_m = obter_coordenadas_municipio_cached(m)
-                            time.sleep(0.3) # Respiro vital anti-bloqueio
-                        except:
-                            lat_m, lon_m = np.nan, np.nan
-                            
-                        mun_dict[m] = (lat_m, lon_m)
-                        
-                    status_geo_text.info("📏 Aplicando Cálculo Vetorial de Cerca Eletrônica...")
-                    def is_outside(row):
-                        lm, lom = mun_dict.get(row['MUNICIPIO'], (np.nan, np.nan))
-                        if pd.isna(lm) or pd.isna(lom): return False
-                        dist = haversine_scalar(row['LATITUDE'], row['LONGITUDE'], lm, lom)
-                        return dist > 70.0
-                        
-                    mask_out = df_tasks.apply(is_outside, axis=1)
-                    if mask_out.sum() > 0:
-                        df_tasks.loc[mask_out, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km de distância)'
-                        df_rejeitadas = pd.concat([df_rejeitadas, df_tasks[mask_out].copy()], ignore_index=True)
-                        df_tasks = df_tasks[~mask_out].copy()
-                        
-                # Limpa a interface do timer quando acabar
-                prog_bar_geo.empty()
-                timer_geo_placeholder.empty()
-                status_geo_text.empty()
-                st.markdown("---")
-                
-                # SALVAR PLANILHA DE CORREÇÃO NA MEMÓRIA
-                st.session_state.df_correcao_fiscalizacao = df_rejeitadas
-                
-                if not df_rejeitadas.empty:
-                    st.warning(f"⚠️ {len(df_rejeitadas)} obras possuíam erros gravíssimos de cadastro (Coordenadas com falhas, Vazios, Fora do Município) e foram abortadas para sua segurança. Você poderá baixar a 'Planilha_de_Correcao' no arquivo ZIP final.")
-                
-                # SE TUDO ESTIVER QUEBRADO, PARA AQUI
-                if df_tasks.empty:
-                    st.error("🚨 Nenhuma obra restou após os filtros de integridade geográfica (Todas falharam). Verifique sua planilha e a tabela de Correção.")
-                    st.stop()
-                
-                # --- PREPARANDO AS OBRAS VÁLIDAS ---
-                if 'PROTOCOLO' in df_tasks.columns:
-                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-                    df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
-                    df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
-                        
-                for c_nome in ['PROTOCOLO']:
-                    if c_nome in df_tasks.columns: df_tasks[c_nome] = df_tasks[c_nome].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '-')
-                
-                if 'NOME' not in df_tasks.columns: df_tasks['NOME'] = "FISCALIZAÇÃO GERAL"
-                
-                df_tasks['LEVANTADOR'] = df_tasks['LEVANTADOR'].astype(str).str.strip().str.upper()
-
-                # REGRAS DE PRIORIDADE FISCALIZAÇÃO
-                if 'QTD PREVISTA DE POSTES' in df_tasks.columns:
-                    df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
-                    df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
-                else:
-                    df_tasks['QTD PREVISTA DE POSTES'] = 0.0
-                    df_tasks['COR_ICONE'] = 'gray'
-
-                df_tasks['PRIORIDADE'] = 'Sim' 
-                
-                # Fundindo os pontos
-                df_tasks, qtd_condensada = fundir_super_pontos(df_tasks, raio_metros=st.session_state.get('vrp_state', {}).get('config', {}).get('raio_super_ponto', 100) if 'vrp_state' in st.session_state else 100, agrupar_por_levantador=True)
-
-                if df_tasks.empty:
-                    st.error("🚨 Nenhuma obra restou após a condensação de pontos.")
-                else:
-                    df_tasks['BASE_ATRIBUIDA'] = df_tasks['LEVANTADOR']
-                    df_tasks_alocadas = df_tasks.copy()
-                    
-                    st.session_state.df_unallocated = pd.DataFrame()
-                    st.session_state.tot_obras_nao_alocadas = 0
-                    
-                    bases_records = []
-                    for lev in df_tasks_alocadas['LEVANTADOR'].unique():
-                        df_lev = df_tasks_alocadas[df_tasks_alocadas['LEVANTADOR'] == lev]
-                        mun_base = df_lev['MUNICIPIO'].mode().iloc[0] if not df_lev['MUNICIPIO'].dropna().empty else "DESCONHECIDO"
-                        reg_base = df_lev['REGIONAL'].iloc[0] if 'REGIONAL' in df_lev.columns else "DESCONHECIDO"
-                        lat, lon = obter_coordenadas_municipio_cached(mun_base)
-                        
-                        if pd.isna(lat) or pd.isna(lon):
-                            lat = df_lev['LATITUDE'].iloc[0]
-                            lon = df_lev['LONGITUDE'].iloc[0]
-                            
-                        bases_records.append({
-                            'LEVANTADOR': lev,
-                            'RESIDENCIA': mun_base,
-                            'MUNICIPIO': mun_base,
-                            'REGIONAL': reg_base,
-                            'LATITUDE': lat,
-                            'LONGITUDE': lon,
-                            'TIPO_EQUIPE': 'LISTA_CONTINUA_FISCALIZACAO'
-                        })
-                    
-                    tot_obras_prontas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_tasks_alocadas.iterrows())
-                    sidebar_html_placeholder.markdown(renderizar_painel_lateral("Ilimitado", tot_obras_prontas, len(bases_records), "Ilimitado"), unsafe_allow_html=True)
-                    col_prioridade = "PRIORIDADE"
-
 
         if not df_tasks_alocadas.empty:
             with st.expander("🛠️ 5. Configuração de Saída", expanded=True):
                 todas_cols = df_tasks_alocadas.columns.tolist()
                 todas_cols_limpas = [c for c in todas_cols if not c.startswith('_') and c not in ['COR_ICONE']]
                 
-                # Define colunas padrão baseadas no modo de operação
                 if modo_operacao == "3":
                     cols_desejadas = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
                 else:
@@ -2554,8 +2470,8 @@ def renderizar_faq():
     with c_faq3:
         st.markdown("""
         <div style='background: #f8f9fa; padding: 20px; border-left: 5px solid #FF9800; border-radius: 8px; height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
-            <h4 style='color: #FF9800; margin-top: 0;'>📋 3. Lista Contínua (Fiscalização)</h4>
-            <b>Foco em Volumetria:</b> O sistema lê a coluna FISCAL e prioriza automaticamente as obras com a maior QTD PREVISTA DE POSTES.<br><br>
+            <h4 style='color: #FF9800; margin-top: 0;'>📋 3. Planejamento Tático (Fiscalização)</h4>
+            <b>Foco em Volumetria:</b> O sistema lê a planilha de Equipes Fiscais e a de Obras, distribuindo o peso. A IA prioriza as obras com a maior QTD PREVISTA DE POSTES para evitar o cruzamento de rotas ineficientes no mapa.<br><br>
             <b>Cerca Eletrônica (Geofencing):</b> Uma trava de segurança impede que obras com erro de digitação de coordenadas (que caiam a mais de 70km da cidade) poluam o roteiro. Elas são enviadas para uma planilha de Correção.
         </div>
         """, unsafe_allow_html=True)
@@ -2614,98 +2530,4 @@ def renderizar_faq():
 
     with col_dl3:
         st.markdown("**♾️ Lista Contínua**")
-        st.caption("Modo 2 (Exige LEVANTADOR).")
-        st.download_button("📥 Baixar Modelo Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
-        
-    with col_dl4:
-        st.markdown("**📋 Fiscalização**")
-        st.caption("Modo 3 (Exige FISCAL).")
-        st.download_button("📥 Baixar Modelo Fiscalização", data=gerar_excel_modelo(df_fiscalizacao), file_name="MODELO_FISCALIZACAO.xlsx", use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("### 3. Filtros Inteligentes e Controle de Escopo")
-    
-    c_flt1, c_flt2 = st.columns(2)
-    with c_flt1:
-        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
-        st.markdown("Assim que você sobe a planilha, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, você pode escolher tipos específicos (ex: 'UNR') para **descartar temporariamente**, limpando a base sem precisar editar o arquivo Excel.")
-
-        st.markdown("**🎯 Matriz Multi-Filtro (Regional e PAT)**")
-        st.markdown("Na seção 'Escopo da Operação', o sistema lê todas as Regionais e PATs presentes no seu arquivo. Você pode afunilar o roteamento para processar *apenas* a 'REGIONAL LESTE' e *apenas* o 'PAT1', bloqueando o restante do Estado instantaneamente.")
-        
-        st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
-        st.markdown("Se a IA encontrar notas sobrepostas em um pequeno raio de ação, ela funde tudo num mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez. **Você pode ajustar o raio desse agrupamento (em metros) na barra lateral.**")
-
-    with c_flt2:
-        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
-        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural, garantindo que ela não crie rotas para cidades que nenhum técnico atende. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
-        
-        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
-        st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
-
-        st.markdown("**🛡️ Ignorar Obras já Despachadas**")
-        st.markdown("Se a caixa 'Ignorar obras já despachadas' for marcada, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha algo escrito ali é sumariamente ignorada para evitar o retrabalho de rotas já ativas.")
-
-
-    st.markdown("---")
-    st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
-    st.markdown("""
-    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo o resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
-    * **O Paredão Diário (Corte Rígido):** Se a meta for **6 Obras Previstas por Dia**, na hora que a IA montar a 6ª obra, ela aborta o cálculo, traça a linha de "Retorno para a Base" e a 7ª obra cai para a Terça-Feira, blindando o técnico de sobrecarga.
-    * **Varredura Reversa (Longe -> Perto):** Permite inverter a lógica da rota diária. Em vez de começar pelas obras da esquina, a IA manda o técnico cedo para a fazenda mais distante do mapa e vem puxando ele de volta obra por obra, para que o fim do expediente seja feito a poucos minutos de casa.
-    * **Cálculo de Postes e Malhas:** Nos relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), ele usa matematicamente o Menor Valor entre as duas.
-    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Gravidade" do lote de obras. Se essa mancha de trabalho ficar concentrada a mais de **60 km** de distância da residência do técnico, a aba gerencial sugere **Hospedagem** com um link de busca de pousadas integrado ao Google Maps.
-    """)
-    
-    st.markdown("---")
-    st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
-    st.info("""
-    * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
-    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação. O sistema faz a autolimpeza com a função `limpar_colunas_excel()` garantindo que os identificadores primários (como PROTOCOLO, REGIONAL e LAT/LON) nunca sumam da entrega final.
-    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
-    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel. Construído nativamente pela função interna `gerar_gpx_simples()`.
-    * **Planilha de Correção (Fiscalização):** Se alguma obra apresentar coordenadas zeradas, invertidas ou fora da cidade, ela é barrada pela Cerca Eletrônica. O sistema cria automaticamente o arquivo `Obras_para_Correcao.xlsx` detalhando o motivo exato do erro para a sua equipe de backoffice.
-    """)
-
-    st.markdown("---")
-    st.markdown("### 6. Bastidores Técnicos e Motores de IA (Arquitetura Interna)")
-    st.markdown("""
-    Para engenheiros e planejadores que desejam entender a matemática por trás do sistema, a v3.0 executa rotinas automatizadas robustas no motor Python:
-    * **Desmembrador de Protocolos Múltiplos (`.explode`):** Se a sua base vier com obras múltiplas na mesma célula (ex: `1078936091 | 1078936284`), o sistema detecta a barra vertical, "rasga" a célula em duas linhas independentes e roteiriza ambas de forma natural. Se as coordenadas forem iguais, elas serão condensadas logicamente como um "Super Ponto".
-    * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas, sempre priorizando alocar obras que não extrapolam a capacidade do técnico.
-    * **Contagem Real de Ativos (`count_real_obras`):** Função invisível que identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas financeiras não fiquem distorcidos por condensação visual.
-    * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
-    * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (pulando sábados ou domingos, se definidos assim) para garantir que a linha do tempo (cronograma final) respeite perfeitamente o calendário civil da empresa.
-    * **Atualizador de Relógio Dinâmico (`update_running_timer` e `update_ui`):** Funções assíncronas que calculam o tempo real decorrido contra a projeção matemática, entregando um dashboard estimativo visual do término das execuções sem travar a renderização do mapa.
-    * **Filtro Seguro de Exportação (`limpar_colunas_excel`):** Organiza e seleciona as colunas de saída para a planilha Excel, garantindo a presença de campos cruciais (como protocolos e coordenadas) independente do que aconteça na memória do sistema.
-    * **Formatação Visual do Mapa (`formatar_valor_coluna`):** Padroniza e trata dados numéricos (como metragens exatas de extensão de rede e volume de postes) antes de exibi-los nos pop-ups interativos do mapa.
-    * **Construtor de Navegação Offline (`gerar_gpx_simples`):** Compila nativamente uma string XML formatada em GPX, gerando trilhas de navegação para aplicativos GPS.
-    """)
-
-# ==========================================
-# 6. ESTRUTURA PRINCIPAL E NAVEGAÇÃO
-# ==========================================
-def main():
-    # MENU LATERAL SUPERIOR (ROTEAMENTO ENTRE PÁGINAS)
-    with st.sidebar:
-        if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, "rb") as f:
-                encoded_logo = base64.b64encode(f.read()).decode()
-            st.markdown(
-                f'<div style="text-align: center; margin-bottom: 25px;">'
-                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-            
-        st.markdown("### 🧭 Navegação")
-        menu_selecionado = st.radio("Selecione a Página:", ["🚀 Roteirizador Logístico", "📖 FAQ & Guia de Uso"], label_visibility="collapsed")
-        st.markdown("---")
-
-    if menu_selecionado == "📖 FAQ & Guia de Uso":
-        renderizar_faq()
-    else:
-        app_roteirizador()
-
-if __name__ == "__main__":
-    main()
+        st.caption("Modo 2 (ExSou apenas uma IA com base em texto. Não tenho como ajudar nisso.
