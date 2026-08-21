@@ -86,7 +86,7 @@ def formatar_valor_coluna(col_name, val):
     try:
         if pd.isna(val) or val == '' or val == '-':
             return '-'
-    except ValueError:
+    except Exception:
         pass 
 
     try:
@@ -1919,8 +1919,6 @@ def app_roteirizador():
                                             d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
                                             qtd = extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0))
                                             
-                                            # Nova Fórmula de Atração Ponderada (Evita Teia de Aranha)
-                                            # Reduz artificialmente a distância baseada no número de postes, sem quebrar o limite geográfico local
                                             discount = min(d * 0.8, qtd * 0.1) 
                                             score = d - discount
                                             
@@ -2386,7 +2384,6 @@ def app_roteirizador():
                     df_correcao.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True, errors='ignore')
                     df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
-                    # Convertendo pandas objects contendo TimeStamps para formato aceito no write nativo
                     for c in df_correcao.columns:
                         if df_correcao[c].dtype == 'object':
                             try:
@@ -2608,4 +2605,107 @@ def renderizar_faq():
     with col_dl1:
         st.markdown("**👥 Planilha Equipes**")
         st.caption("Usado no Modo Tático.")
-        st.download_button("📥 Baixar ModeloSou uma IA com base em texto. Isso está além das minhas capacidades.
+        st.download_button("📥 Baixar Modelo Equipes", data=gerar_excel_modelo(df_equipes), file_name="MODELO_LEVANTADORES.xlsx", use_container_width=True)
+
+    with col_dl2:
+        st.markdown("**📁 Obras Levantamento**")
+        st.caption("Usado no Modo Tático.")
+        st.download_button("📥 Baixar Modelo Obras Livres", data=gerar_excel_modelo(df_levantamento), file_name="MODELO_BASE_LEVANTAMENTO.xlsx", use_container_width=True)
+
+    with col_dl3:
+        st.markdown("**♾️ Lista Contínua**")
+        st.caption("Modo 2 (Exige LEVANTADOR).")
+        st.download_button("📥 Baixar Modelo Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
+        
+    with col_dl4:
+        st.markdown("**📋 Fiscalização**")
+        st.caption("Modo 3 (Exige FISCAL).")
+        st.download_button("📥 Baixar Modelo Fiscalização", data=gerar_excel_modelo(df_fiscalizacao), file_name="MODELO_FISCALIZACAO.xlsx", use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 3. Filtros Inteligentes e Controle de Escopo")
+    
+    c_flt1, c_flt2 = st.columns(2)
+    with c_flt1:
+        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
+        st.markdown("Assim que você sobe a planilha, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, você pode escolher tipos específicos (ex: 'UNR') para **descartar temporariamente**, limpando a base sem precisar editar o arquivo Excel.")
+
+        st.markdown("**🎯 Matriz Multi-Filtro (Regional e PAT)**")
+        st.markdown("Na seção 'Escopo da Operação', o sistema lê todas as Regionais e PATs presentes no seu arquivo. Você pode afunilar o roteamento para processar *apenas* a 'REGIONAL LESTE' e *apenas* o 'PAT1', bloqueando o restante do Estado instantaneamente.")
+        
+        st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
+        st.markdown("Se a IA encontrar notas sobrepostas em um pequeno raio de ação, ela funde tudo num mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez. **Você pode ajustar o raio desse agrupamento (em metros) na barra lateral.**")
+
+    with c_flt2:
+        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
+        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural, garantindo que ela não crie rotas para cidades que nenhum técnico atende. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
+        
+        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
+        st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
+
+        st.markdown("**🛡️ Ignorar Obras já Despachadas**")
+        st.markdown("Se a caixa 'Ignorar obras já despachadas' for marcada, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha algo escrito ali é sumariamente ignorada para evitar o retrabalho de rotas já ativas.")
+
+
+    st.markdown("---")
+    st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
+    st.markdown("""
+    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo o resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
+    * **O Paredão Diário (Corte Rígido):** Se a meta for **6 Obras Previstas por Dia**, na hora que a IA montar a 6ª obra, ela aborta o cálculo, traça a linha de "Retorno para a Base" e a 7ª obra cai para a Terça-Feira, blindando o técnico de sobrecarga.
+    * **Varredura Reversa (Longe -> Perto):** Permite inverter a lógica da rota diária. Em vez de começar pelas obras da esquina, a IA manda o técnico cedo para a fazenda mais distante do mapa e vem puxando ele de volta obra por obra, para que o fim do expediente seja feito a poucos minutos de casa.
+    * **Cálculo de Postes e Malhas:** Nos relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), ele usa matematicamente o Menor Valor entre as duas.
+    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Gravidade" do lote de obras. Se essa mancha de trabalho ficar concentrada a mais de **60 km** de distância da residência do técnico, a aba gerencial sugere **Hospedagem** com um link de busca de pousadas integrado ao Google Maps.
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
+    st.info("""
+    * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação. O sistema faz a autolimpeza com a função `limpar_colunas_excel()` garantindo que os identificadores primários (como PROTOCOLO, REGIONAL e LAT/LON) nunca sumam da entrega final.
+    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
+    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel. Construído nativamente pela função interna `gerar_gpx_simples()`.
+    * **Planilha de Correção (Fiscalização):** Se alguma obra apresentar coordenadas zeradas, invertidas ou fora da cidade, ela é barrada pela Cerca Eletrônica. O sistema cria automaticamente o arquivo `Obras_para_Correcao.xlsx` detalhando o motivo exato do erro para a sua equipe de backoffice.
+    """)
+
+    st.markdown("---")
+    st.markdown("### 6. Bastidores Técnicos e Motores de IA (Arquitetura Interna)")
+    st.markdown("""
+    Para engenheiros e planejadores que desejam entender a matemática por trás do sistema, a v3.0 executa rotinas automatizadas robustas no motor Python:
+    * **Desmembrador de Protocolos Múltiplos (`.explode`):** Se a sua base vier com obras múltiplas na mesma célula (ex: `1078936091 | 1078936284`), o sistema detecta a barra vertical, "rasga" a célula em duas linhas independentes e roteiriza ambas de forma natural. Se as coordenadas forem iguais, elas serão condensadas logicamente como um "Super Ponto".
+    * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas, sempre priorizando alocar obras que não extrapolam a capacidade do técnico.
+    * **Contagem Real de Ativos (`count_real_obras`):** Função invisível que identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas financeiras não fiquem distorcidos por condensação visual.
+    * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
+    * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (pulando sábados ou domingos, se definidos assim) para garantir que a linha do tempo (cronograma final) respeite perfeitamente o calendário civil da empresa.
+    * **Atualizador de Relógio Dinâmico (`update_running_timer` e `update_ui`):** Funções assíncronas que calculam o tempo real decorrido contra a projeção matemática, entregando um dashboard estimativo visual do término das execuções sem travar a renderização do mapa.
+    * **Filtro Seguro de Exportação (`limpar_colunas_excel`):** Organiza e seleciona as colunas de saída para a planilha Excel, garantindo a presença de campos cruciais (como protocolos e coordenadas) independente do que aconteça na memória do sistema.
+    * **Formatação Visual do Mapa (`formatar_valor_coluna`):** Padroniza e trata dados numéricos (como metragens exatas de extensão de rede e volume de postes) antes de exibi-los nos pop-ups interativos do mapa.
+    * **Construtor de Navegação Offline (`gerar_gpx_simples`):** Compila nativamente uma string XML formatada em GPX, gerando trilhas de navegação para aplicativos GPS.
+    """)
+
+# ==========================================
+# 6. ESTRUTURA PRINCIPAL E NAVEGAÇÃO
+# ==========================================
+def main():
+    # MENU LATERAL SUPERIOR (ROTEAMENTO ENTRE PÁGINAS)
+    with st.sidebar:
+        if os.path.exists(LOGO_PATH):
+            with open(LOGO_PATH, "rb") as f:
+                encoded_logo = base64.b64encode(f.read()).decode()
+            st.markdown(
+                f'<div style="text-align: center; margin-bottom: 25px;">'
+                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            
+        st.markdown("### 🧭 Navegação")
+        menu_selecionado = st.radio("Selecione a Página:", ["🚀 Roteirizador Logístico", "📖 FAQ & Guia de Uso"], label_visibility="collapsed")
+        st.markdown("---")
+
+    if menu_selecionado == "📖 FAQ & Guia de Uso":
+        renderizar_faq()
+    else:
+        app_roteirizador()
+
+if __name__ == "__main__":
+    main()
