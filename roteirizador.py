@@ -71,6 +71,7 @@ def limpar_roteirizador():
     st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     
+    # Limpeza de buffers temporários
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated', 'df_correcao_fiscalizacao']
     for k in keys_to_clear:
         if k in st.session_state:
@@ -2297,6 +2298,7 @@ def app_roteirizador():
                 df_resumo = pd.DataFrame(resumo_levantadores)
                 zip_xl.writestr(f"Resumo_Levantadores - {data_atual_formatada}.xlsx", gerar_excel_resumo_bytes(df_resumo))
                 
+                # --- EXPORTAÇÃO DA PLANILHA DE CORREÇÃO (Obras Ignoradas na Fiscalização) ---
                 df_correcao = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
                 if not df_correcao.empty:
                     update_ui("Gerando Planilha de Obras para Correção...")
@@ -2304,8 +2306,7 @@ def app_roteirizador():
                     df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
                     out_err = io.BytesIO()
-                    with pd.ExcelWriter(out_err, engine='xlsxwriter') as writer:
-                        df_correcao.to_excel(writer, index=False, sheet_name='Obras com Erro')
+                    df_correcao.to_excel(out_err, index=False, sheet_name='Obras com Erro')
                     zip_xl.writestr(f"Obras_para_Correcao - {data_atual_formatada}.xlsx", out_err.getvalue())
                 
                 cols_to_drop_excel = ['PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'ROTA_GEOMETRIA', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE']
