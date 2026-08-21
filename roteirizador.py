@@ -18,12 +18,7 @@ import gc
 # ==========================================
 # 1. CONFIGURAÇÕES INICIAIS DA PÁGINA
 # ==========================================
-st.set_page_config(
-    page_title="Roteirizador NIP v3.0",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Roteirizador NIP v3.0", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
 # 2. IMPORTAÇÕES DOS MÓDULOS DIVIDIDOS
@@ -55,10 +50,8 @@ except FileNotFoundError:
     pass 
 
 def tentar_rerun():
-    try:
-        st.rerun()
-    except AttributeError:
-        st.experimental_rerun()
+    try: st.rerun()
+    except AttributeError: st.experimental_rerun()
 
 def limpar_roteirizador():
     st.session_state.roteamento_concluido = False
@@ -73,9 +66,7 @@ def limpar_roteirizador():
     
     keys_to_clear = ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'tempo_processamento', 'df_unallocated', 'df_correcao_fiscalizacao']
     for k in keys_to_clear:
-        if k in st.session_state:
-            del st.session_state[k]
-            
+        if k in st.session_state: del st.session_state[k]
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -84,27 +75,19 @@ def limpar_roteirizador():
 # ==========================================
 def formatar_valor_coluna(col_name, val):
     try:
-        if pd.isna(val) or val == '' or val == '-':
-            return '-'
-    except Exception:
-        pass 
-
+        if pd.isna(val) or val == '' or val == '-': return '-'
+    except Exception: pass 
     try:
         val_float = float(val)
-        if 'DISTANCIA' in col_name.upper():
-            return f"{val_float:.2f} Metros"
-        elif 'POSTE' in col_name.upper(): 
-            return f"{int(round(val_float))}"
-        else:
-            return formata_campo_html(val)
+        if 'DISTANCIA' in col_name.upper(): return f"{val_float:.2f} Metros"
+        elif 'POSTE' in col_name.upper(): return f"{int(round(val_float))}"
+        else: return formata_campo_html(val)
     except (ValueError, TypeError):
-        if isinstance(val, (datetime, pd.Timestamp)):
-            return formata_campo_html(val.strftime('%d/%m/%Y'))
+        if isinstance(val, (datetime, pd.Timestamp)): return formata_campo_html(val.strftime('%d/%m/%Y'))
         return formata_campo_html(str(val))
 
 def count_real_obras(row):
-    if isinstance(row.get('_ORIGINAL_ROWS'), list):
-        return len(row['_ORIGINAL_ROWS'])
+    if isinstance(row.get('_ORIGINAL_ROWS'), list): return len(row['_ORIGINAL_ROWS'])
     val = str(row.get('SUPER_PONTO', ''))
     if val.startswith('SIM'):
         nums = re.findall(r'\d+', val)
@@ -113,7 +96,6 @@ def count_real_obras(row):
 
 def limpar_colunas_excel(df_alvo, cols_originais):
     is_fiscalizacao = 'STATUS DA FISCALIZACAO' in cols_originais or 'STATUS DA FISCALIZAÇÃO' in cols_originais
-    
     if is_fiscalizacao:
         if 'PROTOCOLO' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
         if 'BASE_ATRIBUIDA' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
@@ -125,40 +107,28 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         base_start = ['PROTOCOLO', 'LEVANTADOR_RESPONSAVEL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
         
     base_end = ['LINK_NAVEGACAO_OFFLINE']
-    
     colunas_garantia = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO NOTA', 'FASE', 'INFORMACOES EXTRAS', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES']
-    
     middle_cols = []
     
     for c in cols_originais:
-        if c in df_alvo.columns and c not in base_start and c not in base_end and not str(c).startswith('_'):
-            middle_cols.append(c)
-            
+        if c in df_alvo.columns and c not in base_start and c not in base_end and not str(c).startswith('_'): middle_cols.append(c)
     for c in colunas_garantia:
-        if c in df_alvo.columns and c not in base_start and c not in base_end and c not in middle_cols:
-            middle_cols.append(c)
+        if c in df_alvo.columns and c not in base_start and c not in base_end and c not in middle_cols: middle_cols.append(c)
     
     final_cols = []
     for c in base_start + middle_cols + base_end:
-        if c in df_alvo.columns and c not in final_cols:
-            final_cols.append(c)
-            
+        if c in df_alvo.columns and c not in final_cols: final_cols.append(c)
     return df_alvo[final_cols]
 
 def gerar_gpx_simples(df_kml, nome_rota):
-    gpx = ['<?xml version="1.0" encoding="UTF-8"?>']
-    gpx.append('<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">')
+    gpx = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">']
     gpx.append(f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>')
-    
     for idx, row in df_kml.iterrows():
         if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-        lat = row.get('LATITUDE')
-        lon = row.get('LONGITUDE')
+        lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
         nome = str(row.get('PROTOCOLO', 'Ponto'))
         if pd.notna(lat) and pd.notna(lon):
-            gpx.append(f'  <wpt lat="{lat}" lon="{lon}">')
-            gpx.append(f'    <name>{html.escape(nome)}</name>')
-            gpx.append(f'  </wpt>')
+            gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(nome)}</name></wpt>')
             
     if 'ROTA_GEOMETRIA' in df_kml.columns:
         gpx.append('  <trk>')
@@ -167,64 +137,41 @@ def gerar_gpx_simples(df_kml, nome_rota):
         for idx, row in df_kml.iterrows():
             geom = row.get('ROTA_GEOMETRIA')
             if isinstance(geom, list):
-                for lon, lat in geom:
-                    gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
+                for lon, lat in geom: gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
         gpx.append('    </trkseg>')
         gpx.append('  </trk>')
-        
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
-# ==========================================
-# NOVO MÓDULO EXCLUSIVO: KML FISCALIZAÇÃO
-# ==========================================
 def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>']
-    kml.append('<kml xmlns="http://www.opengis.net/kml/2.2">')
-    kml.append('  <Document>')
-    kml.append(f'    <name>{html.escape(str(nome_rota))}</name>')
-
+    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '  <Document>', f'    <name>{html.escape(str(nome_rota))}</name>']
     styles = {
-        'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png',
-        'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
-        'beige': 'http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png', 
-        'orange': 'http://maps.google.com/mapfiles/kml/paddle/orange-blank.png',
-        'red': 'http://maps.google.com/mapfiles/kml/paddle/red-blank.png',
-        'gray': 'http://maps.google.com/mapfiles/kml/paddle/wht-blank.png'
+        'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png', 'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
+        'beige': 'http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png', 'orange': 'http://maps.google.com/mapfiles/kml/paddle/orange-blank.png',
+        'red': 'http://maps.google.com/mapfiles/kml/paddle/red-blank.png', 'gray': 'http://maps.google.com/mapfiles/kml/paddle/wht-blank.png'
     }
     for color, url in styles.items():
-        kml.append(f'    <Style id="style_{color}">')
-        kml.append(f'      <IconStyle><Icon><href>{url}</href></Icon></IconStyle>')
-        kml.append('    </Style>')
+        kml.append(f'    <Style id="style_{color}"><IconStyle><Icon><href>{url}</href></Icon></IconStyle></Style>')
 
     coords_linha = []
-    
     for idx, row in df_kml.iterrows():
         if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-        
-        lat = row.get('LATITUDE')
-        lon = row.get('LONGITUDE')
+        lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
         if pd.isna(lat) or pd.isna(lon): continue
-        
         coords_linha.append(f"{lon},{lat},0")
-        
         nome = str(row.get('PROTOCOLO', 'Ponto'))
         qtd = float(row.get('QTD PREVISTA DE POSTES', 0))
         cor = row.get('COR_ICONE', 'gray')
-        
         desc = '<table border="1" style="border-collapse:collapse; width:100%;">'
         for c in colunas_exibir:
             val = formatar_valor_coluna(c, row.get(c, ''))
             desc += f'<tr><td style="padding:3px;"><b>{html.escape(c)}</b></td><td style="padding:3px;">{val}</td></tr>'
         desc += '</table>'
-
         kml.append('    <Placemark>')
         kml.append(f'      <name>[{int(qtd)} Postes] {html.escape(nome)}</name>')
         kml.append(f'      <styleUrl>#style_{cor}</styleUrl>')
         kml.append(f'      <description><![CDATA[{desc}]]></description>')
-        kml.append('      <Point>')
-        kml.append(f'        <coordinates>{lon},{lat},0</coordinates>')
-        kml.append('      </Point>')
+        kml.append(f'      <Point><coordinates>{lon},{lat},0</coordinates></Point>')
         kml.append('    </Placemark>')
 
     if coords_linha:
@@ -235,11 +182,8 @@ def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir):
         kml.append(' '.join(coords_linha))
         kml.append('      </coordinates></LineString>')
         kml.append('    </Placemark>')
-
-    kml.append('  </Document>')
-    kml.append('</kml>')
+    kml.append('  </Document>\n</kml>')
     return '\n'.join(kml)
-
 
 def definir_cor_fiscalizacao(qtd):
     try:
@@ -249,35 +193,14 @@ def definir_cor_fiscalizacao(qtd):
         elif q <= 300: return 'beige' 
         elif q <= 400: return 'orange'
         else: return 'red'
-    except:
-        return 'gray'
+    except: return 'gray'
 
 def extrair_qtd(val):
     try:
         if pd.isna(val) or val == '' or val is None: return 0.0
         return float(str(val).replace(',', '.'))
-    except:
-        return 0.0
+    except: return 0.0
 
-def auto_fix_lat(val):
-    if pd.isna(val): return val
-    if val < -35 or val > 5:
-        t = abs(val)
-        while t > 35: t /= 10
-        return -t if val < 0 else t
-    return val
-
-def auto_fix_lon(val):
-    if pd.isna(val): return val
-    if val < -75 or val > -30:
-        t = abs(val)
-        while t > 75: t /= 10
-        return -t if val < 0 else t
-    return val
-
-# ==========================================
-# 3. LÓGICA DO ROTEIRIZADOR (MOTOR PRINCIPAL)
-# ==========================================
 def app_roteirizador():
     if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
     if "vrp_status" not in st.session_state: st.session_state.vrp_status = "IDLE"
@@ -383,7 +306,6 @@ def app_roteirizador():
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=botoes_desabilitados): 
             limpar_roteirizador()
 
-    # RESULTADOS FINAIS
     if is_done and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Otimização")
 
@@ -434,18 +356,15 @@ def app_roteirizador():
             meta_exata_por_equipe = obras_dia_meta * dias_multiplicador * limite_periodos_meta
             meta_global_exata = meta_exata_por_equipe * tot_equipes_cadastradas
             
-        # Adicionando a trava global matemática nos relatórios se ativada
         trava_global = cfg_atual.get('trava_global_obras', 0)
-        if trava_global > 0:
-            meta_global_exata = min(meta_global_exata, trava_global)
+        if trava_global > 0: meta_global_exata = min(meta_global_exata, trava_global)
         
         obras_por_equipe = {b['LEVANTADOR']: 0 for b in st.session_state.bases_records}
             
         for _, r in df_real_tasks.iterrows():
             b_name = r['BASE_ATRIBUIDA']
             qtd = count_real_obras(r)
-            if b_name in obras_por_equipe:
-                obras_por_equipe[b_name] += qtd
+            if b_name in obras_por_equipe: obras_por_equipe[b_name] += qtd
                 
         obras_faltantes = meta_global_exata - tot_obras_reais
         obras_sobrando_na_planilha = st.session_state.get('tot_obras_nao_alocadas', 0)
@@ -850,7 +769,7 @@ def app_roteirizador():
                                     df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
                         except Exception as e: st.error(f"Erro: {e}")
                 
-                else: # Modo 3
+                else: 
                     with st.container(border=True): 
                         task_files = st.file_uploader("Planilha de Fiscalização", type=["xlsx", "xls", "csv"], accept_multiple_files=True, help="A planilha deve conter MUNICIPIO, LATITUDE, LONGITUDE, QTD PREVISTA DE POSTES, STATUS DA FISCALIZACAO e NOTA.")
                     saneamento_files = None
@@ -932,7 +851,6 @@ def app_roteirizador():
                         dfs.append(df_temp)
                         
                 if not dfs: return
-
                 df_tasks = pd.concat(dfs, ignore_index=True)
                 
                 if 'PROTOCOLO' in df_tasks.columns:
@@ -959,7 +877,7 @@ def app_roteirizador():
                     tipos_counts = df_tasks['TIPO NOTA'].value_counts()
                     t_unr = tipos_counts.get('UNR', 0)
                     t_mgd = tipos_counts.get('MGD', 0)
-                    t_asc = counts.get('ASC', 0)
+                    t_asc = tipos_counts.get('ASC', 0)
                     t_dif = tipos_counts.get('DIF', 0)
                     
                     col_dash1.metric("Notas UNR", f"{t_unr}")
@@ -1614,7 +1532,6 @@ def app_roteirizador():
                     st.success(f"✅ Planilha carregada! {len(df_tasks_alocadas)} paradas identificadas para {len(bases_records)} levantadores.")
                     
                     col_prioridade = "PRIORIDADE"
-
 
         if not df_tasks_alocadas.empty:
             with st.expander("🛠️ 5. Configuração de Saída", expanded=True):
@@ -2300,12 +2217,6 @@ def app_roteirizador():
                     df_correcao.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True, errors='ignore')
                     df_correcao.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
                     
-                    for c in df_correcao.columns:
-                        if df_correcao[c].dtype == 'object':
-                            try:
-                                df_correcao[c] = df_correcao[c].astype(str).replace('nan', '')
-                            except: pass
-
                     out_err = io.BytesIO()
                     df_correcao.to_excel(out_err, index=False, sheet_name='Obras com Erro')
                     zip_xl.writestr(f"Obras_para_Correcao - {data_atual_formatada}.xlsx", out_err.getvalue())
@@ -2530,4 +2441,98 @@ def renderizar_faq():
 
     with col_dl3:
         st.markdown("**♾️ Lista Contínua**")
-        st.caption("Modo 2 (ExSou apenas uma IA com base em texto. Não tenho como ajudar nisso.
+        st.caption("Modo 2 (Requer coluna LEVANTADOR).")
+        st.download_button("📥 Baixar Modelo Contínua", data=gerar_excel_modelo(df_continua), file_name="MODELO_LISTA_CONTINUA.xlsx", use_container_width=True)
+        
+    with col_dl4:
+        st.markdown("**📋 Fiscalização**")
+        st.caption("Modo 3 (Requer coluna FISCAL).")
+        st.download_button("📥 Baixar Modelo Fiscalização", data=gerar_excel_modelo(df_fiscalizacao), file_name="MODELO_FISCALIZACAO.xlsx", use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 3. Filtros Inteligentes e Controle de Escopo")
+    
+    c_flt1, c_flt2 = st.columns(2)
+    with c_flt1:
+        st.markdown("**🗂️ Triagem Dinâmica de Notas (Bolo Geral)**")
+        st.markdown("Assim que você sobe a planilha, um Mini-Dashboard mostra os totais dos principais tipos de notas (UNR, MGD, ASC, DIF). Abaixo dele, você pode escolher tipos específicos (ex: 'UNR') para **descartar temporariamente**, limpando a base sem precisar editar o arquivo Excel.")
+
+        st.markdown("**🎯 Matriz Multi-Filtro (Regional e PAT)**")
+        st.markdown("Na seção 'Escopo da Operação', o sistema lê todas as Regionais e PATs presentes no seu arquivo. Você pode afunilar o roteamento para processar *apenas* a 'REGIONAL LESTE' e *apenas* o 'PAT1', bloqueando o restante do Estado instantaneamente.")
+        
+        st.markdown("**⚡ Super Pontos (Deduplicação Espacial)**")
+        st.markdown("Se a IA encontrar notas sobrepostas em um pequeno raio de ação, ela funde tudo num mega-ícone laranja (`SUPER PONTO`), garantindo que o técnico visite o local apenas uma vez. **Você pode ajustar o raio desse agrupamento (em metros) na barra lateral.**")
+
+    with c_flt2:
+        st.markdown("**🔥 Alta Densidade (Modo Produtividade Máxima)**")
+        st.markdown("Uma trava que foca apenas no que dá lucro de tempo. Quando ativada na barra lateral, a IA varre o mapa e joga fora as obras isoladas ou esparsas na zona rural, garantindo que ela não crie rotas para cidades que nenhum técnico atende. A equipe é enviada apenas para os 'Bolsões de Densidade', e as obras isoladas vão para o arquivo de rejeições para tratativa futura.")
+        
+        st.markdown("**🚨 Tripla Checagem de Prioridade (Fura Fila)**")
+        st.markdown("O sistema exige urgência. A obra fura a fila do roteiro e fica vermelha no mapa se: 1) Você selecioná-la manualmente nos Filtros Dinâmicos; 2) For detectado o status 'CORREÇÃO DE LEVANTAMENTO'; 3) A coluna nativa `PRIORIDADE` no Excel tiver marcações urgentes (ex: 'GIRO NO PRAZO').")
+
+        st.markdown("**🛡️ Ignorar Obras já Despachadas**")
+        st.markdown("Se a caixa 'Ignorar obras já despachadas' for marcada, a IA lê a coluna `DATA DESPACHO CAMPO` do seu Excel. Qualquer linha que tenha algo escrito ali é sumariamente ignorada para evitar o retrabalho de rotas já ativas.")
+
+
+    st.markdown("---")
+    st.markdown("### 4. Esforços, Limites e Avisos Gerenciais")
+    st.markdown("""
+    * **🛑 Trava Total de Operação (O Limite Global da Empresa):** Localizado na barra lateral, define um teto absoluto. Se você digitar **300**, a IA vai garimpar as 300 melhores/mais prioritárias notas do estado e rejeitar todo o resto, poupando a equipe de backoffice. **Se deixar no valor '0' (Zero)**, a trava é desligada e o sistema roteiriza 100% da base que encontrar.
+    * **O Paredão Diário (Corte Rígido):** Se a meta for **6 Obras Previstas por Dia**, na hora que a IA montar a 6ª obra, ela aborta o cálculo, traça a linha de "Retorno para a Base" e a 7ª obra cai para a Terça-Feira, blindando o técnico de sobrecarga.
+    * **Varredura Reversa (Longe -> Perto):** Permite inverter a lógica da rota diária. Em vez de começar pelas obras da esquina, a IA manda o técnico cedo para a fazenda mais distante do mapa e vem puxando ele de volta obra por obra, para que o fim do expediente seja feito a poucos minutos de casa.
+    * **Cálculo de Postes e Malhas:** Nos relatórios, o sistema soma as colunas `POSTE PREVISTO BT` e `POSTE PREVISTO MT`. Para evitar contagem em dobro (pois Alta e Baixa tensão costumam dividir o mesmo poste físico), ele usa matematicamente o Menor Valor entre as duas.
+    * **🏨 Alerta de Pernoite / Hotel:** Durante o cálculo, a IA avalia o "Centro de Gravidade" do lote de obras. Se essa mancha de trabalho ficar concentrada a mais de **60 km** de distância da residência do técnico, a aba gerencial sugere **Hospedagem** com um link de busca de pousadas integrado ao Google Maps.
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 5. Configurações Avançadas e Saídas (O que você baixa)")
+    st.info("""
+    * **Traçado de Ruas Real (OSRM) vs. Vetorial Rapido:** Nas configurações de Conexão de Rede, a opção de *Traçado de Ruas Lento* usa uma API global para curvar a linha exatamente pelas rodovias e asfaltos. Se desmarcado (Vetorial Rápido), ele liga as obras em linha reta (padrão satélite), acelerando o tempo de geração de 10 minutos para apenas alguns segundos.
+    * **Demanda_Geral.xlsx:** Uma compilação cristalina. A planilha exportada contém **exatamente** as colunas originais do seu projeto, blindadas contra lixo de programação. O sistema faz a autolimpeza com a função `limpar_colunas_excel()` garantindo que os identificadores primários (como PROTOCOLO, REGIONAL e LAT/LON) nunca sumam da entrega final.
+    * **Pacote KML e KML de Rejeições:** O KML principal roda em Google Earth (limpo de caixas de textos desnecessárias). Além dele, se alguma obra for isolada pela Alta Densidade ou esgotar a cota da Trava Global, a IA gera o arquivo **`OBRAS_NAO_ALOCADAS.kml`** (pinos brancos) para você visualizar exatamente o que sobrou.
+    * **Pacote GPX:** O GPX é o **GPS Offline de Alta Precisão** – feito para o técnico importar em apps como *OsmAnd* ou *Wikiloc* para navegar no sertão e em áreas rurais mesmo quando estiver com 0% de sinal de operadora móvel. Construído nativamente pela função interna `gerar_gpx_simples()`.
+    * **Planilha de Correção (Fiscalização):** Se alguma obra apresentar coordenadas zeradas, invertidas ou fora da cidade, ela é barrada pela Cerca Eletrônica. O sistema cria automaticamente o arquivo `Obras_para_Correcao.xlsx` detalhando o motivo exato do erro para a sua equipe de backoffice.
+    """)
+
+    st.markdown("---")
+    st.markdown("### 6. Bastidores Técnicos e Motores de IA (Arquitetura Interna)")
+    st.markdown("""
+    Para engenheiros e planejadores que desejam entender a matemática por trás do sistema, a v3.0 executa rotinas automatizadas robustas no motor Python:
+    * **Desmembrador de Protocolos Múltiplos (`.explode`):** Se a sua base vier com obras múltiplas na mesma célula (ex: `1078936091 | 1078936284`), o sistema detecta a barra vertical, "rasga" a célula em duas linhas independentes e roteiriza ambas de forma natural. Se as coordenadas forem iguais, elas serão condensadas logicamente como um "Super Ponto".
+    * **Alocação com Fallback de 100km (`assign_load_balanced_strict_and_fallback`):** No modo tático, o motor tenta encaixar a obra estritamente no município do técnico. Caso o estoque acabe, ele ativa um raio de tolerância de até 100 km em linha reta para buscar equipes vizinhas ociosas, sempre priorizando alocar obras que não extrapolam a capacidade do técnico.
+    * **Contagem Real de Ativos (`count_real_obras`):** Função invisível que identifica automaticamente quando uma linha de dados representa um *Super Ponto* fundido, extraindo a quantidade numérica exata de notas para que os relatórios de postes e metas financeiras não fiquem distorcidos por condensação visual.
+    * **Heurística Gulosa de Proximidade (`greedy_sort`):** Algoritmo de ordenação sequencial que calcula o vizinho mais próximo a cada parada matemática. É ele quem possibilita a inversão lógica quando a **Varredura Reversa** está ativada no menu lateral.
+    * **Gestão de Dias Úteis Lógicos (`get_workday_date` e `iniciar_dia`):** Mapeiam os dias da semana selecionados pelo usuário (pulando sábados ou domingos, se definidos assim) para garantir que a linha do tempo (cronograma final) respeite perfeitamente o calendário civil da empresa.
+    * **Atualizador de Relógio Dinâmico (`update_running_timer` e `update_ui`):** Funções assíncronas que calculam o tempo real decorrido contra a projeção matemática, entregando um dashboard estimativo visual do término das execuções sem travar a renderização do mapa.
+    * **Filtro Seguro de Exportação (`limpar_colunas_excel`):** Organiza e seleciona as colunas de saída para a planilha Excel, garantindo a presença de campos cruciais (como protocolos e coordenadas) independente do que aconteça na memória do sistema.
+    * **Formatação Visual do Mapa (`formatar_valor_coluna`):** Padroniza e trata dados numéricos (como metragens exatas de extensão de rede e volume de postes) antes de exibi-los nos pop-ups interativos do mapa.
+    * **Construtor de Navegação Offline (`gerar_gpx_simples`):** Compila nativamente uma string XML formatada em GPX, gerando trilhas de navegação para aplicativos GPS.
+    """)
+
+# ==========================================
+# 6. ESTRUTURA PRINCIPAL E NAVEGAÇÃO
+# ==========================================
+def main():
+    # MENU LATERAL SUPERIOR (ROTEAMENTO ENTRE PÁGINAS)
+    with st.sidebar:
+        if os.path.exists(LOGO_PATH):
+            with open(LOGO_PATH, "rb") as f:
+                encoded_logo = base64.b64encode(f.read()).decode()
+            st.markdown(
+                f'<div style="text-align: center; margin-bottom: 25px;">'
+                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            
+        st.markdown("### 🧭 Navegação")
+        menu_selecionado = st.radio("Selecione a Página:", ["🚀 Roteirizador Logístico", "📖 FAQ & Guia de Uso"], label_visibility="collapsed")
+        st.markdown("---")
+
+    if menu_selecionado == "📖 FAQ & Guia de Uso":
+        renderizar_faq()
+    else:
+        app_roteirizador()
+
+if __name__ == "__main__":
+    main()
