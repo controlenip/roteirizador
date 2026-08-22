@@ -12,11 +12,11 @@ from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
 
-# Importações dos Módulos
+# Importações dos Módulos Separados
 from modules.data_processing import ler_planilha_cached, formata_campo_html, formatar_moeda, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import injetar_logo, identificar_icone_folium, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado, gerar_gpx_simples, limpar_colunas_excel
+from modules.export_utils import injetar_logo, identificar_icone_folium, gerar_excel_tatica, limpar_colunas_tatica, gerar_kml_tatica, gerar_gpx_simples
 
 st.set_page_config(page_title="Roteirizador Tático", page_icon="🗺️", layout="wide")
 injetar_logo()
@@ -220,6 +220,7 @@ elif status_exec == "IDLE":
             df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
             opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
             sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
+            # CORREÇÃO DEFINITIVA DA PRIORIDADE (Apenas obras marcadas acima recebem 'Sim')
             df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
         else: df_tasks['PRIORIDADE'] = 'Não'
 
@@ -300,7 +301,6 @@ elif status_exec == "IDLE":
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
-    # CORREÇÃO DA PRIORIDADE EM SUPERPONTOS: O Tático não vai mais forçar prioridade em SuperPonto!
     df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
 
     tbr = df_bases.to_dict('records')
@@ -494,14 +494,14 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_excel(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_tat)
+            dfg = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_tat)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Tatica - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE", st.session_state.colunas_originais_tat))
+            zx.writestr(f"Demanda_Tatica - {d_fmt}.xlsx", gerar_excel_tatica(dfg, st.session_state.colunas_originais_tat))
             
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_agrupado(dfk_total, st.session_state.bases_records, "ROTA_TOTAL", st.session_state.colunas_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
+            ks = gerar_kml_tatica(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
