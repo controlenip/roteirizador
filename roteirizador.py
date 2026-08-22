@@ -9,7 +9,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-LOGO_PATH = "assets/LOGO_NIP.png"
+# CORREÇÃO: Apontando diretamente para a raiz do repositório
+LOGO_PATH = "LOGO_NIP.png"
 
 def main():
     # Exibir a Logo na Barra Lateral
