@@ -16,8 +16,6 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formata_campo_html, formatar_moeda, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-
-# IMPORTAÇÃO CORRIGIDA PARA O NOVO MOTOR ISOLADO DO TÁTICO
 from modules.export_tatica import injetar_logo, identificar_icone_folium, gerar_excel_tatica, limpar_colunas_tatica, gerar_kml_tatica, gerar_gpx_simples, gerar_excel_resumo_tatica
 
 st.set_page_config(page_title="Roteirizador Tático", page_icon="🗺️", layout="wide")
@@ -75,12 +73,13 @@ with st.sidebar:
         data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
         
         st.markdown("---")
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
-        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
-        st.markdown("---")
         vel_kmh = st.slider("Velocidade Média (km/h)", 10, 100, 30, disabled=is_locked)
         tmp_obra = st.slider("Minutos na Obra:", 10, 120, 45, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
+
+    with st.expander("📡 Conexão de Rede", expanded=False):
+        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
 
     sb_html = st.empty()
 
@@ -94,7 +93,6 @@ with st.sidebar:
 if is_done and not st.session_state.df_routed.empty:
     st.markdown("## 🎯 Resultado do Planejamento")
     
-    # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO
     df_c = st.session_state.get('df_correcao_tatica', pd.DataFrame())
     if not df_c.empty:
         st.markdown(f"""
@@ -167,7 +165,6 @@ elif status_exec == "IDLE":
             for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
-                
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
@@ -303,16 +300,6 @@ elif status_exec == "IDLE":
         
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_tatica = df_rej
-        
-        if not df_rej.empty: 
-            st.markdown(f"""
-            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção (Verifique o ZIP)</h4>
-                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                    <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem e foram bloqueadas para não corromper o roteamento.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
