@@ -1,5 +1,5 @@
 import streamlit as st
-from modules.export_utils import injetar_logo
+from modules.export_tatica import injetar_logo
 
 st.set_page_config(
     page_title="Roteirizador NIP v3.0",
