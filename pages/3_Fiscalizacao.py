@@ -2,42 +2,65 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import MarkerCluster, HeatMap
-from streamlit_folium import st_folium
 import io
 import zipfile
 import html
 import re
 import time
 import altair as alt
+from folium.plugins import MarkerCluster, HeatMap
+from streamlit_folium import st_folium
 from datetime import datetime
-import os
-import base64
-import gc
 
-# Configuração da Página
-st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
-
-# Importações do Backend (Módulos)
+# Importações dos Motores Matemáticos
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
-from modules.export_utils import gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, renderizar_painel_lateral
+from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
+from modules.export_utils import gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
+
+st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 
 # ==========================================
-# FUNÇÕES AUXILIARES DE FISCALIZAÇÃO
+# FUNÇÕES VISUAIS E AUXILIARES
 # ==========================================
-def formatar_valor_coluna(col_name, val):
+def render_metric_card(title, value, icon, border_color, bg_color):
+    return f"""
+    <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
+        <div style="background-color: {bg_color}; width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; margin-right: 15px;">
+            {icon}
+        </div>
+        <div>
+            <p style="margin: 0; font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">{title}</p>
+            <p style="margin: 0; font-size: 22px; color: #333; font-weight: bold;">{value}</p>
+        </div>
+    </div>
+    """
+
+def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade):
+    return f"""
+    <div style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 4px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
+        <h4 style="margin-top: 0; color: #0D256C; font-size: 18px; border-bottom: 2px solid #55B929; padding-bottom: 10px; margin-bottom: 15px;">📊 Resumo da Capacidade</h4>
+        <p style="margin-bottom: 10px; font-size: 15px;"><b>Fiscais Ativos:</b> <span style="color: #0D256C; font-weight: bold;">{qtd_equipes_ativas}</span></p>
+        <p style="margin-bottom: 10px; font-size: 15px;"><b>Cota p/ Fiscal:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> obras</p>
+        <p style="margin-bottom: 15px; font-size: 15px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> obras</p>
+        <hr style="margin: 15px 0; border: 0; border-top: 1px solid #eee;">
+        <div style="text-align: center; margin-top: 15px;">
+            <p style="margin-bottom: 5px; font-size: 16px; color: #555;"><b>Obras Validadas:</b></p>
+            <span style="font-size: 36px; color: #0D256C; font-weight: 900;">{total_obras_prontas}</span>
+        </div>
+    </div>
+    """
+
+def formatar_valor_coluna(c, v):
+    if pd.isna(v) or v in ['', '-']: return '-'
     try:
-        if pd.isna(val) or val == '' or val == '-': return '-'
-    except Exception: pass 
-    try:
-        val_float = float(val)
-        if 'DISTANCIA' in col_name.upper(): return f"{val_float:.2f} Metros"
-        elif 'POSTE' in col_name.upper(): return f"{int(round(val_float))}"
-        else: return formata_campo_html(val)
-    except (ValueError, TypeError):
-        if isinstance(val, (datetime, pd.Timestamp)): return formata_campo_html(val.strftime('%d/%m/%Y'))
-        return formata_campo_html(str(val))
+        vf = float(v)
+        if 'DISTANCIA' in c.upper(): return f"{vf:.2f} Metros"
+        if 'POSTE' in c.upper(): return f"{int(round(vf))}"
+        return formata_campo_html(v)
+    except:
+        if isinstance(v, (datetime, pd.Timestamp)): return formata_campo_html(v.strftime('%d/%m/%Y'))
+        return formata_campo_html(str(v))
 
 def count_real_obras(row):
     if isinstance(row.get('_ORIGINAL_ROWS'), list): return len(row['_ORIGINAL_ROWS'])
@@ -47,111 +70,109 @@ def count_real_obras(row):
         if nums: return int(nums[0])
     return 1
 
+def extrair_qtd(val):
+    try: return float(str(val).replace(',', '.')) if pd.notna(val) and val != '' else 0.0
+    except: return 0.0
+
 def definir_cor_fiscalizacao(qtd):
     try:
         q = float(qtd)
         return 'green' if q <= 100 else 'blue' if q <= 200 else 'beige' if q <= 300 else 'orange' if q <= 400 else 'red'
     except: return 'gray'
 
-def extrair_qtd(val):
-    try: return float(str(val).replace(',', '.')) if pd.notna(val) and val != '' else 0.0
-    except: return 0.0
-
 def limpar_colunas_excel(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     if 'PROTOCOLO' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
     if 'BASE_ATRIBUIDA' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
     elif 'LEVANTADOR' in df_alvo.columns and 'FISCAL' not in df_alvo.columns: df_alvo['FISCAL'] = df_alvo['LEVANTADOR']
-    
-    base_start = ['NOTA', 'FISCAL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
-    base_end = ['LINK_NAVEGACAO_OFFLINE']
-    c_garantia = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO PROJETO', 'TIPO DE FISCALIZACAO', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES', 'VALOR DA OBRA']
-    
-    m_cols = [c for c in cols_originais if c in df_alvo.columns and c not in base_start and c not in base_end and not str(c).startswith('_')]
-    for c in c_garantia:
-        if c in df_alvo.columns and c not in base_start and c not in base_end and c not in m_cols: m_cols.append(c)
-    
-    f_cols = []
-    for c in base_start + m_cols + base_end:
-        if c in df_alvo.columns and c not in f_cols: f_cols.append(c)
-    return df_alvo[f_cols]
+    bs = ['NOTA', 'FISCAL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
+    cg = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO PROJETO', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES', 'VALOR DA OBRA']
+    mc = [c for c in cols_originais if c in df_alvo.columns and c not in bs and c != 'LINK_NAVEGACAO_OFFLINE' and not str(c).startswith('_')]
+    for c in cg:
+        if c in df_alvo.columns and c not in bs and c != 'LINK_NAVEGACAO_OFFLINE' and c not in mc: mc.append(c)
+    fc = []
+    for c in bs + mc + ['LINK_NAVEGACAO_OFFLINE']:
+        if c in df_alvo.columns and c not in fc: fc.append(c)
+    return df_alvo[fc]
 
 def tentar_rerun():
-    try: st.rerun()
-    except AttributeError: st.experimental_rerun()
+    if hasattr(st, 'rerun'): st.rerun()
+    else: st.experimental_rerun()
 
 def limpar_roteirizador():
-    st.session_state.update({'roteamento_concluido': False, 'vrp_status': "IDLE", 'vrp_state': {}, 'df_routed': pd.DataFrame(), 'bases_records': [], 'tipo_periodo': "Dia", 'colunas_exibir': [], 'colunas_originais': []})
-    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated', 'df_correcao_fiscalizacao']: st.session_state.pop(k, None)
+    st.session_state.update({'roteamento_concluido_fisc': False, 'vrp_status_fisc': "IDLE", 'vrp_state_fisc': {}, 'df_routed_fisc': pd.DataFrame(), 'bases_records_fisc': [], 'colunas_exibir_fisc': [], 'colunas_originais_fisc': []})
+    for k in ['bytes_zip_xl_fisc', 'bytes_zip_kml_fisc', 'bytes_zip_gpx_fisc', 'start_time_run_fisc', 'start_time_pkg_fisc', 'df_unallocated_fisc', 'df_correcao_fiscalizacao']: st.session_state.pop(k, None)
     ler_planilha_cached.clear(); tentar_rerun()
 
 # ==========================================
-# INTERFACE PRINCIPAL
+# INÍCIO DA PÁGINA
 # ==========================================
-if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
-if "vrp_status" not in st.session_state: st.session_state.vrp_status = "IDLE"
+if "roteamento_concluido_fisc" not in st.session_state: st.session_state.roteamento_concluido_fisc = False
+if "vrp_status_fisc" not in st.session_state: st.session_state.vrp_status_fisc = "IDLE"
 
-status_exec = st.session_state.vrp_status
-is_done = st.session_state.roteamento_concluido
+status_exec = st.session_state.vrp_status_fisc
+is_done = st.session_state.roteamento_concluido_fisc
 is_locked = status_exec != "IDLE" or is_done
 
-st.markdown("<h1 class='brand-title'>📋 Planejamento Tático (Fiscalização)</h1>", unsafe_allow_html=True)
-st.info("💡 **Inteligência Logística:** Este módulo distribui Obras e Postes de forma equilibrada entre os Fiscais disponíveis no mesmo município, priorizando as maiores demandas.")
+st.markdown("<h1 class='brand-title'>📋 Planejamento de Fiscalização</h1>", unsafe_allow_html=True)
+st.info("💡 **A Regra do Bolsão:** A IA ancora os Fiscais nas obras com MAIS POSTES primeiro. Em seguida, intercala as obras menores no caminho, preenchendo os espaços vazios e otimizando a rota.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Esforço e Limites", expanded=True):
-        trava_global_obras = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
-        sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão (Mais Próximo Primeiro)", "🎯 Varredura Reversa (Mais Distante Primeiro)"], index=0, disabled=is_locked)
-        raio_super_ponto = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
-        
+        trava_global = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
+        sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
+        raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         tipo_periodo = st.radio("Agrupamento:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
-        tipo_periodo_clean = "Semana" if "Semana" in tipo_periodo else "Dia"
-        dias_semana_selecionados = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
-        if tipo_periodo_clean == "Semana":
-            dias_semana_selecionados = st.multiselect("Dias úteis:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked)
-        
-        data_inicio_roteiro = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
-        obras_por_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
-        limite_periodos = st.number_input(f"Limite total de {tipo_periodo_clean}s", min_value=1, value=5, step=1, disabled=is_locked)
-        velocidade_media_kmh = 30.0
+        tpc = "Semana" if "Semana" in tipo_periodo else "Dia"
+        dias_sel = st.multiselect("Dias úteis:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked) if tpc == "Semana" else ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+        data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
+        obras_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
+        limite_per = st.number_input(f"Limite total de {tpc}s", min_value=1, value=5, step=1, disabled=is_locked)
+        vel_kmh = 30.0
+    
+    with st.expander("📡 Conexão de Rede", expanded=False):
+        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked)
 
     st.markdown("---")
-    sidebar_html_placeholder = st.empty()
+    sb_html = st.empty()
     
-    if is_done and not st.session_state.df_routed.empty:
-        st.markdown("### 📥 Baixar Resultados")
+    if is_done and not st.session_state.df_routed_fisc.empty:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
-        st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl', b"vazio"), file_name=f"Fiscais_Planilhas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml', b"vazio"), file_name=f"Fiscais_Mapas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx', b"vazio"), file_name=f"Fiscais_GPS - {d_fmt}.zip", use_container_width=True)
+        st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_fisc', b"vazio"), file_name=f"Fiscais_Planilhas - {d_fmt}.zip", use_container_width=True)
+        st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml_fisc', b"vazio"), file_name=f"Fiscais_Mapas - {d_fmt}.zip", use_container_width=True)
+        st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_fisc', b"vazio"), file_name=f"Fiscais_GPS - {d_fmt}.zip", use_container_width=True)
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
-# --- RESULTADOS (SE CONCLUÍDO) ---
-if is_done and not st.session_state.df_routed.empty:
+# ==========================================
+# EXIBIÇÃO DE RESULTADOS (SE CONCLUÍDO)
+# ==========================================
+if is_done and not st.session_state.df_routed_fisc.empty:
     st.markdown("## 🎯 Dashboards de Produtividade")
-    df_routed = st.session_state.df_routed.copy()
-    df_real_tasks = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+    st.session_state.df_routed_fisc['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed_fisc.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+    dfr = st.session_state.df_routed_fisc.copy()
+    dfr_t = dfr[~dfr['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
     
-    tot_obras_reais = sum(count_real_obras(r) for _, r in df_real_tasks.iterrows())
-    tot_equipes = df_routed['BASE_ATRIBUIDA'].nunique()
-    tot_km = f"{df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
-    tot_postes_global = int(pd.to_numeric(df_real_tasks['QTD PREVISTA DE POSTES'], errors='coerce').sum()) if 'QTD PREVISTA DE POSTES' in df_real_tasks else 0
+    tr = sum(count_real_obras(r) for _, r in dfr_t.iterrows())
+    te = dfr['BASE_ATRIBUIDA'].nunique()
+    tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
+    tot_postes_global = int(pd.to_numeric(dfr_t['QTD PREVISTA DE POSTES'], errors='coerce').sum()) if 'QTD PREVISTA DE POSTES' in dfr_t else 0
 
-    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
-    c_m1.markdown(f'<div class="metric-card" style="border-left: 5px solid #0D256C;"><div class="metric-icon" style="background: rgba(13,37,108,0.12);">🎯</div><div class="metric-content"><div class="metric-title">TOTAL DE OBRAS</div><div class="metric-value">{tot_obras_reais}</div></div></div>', unsafe_allow_html=True)
-    c_m2.markdown(f'<div class="metric-card" style="border-left: 5px solid #8b5cf6;"><div class="metric-icon" style="background: rgba(139,92,246,0.15);">👥</div><div class="metric-content"><div class="metric-title">Fiscais Alocados</div><div class="metric-value">{tot_equipes}</div></div></div>', unsafe_allow_html=True)
-    c_m3.markdown(f'<div class="metric-card" style="border-left: 5px solid #FF9800;"><div class="metric-icon" style="background: rgba(255,152,0,0.15);">🏗️</div><div class="metric-content"><div class="metric-title">Postes Fiscalizados</div><div class="metric-value">{tot_postes_global}</div></div></div>', unsafe_allow_html=True)
-    c_m4.markdown(f'<div class="metric-card" style="border-left: 5px solid #55B929;"><div class="metric-icon" style="background: rgba(85,185,41,0.15);">🛣️</div><div class="metric-content"><div class="metric-title">KM Previsto Total</div><div class="metric-value">{tot_km}</div></div></div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(render_metric_card("TOTAL DE OBRAS", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+    c2.markdown(render_metric_card("Fiscais Alocados", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("Postes Auditados", tot_postes_global, "🏗️", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
+    c4.markdown(render_metric_card("KM Previsto Total", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- GRÁFICOS EXCLUSIVOS DE FISCALIZAÇÃO ---
+    # Gráficos de Balanceamento
     chart_data = []
-    for b_name in df_real_tasks['BASE_ATRIBUIDA'].unique():
-        df_f = df_real_tasks[df_real_tasks['BASE_ATRIBUIDA'] == b_name]
+    for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
+        df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
         q_obras = sum(count_real_obras(r) for _, r in df_f.iterrows())
         q_postes = pd.to_numeric(df_f['QTD PREVISTA DE POSTES'], errors='coerce').sum() if 'QTD PREVISTA DE POSTES' in df_f.columns else 0
         if q_obras > 0: chart_data.append({"Fiscal": b_name, "Obras": q_obras, "Postes": int(q_postes)})
@@ -162,92 +183,88 @@ if is_done and not st.session_state.df_routed.empty:
         with c_ch1:
             st.markdown("#### Balanceamento: Obras vs Postes")
             df_melted = df_chart.melt(id_vars='Fiscal', value_vars=['Obras', 'Postes'], var_name='Métrica', value_name='Quantidade')
-            bar_chart = alt.Chart(df_melted).mark_bar().encode(
-                x=alt.X('Fiscal:N', title=None, axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y('Quantidade:Q', title="Total Alocado"),
-                color=alt.Color('Métrica:N', scale=alt.Scale(domain=['Obras', 'Postes'], range=['#0D256C', '#FF9800'])),
-                xOffset='Métrica:N',
-                tooltip=['Fiscal', 'Métrica', 'Quantidade']
-            ).properties(height=350)
+            bar_chart = alt.Chart(df_melted).mark_bar().encode(x=alt.X('Fiscal:N', title=None, axis=alt.Axis(labelAngle=-45)), y=alt.Y('Quantidade:Q', title="Total Alocado"), color=alt.Color('Métrica:N', scale=alt.Scale(domain=['Obras', 'Postes'], range=['#0D256C', '#FF9800'])), xOffset='Métrica:N', tooltip=['Fiscal', 'Métrica', 'Quantidade']).properties(height=350)
             st.altair_chart(bar_chart, use_container_width=True)
-        
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
-            donut = alt.Chart(df_chart).mark_arc(innerRadius=60).encode(
-                theta=alt.Theta(field="Postes", type="quantitative"),
-                color=alt.Color(field="Fiscal", type="nominal"),
-                tooltip=["Fiscal", "Postes", "Obras"]
-            ).properties(height=350)
+            donut = alt.Chart(df_chart).mark_arc(innerRadius=60).encode(theta=alt.Theta(field="Postes", type="quantitative"), color=alt.Color(field="Fiscal", type="nominal"), tooltip=["Fiscal", "Postes", "Obras"]).properties(height=350)
             st.altair_chart(donut, use_container_width=True)
-    
-    st.markdown("#### 📝 Resumo Operacional")
-    resumo_ui = []
-    for item in chart_data:
-        km_tot = df_routed[df_routed['BASE_ATRIBUIDA'] == item["Fiscal"]]['DISTANCIA_PONTO_ANTERIOR_KM'].sum()
-        resumo_ui.append({"Levantador (Fiscal)": item["Fiscal"], "Postes Fiscalizados": item["Postes"], "KM Total Previsto": round(km_tot, 2)})
-    st.dataframe(pd.DataFrame(resumo_ui), use_container_width=True, hide_index=True)
 
-    # --- MAPA ---
+    # MAPA COM POP-UPS PADRÃO TÁTICO
     st.markdown("### 🗺️ Mapa Geográfico")
-    mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-    cores_folium = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548']
+    mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
+    co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
     
-    m_clust = MarkerCluster(name="Obras").add_to(mapa)
-    for b_name in df_routed['BASE_ATRIBUIDA'].unique().tolist():
-        cor_r = cores_folium[df_routed['BASE_ATRIBUIDA'].unique().tolist().index(b_name) % len(cores_folium)]
-        df_br = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
-        f_grp = folium.FeatureGroup(name=f"Rota: {b_name}", show=False)
+    m_clust = MarkerCluster(name="📍 Obras").add_to(mapa)
+    for bn in dfr['BASE_ATRIBUIDA'].unique().tolist():
+        cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
+        db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
+        fg = folium.FeatureGroup(name=f"Rota: {bn}", show=False)
         
-        for per in df_br['PERIODO'].unique():
-            df_per = df_br[df_br['PERIODO'] == per]
-            pts = [p for _, r in df_per.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
-            folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(f_grp)
-            folium.PolyLine(pts, color=cor_r, weight=3, opacity=1.0).add_to(f_grp)
+        for pe in db['PERIODO'].unique():
+            dp = db[db['PERIODO'] == pe]
+            pts = [p for _, r in dp.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
+            folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
+            folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
             
-            for r in df_per.to_dict('records'):
+            for r in dp.to_dict('records'):
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                
                 c_i = r.get('COR_ICONE', 'gray')
                 qtd_p = int(float(r.get('QTD PREVISTA DE POSTES', 0)))
-                p_txt = f"📍 FISCALIZAÇÃO - {qtd_p} POSTES"
-                p_bg = "#4CAF50" if c_i=='green' else "#2196F3" if c_i=='blue' else "#F5F5DC" if c_i=='beige' else "#FF9800" if c_i=='orange' else "#F44336"
-                p_c = "#000000" if c_i=='beige' else "#ffffff"
+                ic = identificar_icone_folium(r, dfr.columns)
                 
-                e_rows = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir])
-                pop_html = f'<div style="width:280px;font-family:sans-serif;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;border-collapse:collapse;font-size:12px;">{e_rows}</table></div>'
+                # Mapeamento Estrito de Cores para o HTML do Pop-up (Igual ao Tático)
+                bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+                txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
                 
-                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon='eye'), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
-        f_grp.add_to(mapa)
+                if str(r.get('SUPER_PONTO', '')).startswith('SIM'):
+                    p_bg, p_c = '#FFD700', '#000000'
+                    p_txt = f"🏢 SUPER PONTO {str(r.get('SUPER_PONTO')).replace('SIM','').strip()}"
+                else:
+                    p_bg, p_c = bg_colors.get(c_i, '#9E9E9E'), txt_colors.get(c_i, '#ffffff')
+                    p_txt = f"📋 FISCALIZAÇÃO - {qtd_p} POSTES"
+                
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                
+                # HTML Clone do Planejamento Tático
+                pop_html = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
+                
+                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
+        fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
-# --- TELA INICIAL DE UPLOAD (SE NÃO CONCLUÍDO) ---
+
+# ==========================================
+# START DA APLICAÇÃO (UPLOAD DE DADOS)
+# ==========================================
 elif status_exec == "IDLE":
     c_up1, c_up2 = st.columns(2)
     with c_up1:
         st.markdown("### 👥 1. Fiscais")
         df_bases = pd.DataFrame()
-        base_file = st.file_uploader("Suba a planilha de Fiscais (Excel)", type=["xlsx", "xls"])
-        if base_file:
-            try:
-                b_t = ler_planilha_cached(base_file.getvalue()); b_t.columns = normalize_cols(b_t.columns)
-                for pn in ['NOME', 'FISCAL', 'TECNICO', 'COLABORADOR']:
-                    if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
-                if 'LEVANTADOR' in b_t.columns:
-                    opts = sorted([str(x) for x in b_t['LEVANTADOR'].dropna().unique() if str(x).upper().strip() != 'SEM LEVANTADOR'])
-                    sel = st.multiselect("Selecione os Fiscais Ativos:", opts, default=opts)
-                    if sel:
-                        df_bases = b_t[b_t['LEVANTADOR'].isin(sel)].copy()
-                        if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
-                            df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-                            df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-                        elif 'RESIDENCIA' in df_bases.columns or 'MUNICIPIO' in df_bases.columns:
-                            cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
-                            mc = {}
-                            with st.spinner("🌍 Mapeando bases..."):
-                                for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
-                            df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
-                        df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'FISCAL'
-                else: st.error("❌ A planilha não possui a coluna 'FISCAL'.")
-            except Exception as e: st.error(f"Erro: {e}")
+        bf = st.file_uploader("Suba a planilha de Fiscais (Excel)", type=["xlsx", "xls"])
+        if bf:
+            b_t = ler_planilha_cached(bf.getvalue()); b_t.columns = normalize_cols(b_t.columns)
+            b_t = b_t.loc[:, ~b_t.columns.duplicated()].copy()
+            for pn in ['NOME', 'FISCAL', 'TECNICO', 'COLABORADOR']:
+                if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
+            if 'LEVANTADOR' in b_t.columns:
+                opts = sorted([str(x) for x in b_t['LEVANTADOR'].dropna().unique() if str(x).upper().strip() != 'SEM LEVANTADOR'])
+                sel = st.multiselect("Selecione os Fiscais Ativos:", opts, default=opts)
+                if sel:
+                    df_bases = b_t[b_t['LEVANTADOR'].isin(sel)].copy()
+                    if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
+                        df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+                        df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+                    elif 'RESIDENCIA' in df_bases.columns or 'MUNICIPIO' in df_bases.columns:
+                        cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
+                        mc = {}
+                        with st.spinner("🌍 Mapeando bases..."):
+                            for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
+                        df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
+                    df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'FISCAL'
+            else: st.error("❌ A planilha não possui a coluna 'FISCAL'.")
 
     with c_up2:
         st.markdown("### 📁 2. Obras de Fiscalização")
@@ -256,15 +273,14 @@ elif status_exec == "IDLE":
     if df_bases.empty or not task_files: st.stop()
     
     qtd_eq = df_bases['LEVANTADOR'].nunique()
-    cap_max = obras_por_dia * (len(dias_semana_selecionados) if tipo_periodo_clean == 'Semana' else 1) * limite_periodos
-    sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_max, 0, qtd_eq, cap_max * qtd_eq), unsafe_allow_html=True)
+    cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
+    sb_html.markdown(render_sidebar_card(cm, 0, qtd_eq, cm * max(1, qtd_eq)), unsafe_allow_html=True)
 
-    # Lendo Obras
     dfs = []
     for f in task_files:
         dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
         dft.columns = normalize_cols(dft.columns)
-        if not dfs: st.session_state.colunas_originais = dft.columns.tolist()
+        if not dfs: st.session_state.colunas_originais_fisc = dft.columns.tolist()
         for cc in ['NOTA', 'PROTOCOLO', 'OS']:
             if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
         dfs.append(dft)
@@ -275,7 +291,6 @@ elif status_exec == "IDLE":
         df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True); df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
 
     st.markdown("---")
-    # FILTRO GEOFENCING E STATUS
     falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO'] if c not in df_tasks.columns]
     if falta: st.error(f"🚨 Faltam colunas: {', '.join(falta)}."); st.stop()
     
@@ -293,8 +308,7 @@ elif status_exec == "IDLE":
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
-    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty(); tsg = time.time()
-    df_tasks['MOTIVO_REJEICAO'] = ''; df_rej = pd.DataFrame()
+    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty(); df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
     if m_m.sum() > 0:
@@ -314,14 +328,13 @@ elif status_exec == "IDLE":
     mc = m_na | m_0 | m_pos | m_inv
     if mc.sum() > 0: df_rej = pd.concat([df_rej, df_tasks[mc].copy()], ignore_index=True); df_tasks = df_tasks[~mc].copy()
     
-    df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']
-    df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+    df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']; df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
     
     if not df_tasks.empty:
         mu = df_tasks['MUNICIPIO'].unique(); tm = len(mu); md = {}
         for i, m in enumerate(mu):
-            fr = (i + 1) / max(1, tm); pbg.progress(fr); sgt.info(f"🛰️ Satélite: {m}")
-            try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.3)
+            pbg.progress((i + 1) / max(1, tm)); sgt.info(f"🛰️ Satélite: {m}")
+            try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.1)
             except: lt, ln = np.nan, np.nan
             md[m] = (lt, ln)
             
@@ -333,7 +346,7 @@ elif status_exec == "IDLE":
         
         pbg.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
-        if not df_rej.empty: st.warning(f"⚠️ {len(df_rej)} obras com erro isoladas na 'Planilha de Correção'.")
+        if not df_rej.empty: st.warning(f"⚠️ {len(df_rej)} obras isoladas na Cerca Eletrônica (Baixe a Planilha de Correção no fim).")
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -341,53 +354,62 @@ elif status_exec == "IDLE":
         df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
         df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
     else: df_tasks['QTD PREVISTA DE POSTES'], df_tasks['COR_ICONE'] = 0.0, 'gray'
-    df_tasks['PRIORIDADE'] = 'Sim'
 
-    df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_super_ponto, agrupar_por_levantador=False)
-    df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'].fillna(''))
+    df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
 
+    # ==============================================================
+    # A MÁGICA DA ALOCAÇÃO: BOLSÕES MAIORES PARA FISCAIS MAIS PERTO
+    # ==============================================================
     tbr = df_bases.to_dict('records')
-    mta = {}
-    for b in tbr:
-        for m in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).split(','):
-            ml = normalizar_municipios(pd.Series([m])).iloc[0]
-            if ml:
-                if ml not in mta: mta[ml] = []
-                if b['LEVANTADOR'] not in mta[ml]: mta[ml].append(b['LEVANTADOR'])
-
-    bc, bp = {b['LEVANTADOR']: 0 for b in tbr}, {b['LEVANTADOR']: 0.0 for b in tbr}
     
-    if trava_global_obras > 0:
-        df_tasks = df_tasks.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True]).head(trava_global_obras)
-
-    df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
-    assigned_tasks, unassigned_tasks = [], []
+    # 1. Configura as âncoras (GPS inicial) e os limites de cada fiscal
+    fiscal_anchors = {b['LEVANTADOR']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
+    fiscal_capacities = {b['LEVANTADOR']: cm for b in tbr}
+    fiscal_loads = {b['LEVANTADOR']: 0 for b in tbr}
     
-    df_combinado = df_tasks.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+    assigned_tasks = []
+    unassigned_tasks = []
     
-    for r in df_combinado.to_dict('records'):
+    # 2. ORDENA GLOBALMENTE DO MAIOR PARA O MENOR BOLSÃO DE POSTES
+    df_tasks = df_tasks.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+    
+    if trava_global > 0: df_tasks = df_tasks.head(trava_global)
+        
+    for r in df_tasks.to_dict('records'):
         qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
-        la, lo, ms = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', ''))
-        vb = [b for b in tbr if b['LEVANTADOR'] in set(mta.get(ms, []))]
-        bb, bd, qpo = None, float('inf'), float(r.get('QTD PREVISTA DE POSTES', 0))
+        la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         
+        best_f = None
+        best_d = float('inf')
+        
+        # 3. Varre todos os fiscais que ainda têm espaço na cota
         if pd.notna(la) and pd.notna(lo):
-            # Lógica Crucial de Load Balancing para Fiscais (Sorteia quem tem menos postes primeiro)
-            vb = sorted(vb, key=lambda b: (bp[b['LEVANTADOR']], bc[b['LEVANTADOR']]))
-            for b in vb:
-                bn = b['LEVANTADOR']
-                if bc[bn] + qr <= cap_max: bb = bn; break
-        
-        if bb:
-            bc[bb] += qr; bp[bb] += qpo; r['BASE_ATRIBUIDA'] = bb; assigned_tasks.append(r)
+            for f_name, anchor in fiscal_anchors.items():
+                if fiscal_loads[f_name] + qr <= fiscal_capacities[f_name]:
+                    d = haversine_scalar(la, lo, anchor[0], anchor[1])
+                    if d < best_d:
+                        best_d = d
+                        best_f = f_name
+                        
+        if best_f:
+            fiscal_loads[best_f] += qr
+            r['BASE_ATRIBUIDA'] = best_f
+            assigned_tasks.append(r)
+            
+            # 4. ATUALIZAÇÃO DINÂMICA DE ÂNCORA:
+            # Ao receber a 1ª obra (que é a MAIOR), o fiscal se muda virtualmente para ela.
+            # As próximas obras (menores) serão alocadas para quem estiver ancorado perto!
+            if fiscal_loads[best_f] == qr:
+                fiscal_anchors[best_f] = (la, lo)
         else:
-            r['MOTIVO_REJEICAO'] = "Estoque Lotado ou Sem Fiscal na Cidade"
+            r['MOTIVO_REJEICAO'] = "Estoque Lotado"
+            r['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
-    st.session_state.df_unallocated, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
+    st.session_state.df_unallocated_fisc, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
     
-    sidebar_html_placeholder.markdown(renderizar_painel_lateral(cap_max, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qtd_eq, cap_max * qtd_eq), unsafe_allow_html=True)
+    sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
     if df_ta.empty: st.error("Nenhuma obra pôde ser alocada aos Fiscais."); st.stop()
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
@@ -398,84 +420,173 @@ elif status_exec == "IDLE":
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
-        st.session_state.update({'bases_records': tbr, 'tipo_periodo': tipo_periodo_clean, 'colunas_exibir': colunas_exibir, 'col_prioridade': "PRIORIDADE"})
-        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': velocidade_media_kmh, 'obras_por_dia': obras_por_dia, 'tipo_periodo': tipo_periodo_clean, 'limite_periodos': limite_periodos, 'dias_selecionados': dias_semana_selecionados, 'url_osrm_base': 'http://router.project-osrm.org', 'tracado_real': False, 'data_inicio': data_inicio_roteiro, 'sentido_rota': sentido_rota, 'modo_operacao': '3'}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': []}
-        st.session_state.vrp_status = "RUNNING"; tentar_rerun()
+        st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
+        st.session_state.vrp_state_fisc = {'config': {'velocidade_media_kmh': vel_kmh, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 1.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        st.session_state.vrp_status_fisc = "RUNNING"; tentar_rerun()
 
-# --- EXECUÇÃO (RUNNING) ---
+# ==========================================
+# CÁLCULO VRP (INTERCALAÇÃO E BOLSÕES)
+# ==========================================
 if status_exec == "RUNNING":
-    state = st.session_state.vrp_state
-    b_names = state['b_names']
-    b_idx = state.get('b_idx', 0)
+    st.markdown("## 🚀 Execução do Motor VRP (Fiscalização de Bolsões)")
+    if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
     
-    if b_idx < len(b_names):
-        b_name = b_names[b_idx]
-        df_todas_bases_ativas = pd.DataFrame(st.session_state.bases_records)
-        base_lat, base_lon = float(df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]['LATITUDE']), float(df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]['LONGITUDE'])
-        obras_equipe = state['unvisited'][state['unvisited']['BASE_ATRIBUIDA'] == b_name].to_dict('records')
+    st_run = st.session_state.get('start_time_run_fisc', time.time())
+    if 'start_time_run_fisc' not in st.session_state: st.session_state.start_time_run_fisc = st_run
+    
+    pb = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
+    st_v = st.session_state.vrp_state_fisc; cfg = st_v['config']; b_n = st_v['b_names']; b_i = st_v.get('b_idx', 0)
+    
+    def render_t(bi, ii, it):
+        e = time.time() - st_run; f = (bi + (ii / max(1, it))) / max(1, len(b_n))
+        rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
+        es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
+        tmp.markdown(f'<div style="display:flex; gap:15px; margin-bottom: 20px;"><div style="flex:1; padding:20px; border-radius:10px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center; box-shadow:0 2px 5px rgba(0,0,0,0.05);"><div style="font-size:0.9rem; color:#6c757d; font-weight:bold; margin-bottom:5px;">⏱️ Decorrido</div><div style="font-size:2rem; font-weight:bold; color:#0D256C;">{es}</div></div><div style="flex:1; padding:20px; border-radius:10px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center; box-shadow:0 2px 5px rgba(0,0,0,0.05);"><div style="font-size:0.9rem; color:#2e7d32; font-weight:bold; margin-bottom:5px;">🎯 Restante</div><div style="font-size:2rem; font-weight:bold; color:#1b5e20;">{rs}</div></div></div>', unsafe_allow_html=True)
+
+    if b_i < len(b_n):
+        bn = b_n[b_i]; pb.progress(b_i / max(1, len(b_n))); sgt.info(f"🧠 Intercalando Obras de **{bn}**... ({b_i+1}/{len(b_n)})")
+        render_t(b_i, 0, 1)
         
-        # Greedy Sorting focado em POSTES (Score = Distância - Peso dos Postes)
-        ordered_tasks, curr_lat, curr_lon, unvisited_pts = [], base_lat, base_lon, list(obras_equipe)
-        is_reversa = "Reversa" in state['config'].get('sentido_rota', '')
-        
-        if is_reversa and unvisited_pts:
-            bi, bs = 0, -1
-            for i, p in enumerate(unvisited_pts):
-                d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
-                sc = d * (1 + (extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0)) / 50.0))
-                if sc > bs: bs, bi = sc, i
-            nxt = unvisited_pts.pop(bi); ordered_tasks.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+        if 'c_rotas' not in st_v:
+            br = pd.DataFrame(st.session_state.bases_records_fisc)
+            br = br[br['LEVANTADOR'] == bn].iloc[0]
+            if pd.isna(br.get('LATITUDE')): st_v['b_idx'] += 1; st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
+            bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
+            oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-        while unvisited_pts:
-            bi, bs = 0, float('inf')
-            for i, p in enumerate(unvisited_pts):
-                d = haversine_scalar(curr_lat, curr_lon, p['LATITUDE'], p['LONGITUDE'])
-                sc = d - min(d * 0.8, extrair_qtd(p.get('QTD PREVISTA DE POSTES', 0)) * 0.1)
-                if sc < bs: bs, bi = sc, i
-            nxt = unvisited_pts.pop(bi); ordered_tasks.append(nxt); curr_lat, curr_lon = nxt['LATITUDE'], nxt['LONGITUDE']
+            ot = []
+            if oe:
+                # O OR-Tools agora varre e encontra o melhor caminho (TSP), 
+                # conectando Base -> Obra Pequena (no caminho) -> Bolsão Maior automaticamente!
+                tr = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'])
+                if "Reversa" in cfg.get('sentido_rota', '') and tr:
+                    fi = max(range(len(tr)), key=lambda i: haversine_scalar(bl, bL, float(tr[i]['LATITUDE']), float(tr[i]['LONGITUDE'])))
+                    tr = tr[fi:] + tr[:fi]
+                ot = tr if tr else oe
+            
+            rf, da, sa, dds = [], 1, 1, 1
+            dtb = datetime.combine(cfg['data_inicio'], datetime.min.time()).replace(hour=8, minute=0)
+            def gi(da):
+                c, d_ok = dtb, [0,1,2,3,4,5,6] if not cfg['dias_selecionados'] else [{"Segunda":0,"Terça":1,"Quarta":2,"Quinta":3,"Sexta":4,"Sábado":5,"Domingo":6}[d] for d in cfg['dias_selecionados']]
+                while c.weekday() not in d_ok: c += pd.Timedelta(days=1)
+                ct = 1
+                while ct < da:
+                    c += pd.Timedelta(days=1)
+                    if c.weekday() in d_ok: ct += 1
+                return {'l': bl, 'L': bL, 't': c, 'd': c, 'oh': 0, 'lu': False}
+            es = gi(da)
 
-        # Fatiamento Simples por Dias
-        routed_data_final, dia_abs = [], 1
-        for o in ordered_tasks:
-            o['ORDEM'], o['DIA'], o['PERIODO'], o['NOME_DIA'], o['DIA_MES'] = len(routed_data_final) + 1, dia_abs, dia_abs, f"Dia {dia_abs}", ""
-            o['DISTANCIA_PONTO_ANTERIOR_KM'] = 1.0 # Placeholder simplificado para velocidade
-            o['_HORA_INICIO_DT'], o['_HORA_FIM_DT'] = datetime.now(), datetime.now()
-            routed_data_final.append(o)
-
-        state['routed_data'].extend(routed_data_final)
-        state['b_idx'] += 1; st.session_state.vrp_state = state; tentar_rerun()
+            for o in ot:
+                qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
+                vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
+                vk = vkr * 1.3
+                if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
+                else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
+                
+                cp = es['t'] + pd.Timedelta(minutes=vm)
+                if cp.hour >= 12 and not es['lu']:
+                    ls = max(es['t'], es['d'].replace(hour=12)); le = ls + pd.Timedelta(hours=1)
+                    rf.append({'o': None, 'il': True, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': es['l'], 'Lt': es['L'], 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': ls, 'hf': le, 'vm': 0.0, 'dk': 0.0})
+                    es['t'], es['lu'] = le, True; cp = es['t'] + pd.Timedelta(minutes=vm)
+                fp = cp + pd.Timedelta(minutes=em)
+                
+                if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
+                    dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
+                    rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
+                    da += 1
+                    if cfg['tipo_periodo'] == "Semana":
+                        dds += 1
+                        if dds > len(cfg['dias_selecionados']): sa += 1; dds = 1
+                    es = gi(da)
+                    vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE']); vk = vkr * 1.3
+                    if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
+                    else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
+                    cp = es['t'] + pd.Timedelta(minutes=vm); fp = cp + pd.Timedelta(minutes=em)
+                
+                rf.append({'o': o, 'il': False, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': o['LATITUDE'], 'Lt': o['LONGITUDE'], 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': cp, 'hf': fp, 'vm': vm, 'dk': vk})
+                es['l'], es['L'], es['t'], es['oh'] = o['LATITUDE'], o['LONGITUDE'], fp, es['oh'] + qr
+                
+            if es['oh'] > 0:
+                dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
+                rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
+            
+            st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
+        else:
+            rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
+            ei = min(oi + (30 if cfg['tracado_real'] else len(rf)), len(rf))
+            for i in range(oi, ei):
+                it = rf[i]
+                if not cfg['tracado_real']: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                else:
+                    if i%5==0: sgt.info(f"🛣️ Traçando asfalto **{bn}**... ({i}/{len(rf)})")
+                    render_t(b_i, i, len(rf)); time.sleep(0.05)
+                    try: gd.append(obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh']))
+                    except: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+            st_v['c_idx'], st_v['current_geoms'] = ei, gd
+            if ei < len(rf): st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
+            
+            bl, bL = float(pd.DataFrame(st.session_state.bases_records_fisc)[pd.DataFrame(st.session_state.bases_records_fisc)['LEVANTADOR']==bn].iloc[0]['LATITUDE']), float(pd.DataFrame(st.session_state.bases_records_fisc)[pd.DataFrame(st.session_state.bases_records_fisc)['LEVANTADOR']==bn].iloc[0]['LONGITUDE'])
+            rdf, og, dp = [], 1, ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+            for it, (g, ds) in zip(rf, gd):
+                pv = it['s'] if cfg['tipo_periodo']=="Semana" else it['d']
+                dn = dp[datetime.strptime(it['dm'], '%d/%m/%Y').weekday()] if cfg['tipo_periodo']=="Semana" else f"Dia {it['d']}"
+                if it['il']: rdf.append({'PROTOCOLO': 'PAUSA_ALMOCO', 'NOME': '🍔 ALMOÇO', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
+                elif it['ir']: rdf.append({'PROTOCOLO': 'RETORNO_BASE', 'NOME': 'BASE_RETORNO', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(it['dk'], 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
+                else:
+                    ob = it['o']; ob['ORDEM'], ob['NOME_DIA'], ob['DIA_MES'], ob['SEMANA'], ob['DIA'], ob['PERIODO'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, dn, it['dm'], it['s'], it['d'], pv, round(it['dk'], 2)
+                    ob['ROTA_GEOMETRIA'] = [[it['Lt'], it['lt']], [it['Lt'], it['lt']]] if it['la']==bl and it['La']==bL else g
+                    ob['HORA_INICIO'], ob['HORA_FIM'], ob['_HORA_INICIO_DT'], ob['_HORA_FIM_DT'] = it['hi'].strftime('%H:%M'), it['hf'].strftime('%H:%M'), it['hi'], it['hf']
+                    rdf.append(ob)
+                og += 1
+            st_v['routed_data'].extend(rdf); del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
+            st_v['b_idx'] += 1; st.session_state.vrp_state_fisc = st_v; gc.collect(); tentar_rerun()
     else:
-        st.session_state.df_routed = pd.DataFrame(state['routed_data'])
-        st.session_state.vrp_status = "PACKAGING"; tentar_rerun()
+        sgt.success("✅ Rotas de Fiscalização Traçadas!"); pb.progress(1.0)
+        st.session_state.df_routed_fisc = pd.DataFrame(st_v['routed_data'])
+        st.session_state.vrp_status_fisc = "PACKAGING"; time.sleep(1); tentar_rerun()
 
-# --- EMPACOTAMENTO ---
+# ==========================================
+# PACOTES E DOWNLOAD
+# ==========================================
 if status_exec == "PACKAGING":
-    df_routed = st.session_state.df_routed
-    d_fmt = datetime.now().strftime("%d.%m.%Y")
-    buf_xl, buf_kml = io.BytesIO(), io.BytesIO()
-    
-    with zipfile.ZipFile(buf_xl, 'w', zipfile.ZIP_DEFLATED) as z_xl, zipfile.ZipFile(buf_kml, 'w', zipfile.ZIP_DEFLATED) as z_kml:
-        # Resumo
-        res = []
-        for b in df_routed['BASE_ATRIBUIDA'].unique():
-            dfb = df_routed[df_routed['BASE_ATRIBUIDA'] == b]
-            res.append({'LEVANTADOR (FISCAL)': b, 'POSTES FISCALIZADOS': int(pd.to_numeric(dfb.get('QTD PREVISTA DE POSTES',0), errors='coerce').sum()), 'OBRAS': len(dfb)})
-        z_xl.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
-        
-        # Correção
-        if not st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame()).empty:
-            dfc = st.session_state.df_correcao_fiscalizacao.copy()
-            dfc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
-            for c in dfc.columns:
-                if str(dfc[c].dtype) == 'object': dfc[c] = dfc[c].astype(str).replace('nan', '')
-            out_e = io.BytesIO(); dfc.to_excel(out_e, index=False); z_xl.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
-        
-        # Geral
-        dfg = limpar_colunas_excel(df_routed.drop(columns=['MUN_LIMPO', 'COR_ICONE'], errors='ignore'), st.session_state.colunas_originais)
-        z_xl.writestr(f"Demanda_Fiscais - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
-        
-        # KML
-        z_kml.writestr(f"ROTA_TOTAL - {d_fmt}.kml", gerar_kml_fiscalizacao(df_routed, f"ROTAS FISCAIS", st.session_state.colunas_exibir).encode('utf-8'))
+    st.markdown("## 📦 Empacotamento")
+    df_routed, d_fmt = st.session_state.df_routed_fisc, datetime.now().strftime("%d.%m.%Y")
+    bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    try:
+        with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
+            res = []
+            for b in df_routed['BASE_ATRIBUIDA'].unique():
+                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
+                br = next((x for x in st.session_state.bases_records_fisc if x['LEVANTADOR']==b), None)
+                qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
+                pms = pd.to_numeric(db['QTD PREVISTA DE POSTES'], errors='coerce').fillna(0).round().astype(int)
+                res.append({'FISCAL': b, 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO', 'TOTAL OBRAS': len(db), 'SUPER PONTOS': qs, 'POSTES AUDITADOS': int(pms.sum()), 'KM TOTAL PREVISTO': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
+            zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
+            
+            dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
+            if not dfc.empty:
+                dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                for cc in dfcc.columns:
+                    if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
+                out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
+            
+            dfg = limpar_colunas_excel(df_routed.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+            for cc in dfg.columns:
+                if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
+            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
+            
+            dfk = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+            ks = gerar_kml_fiscalizacao(dfk, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+            zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
+            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk, "ROTA TOTAL").encode('utf-8'))
+            
+            df_u = st.session_state.get('df_unallocated_fisc', pd.DataFrame())
+            if not df_u.empty:
+                ku = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>', '<Style id="wp"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>']
+                for _, r in df_u.iterrows():
+                    if pd.notna(r.get('LATITUDE')) and pd.notna(r.get('LONGITUDE')): ku.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO", "Rejeitado")))}</name><styleUrl>#wp</styleUrl><Point><coordinates>{r.get("LONGITUDE")},{r.get("LATITUDE")}</coordinates></Point></Placemark>')
+                ku.append('</Document></kml>'); zk.writestr(f"OBRAS_NAO_ALOCADAS - {d_fmt}.kml", "\n".join(ku).encode('utf-8'))
 
-    st.session_state.bytes_zip_xl, st.session_state.bytes_zip_kml = buf_xl.getvalue(), buf_kml.getvalue()
-    st.session_state.roteamento_concluido = True; st.session_state.vrp_status = "IDLE"; tentar_rerun()
+        st.session_state.bytes_zip_xl_fisc, st.session_state.bytes_zip_kml_fisc, st.session_state.bytes_zip_gpx_fisc = bu_xl.getvalue(), bu_kml.getvalue(), bu_gpx.getvalue()
+        st.session_state.roteamento_concluido_fisc = True; st.session_state.vrp_status_fisc = "IDLE"; tentar_rerun()
+    except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status_fisc = "IDLE"
