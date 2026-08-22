@@ -24,7 +24,7 @@ STATUS_PADRAO = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES',
 TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
 
 # ==========================================
-# FUNÇÕES VISUAIS (DESIGN) E AUXILIARES
+# FUNÇÕES VISUAIS E AUXILIARES
 # ==========================================
 
 def render_metric_card(title, value, icon, border_color, bg_color):
@@ -94,7 +94,6 @@ def limpar_roteirizador():
     for k in ['bytes_zip_xl_tat', 'bytes_zip_kml_tat', 'bytes_zip_gpx_tat', 'start_time_run_tat', 'start_time_pkg_tat']: st.session_state.pop(k, None)
     ler_planilha_cached.clear(); tentar_rerun()
 
-
 # ==========================================
 # INÍCIO DA PÁGINA
 # ==========================================
@@ -124,7 +123,7 @@ with st.sidebar:
         obras_dia = st.number_input("Obras por Dia", 1, 30, step=1, disabled=is_locked)
         limite_per = st.number_input(f"Limite total de {tpc}s", 1, 5, step=1, disabled=is_locked)
         vel_kmh, t_obra = 30.0, 1.5
-        
+
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked)
@@ -138,7 +137,6 @@ with st.sidebar:
         st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml_tat', b""), file_name=f"Tatico_Mapas - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_tat', b""), file_name=f"Tatico_GPS - {d_fmt}.zip", use_container_width=True)
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
-
 
 # ==========================================
 # EXIBIÇÃO DE RESULTADOS (SE CONCLUÍDO)
@@ -202,7 +200,6 @@ if is_done and not st.session_state.df_routed_tat.empty:
     with t2:
         df_dfc = pd.DataFrame([{"Levantador": b['LEVANTADOR'], "Obras": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows()), "Meta": m_eq, "Falta": max(0, m_eq - sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows()))} for b in st.session_state.bases_records_tat]).sort_values(by="Falta", ascending=False)
         st.dataframe(df_dfc, use_container_width=True)
-
 
 # ==========================================
 # START DA APLICAÇÃO (UPLOAD DE DADOS)
@@ -278,7 +275,6 @@ elif status_exec == "IDLE":
 
     qe = (df_bases['LEVANTADOR'].nunique() if not df_bases.empty else 0) + (df_bases_temp['LEVANTADOR'].nunique() if not df_bases_temp.empty else 0)
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
-    
     sb_html.markdown(render_sidebar_card(cm, 0, qe, cm * max(1, qe)), unsafe_allow_html=True)
 
     if not t_f and not s_f and not g_f: st.info("Aguardando planilhas..."); st.stop()
@@ -454,7 +450,7 @@ elif status_exec == "IDLE":
         at, ut = [], []
         for r in pd.concat([df_pp, df_cp], ignore_index=True).sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True]).to_dict('records'):
             qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
-            la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE'] == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
+            la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE') == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
             vn = set(mtm.get(ms, [])) if ip else set(mta.get(ms, []))
             vb = sorted([b for b in tbr if b['LEVANTADOR'] in vn and (not p4 or str(b.get('VEICULO', '')).upper() == '4X4')], key=lambda x: bc[x['LEVANTADOR']])
             bb, bd = None, float('inf')
@@ -482,7 +478,6 @@ elif status_exec == "IDLE":
         df_ta, df_u = pd.DataFrame(at), pd.DataFrame(su)
         if not df_sp.empty: df_u = pd.concat([df_u, df_sp], ignore_index=True)
         st.session_state.df_unallocated, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
-        
         sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qe, cm * qe), unsafe_allow_html=True)
         
         if df_ta.empty: st.error("Nenhuma obra alocada."); st.stop()
@@ -712,7 +707,7 @@ if status_exec == "PACKAGING":
                 dx = limpar_colunas_excel(db.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_tat)
                 for c in dx.columns:
                     if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
-                zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx",gerar_excel_bytes(dx, "PRIORIDADE"))
+                zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
                 kl = gerar_kml_agrupado(dk, st.session_state.bases_records_tat, f"ROTA_{ns}", st.session_state.colunas_exibir_tat, [b], st.session_state.vrp_state_tat['config']['tipo_periodo'], formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>', '', kl, flags=re.IGNORECASE | re.DOTALL).encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
