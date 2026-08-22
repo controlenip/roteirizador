@@ -148,7 +148,7 @@ with st.sidebar:
     
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked) # Ativado por padrão para forçar o arruamento nos KMLs
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
 
     st.markdown("---")
     sb_html = st.empty()
@@ -222,41 +222,44 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             text_donut = base_pie.mark_text(radiusOffset=15, size=12, color='black', fontWeight='bold').encode(text='Perc_Text:N')
             st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
             
-        # Botão de Exportação para PDF Real
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
+        # Botão de Exportação para Relatório Executivo (PDF Seguro)
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
 
-        def gerar_pdf_bytes(df_res):
-            pdf_buf = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-            elements = []
-            styles = getSampleStyleSheet()
-            
-            title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#0D256C'), spaceAfter=15)
-            elements.append(Paragraph("<b>Relatório Executivo de Fiscalização - NIP v3.0</b>", title_style))
-            elements.append(Spacer(1, 10))
-            
-            table_data = [["Fiscal", "Total Obras", "Postes Auditados", "KM Previsto"]]
-            for _, row in df_res.iterrows():
-                table_data.append([str(row['Fiscal']), str(row['Obras']), str(row['Postes']), f"{row.get('Perc_Text', '')}"])
+            def gerar_pdf_bytes(df_res):
+                pdf_buf = io.BytesIO()
+                doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+                elements = []
+                styles = getSampleStyleSheet()
                 
-            t = Table(table_data, colWidths=[200, 90, 100, 110])
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 8),
-                ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8f9fa')),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
-            ]))
-            elements.append(t)
-            doc.build(elements)
-            return pdf_buf.getvalue()
+                title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#0D256C'), spaceAfter=15)
+                elements.append(Paragraph("<b>Relatório Executivo de Fiscalização - NIP v3.0</b>", title_style))
+                elements.append(Spacer(1, 10))
+                
+                table_data = [["Fiscal", "Total Obras", "Postes Auditados", "Fat. Postes"]]
+                for _, row in df_res.iterrows():
+                    table_data.append([str(row['Fiscal']), str(row['Obras']), str(row['Postes']), f"{row.get('Perc_Text', '')}"])
+                    
+                t = Table(table_data, colWidths=[200, 90, 100, 110])
+                t.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('BOTTOMPADDING', (0,0), (-1,0), 8),
+                    ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8f9fa')),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
+                ]))
+                elements.append(t)
+                doc.build(elements)
+                return pdf_buf.getvalue()
 
-        st.download_button("📥 Baixar Relatório Executivo (PDF)", data=gerar_pdf_bytes(df_chart), file_name=f"Relatorio_Fiscalizacao - {datetime.now().strftime('%d.%m.%Y')}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("📥 Baixar Relatório Executivo (PDF)", data=gerar_pdf_bytes(df_chart), file_name=f"Relatorio_Fiscalizacao - {datetime.now().strftime('%d.%m.%Y')}.pdf", mime="application/pdf", use_container_width=True)
+        except Exception:
+            st.info("💡 Dica: Você pode salvar os gráficos em alta resolução clicando no ícone de três pontos (⋮) no canto superior direito de cada gráfico.")
 
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -519,7 +522,7 @@ elif status_exec == "IDLE":
         st.session_state.vrp_status_fisc = "RUNNING"; tentar_rerun()
 
 # ==========================================
-# CÁLCULO VRP (LÓGICA: SMALL -> BIG | SEM PAUSA)
+# CÁLCULO VRP (LÓGICA: SMALL -> BIG | TRAÇADO REAL COM SLEEP)
 # ==========================================
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor VRP (Fiscalização de Bolsões)")
@@ -585,12 +588,13 @@ if status_exec == "RUNNING":
             ei = min(oi + (30 if cfg['tracado_real'] else len(rf)), len(rf))
             for i in range(oi, ei):
                 it = rf[i]
-                if not cfg['tracado_real']: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                if not cfg['tracado_real']: 
+                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
                 else:
-                    if i%5==0: sgt.info(f"🛣️ Traçando asfalto **{bn}**... ({i}/{len(rf)})")
-                    render_t(b_i, i, len(rf)); time.sleep(0.05)
+                    if i%5==0: sgt.info(f"🛣️ Traçando arruamento real **{bn}**... ({i}/{len(rf)})")
+                    render_t(b_i, i, len(rf))
+                    time.sleep(0.15) # Atraso seguro para evitar bloqueio do OSRM público
                     try: 
-                        # CORREÇÃO: Força a busca real de ruas se o checkbox estiver ativo
                         res_ruas = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
                         gd.append(res_ruas)
                     except: 
@@ -639,7 +643,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # Desagrupamento de Superpontos para o Excel Geral
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -657,7 +660,6 @@ if status_exec == "PACKAGING":
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
             
-            # Geração RIGOROSA de arquivos INDIVIDUAIS por Fiscal no ZIP
             for b_name in df_routed['BASE_ATRIBUIDA'].unique():
                 if pd.isna(b_name) or b_name == "NÃO ALOCADO": continue
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
@@ -666,7 +668,6 @@ if status_exec == "PACKAGING":
                 
                 if dk.empty: continue
                 
-                # Excel Individual Desagrupado
                 ld = []
                 for _, r in dk.iterrows():
                     if isinstance(r.get('_ORIGINAL_ROWS'), list):
@@ -683,12 +684,10 @@ if status_exec == "PACKAGING":
                         if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
                     zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
                 
-                # KML e GPX Individual com Arruamento Real
                 kl = gerar_kml_fiscalizacao(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            # KML e GPX Total
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fiscalizacao(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
