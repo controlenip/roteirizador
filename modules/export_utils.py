@@ -47,8 +47,10 @@ def gerar_gpx_simples(df_kml, nome_rota):
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
-def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir, funcao_formatadora):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '  <Document>', f'    <name>{html.escape(str(nome_rota))}</name>']
+def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
+    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
+    
+    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>')
     styles = {
         'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png',
         'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
@@ -60,68 +62,50 @@ def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir, funcao_formatadora
     for color, url in styles.items():
         kml.extend([f'    <Style id="style_{color}">', f'      <IconStyle><Icon><href>{url}</href></Icon></IconStyle>', '    </Style>'])
 
-    coords_linha = []
-    for _, row in df_kml.iterrows():
-        if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-        lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-        if pd.isna(lat) or pd.isna(lon): continue
+    bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+    txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
+
+    for b in bases_ativas:
+        pasta = f'  <Folder><name>Fiscal: {html.escape(str(b))}</name>'
+        df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
+        if df_b.empty: continue
         
-        # Injeta as coordenadas do traçado se o arruamento foi calculado
-        geom = row.get('ROTA_GEOMETRIA')
-        if isinstance(geom, list):
-            for L, l in geom: coords_linha.append(f"{L},{l},0")
-        else:
-            coords_linha.append(f"{lon},{lat},0")
+        coords = []
+        for _, r in df_b.iterrows():
+            geom = r.get('ROTA_GEOMETRIA')
+            if isinstance(geom, list):
+                for pt in geom:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        coords.append(f"{pt[0]},{pt[1]},0")
+        if coords:
+            pasta += '    <Placemark><name>Arruamento da Rota</name><styleUrl>#s_line</styleUrl><LineString><coordinates>' + ' '.join(coords) + '</coordinates></LineString></Placemark>'
         
-        nome, qtd, cor = str(row.get('PROTOCOLO', 'Ponto')), float(row.get('QTD PREVISTA DE POSTES', 0)), row.get('COR_ICONE', 'gray')
+        for _, r in df_b.iterrows():
+            if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+            lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+            if pd.isna(lat) or pd.isna(lon): continue
+            
+            cor = r.get('COR_ICONE', 'gray')
+            qtd = int(float(r.get('QTD PREVISTA DE POSTES', 0)))
+            nome = str(r.get('PROTOCOLO', 'Ponto'))
+            
+            p_bg = bg_colors.get(cor, '#9E9E9E')
+            p_c = txt_colors.get(cor, '#ffffff')
+            p_txt = f"📋 FISCALIZAÇÃO - {qtd} POSTES"
+            
+            er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+            desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;">{er}</table></div>'
+            
+            pasta += f'    <Placemark><name>[{qtd} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>'
         
-        # Mapeamento do Layout Tático para o KML
-        bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
-        txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
-        p_bg = bg_colors.get(cor, '#9E9E9E')
-        p_c = txt_colors.get(cor, '#ffffff')
-        p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+        pasta += '  </Folder>'
+        kml.append(pasta)
 
-        er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, row.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
-        desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;">{er}</table></div>'
-
-        kml.extend(['    <Placemark>', f'      <name>[{int(qtd)} Postes] {html.escape(nome)}</name>', f'      <styleUrl>#style_{cor}</styleUrl>', f'      <description><![CDATA[{desc}]]></description>', f'      <Point><coordinates>{lon},{lat},0</coordinates></Point>', '    </Placemark>'])
-
-    if coords_linha:
-        kml.extend(['    <Placemark>', '      <name>Traçado da Rota</name>', '      <Style><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>', '      <LineString><tessellate>1</tessellate><coordinates>', ' '.join(coords_linha), '      </coordinates></LineString>', '    </Placemark>'])
-
-    kml.extend(['  </Document>', '</kml>'])
+    kml.extend(['</Document>', '</kml>'])
     return '\n'.join(kml)
 
 def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
-    
-    kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
-    kml.append('<Style id="s_red"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon></IconStyle></Style>')
-    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>')
-
-    for b in bases_ativas:
-        pasta = f'  <Folder><name>Base: {b}</name>'
-        df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
-        for p in df_b['PERIODO'].unique():
-            df_p = df_b[df_b['PERIODO'] == p]
-            pasta += f'<Folder><name>Período {p}</name>'
-            coords = []
-            for _, r in df_p.iterrows():
-                if isinstance(r.get('ROTA_GEOMETRIA'), list): coords.extend([f"{lon},{lat},0" for lon, lat in r['ROTA_GEOMETRIA']])
-            if coords:
-                pasta += '<Placemark><name>Rota</name><styleUrl>#s_line</styleUrl><LineString><coordinates>' + ' '.join(coords) + '</coordinates></LineString></Placemark>'
-            for _, r in df_p.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                if pd.isna(lat) or pd.isna(lon): continue
-                desc = '<table border="1">' + "".join([f'<tr><td>{c}</td><td>{funcao_formatadora(c, r.get(c,""))}</td></tr>' for c in colunas_exibir]) + '</table>'
-                pasta += f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO")))}</name><styleUrl>#{"s_red" if r.get("PRIORIDADE")=="Sim" else "s_blue"}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>'
-            pasta += '</Folder>'
-        pasta += '</Folder>'
-        kml.append(pasta)
-    kml.extend(['</Document>', '</kml>'])
-    return "\n".join(kml)
+    return gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora)
 
 # ==========================================
 # UI E AUXILIARES
