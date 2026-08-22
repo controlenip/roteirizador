@@ -12,11 +12,11 @@ from openpyxl.styles import PatternFill, Font, Alignment
 # ==========================================
 
 def formatar_planilha_openpyxl(writer, sheet_name):
-    """Aplica o padrão NIP no arquivo Excel gerado."""
+    """Aplica o padrão NIP (Azul Escuro) no arquivo Excel gerado e ajusta colunas."""
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
     
-    header_fill = PatternFill(start_color='0070C0', end_color='0070C0', fill_type='solid')
+    header_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     header_font = Font(color='FFFFFF', bold=True, name='Calibri')
     
     for cell in worksheet[1]:
@@ -31,11 +31,11 @@ def formatar_planilha_openpyxl(writer, sheet_name):
         column = col[0].column_letter
         for cell in col:
             try:
-                if len(str(cell.value)) > max_length:
+                if cell.value and len(str(cell.value)) > max_length:
                     max_length = len(str(cell.value))
             except:
                 pass
-        worksheet.column_dimensions[column].width = max_length + 2
+        worksheet.column_dimensions[column].width = min(max_length + 2, 60)
 
 def gerar_excel_bytes(df, col_prio, colunas_originais=None):
     output = io.BytesIO()
@@ -58,24 +58,28 @@ def gerar_excel_resumo_bytes(df_resumo):
     return output.getvalue()
 
 def limpar_colunas_excel(df_alvo, cols_originais):
+    """Limpa colunas de programação, remove duplicatas e fixa a ordem perfeita da NIP."""
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
-    rename_map = {}
-    if 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in cols_originais:
-        rename_map['PROTOCOLO'] = 'NOTA'
+    if 'PROTOCOLO' in df_alvo.columns:
+        if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
+        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
+        
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        rename_map['BASE_ATRIBUIDA'] = 'FISCAL'
-    df_alvo = df_alvo.rename(columns=rename_map)
-    
+        if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
+        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
+        
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
+    
     for c in cols_originais:
-        if c in df_alvo.columns and c not in final_cols:
+        if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
             final_cols.append(c)
-        elif c == 'NOTA' and 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in final_cols:
-            final_cols.append('PROTOCOLO')
             
+    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
+    
     for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM']:
+        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo:
             final_cols.append(c)
             
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
