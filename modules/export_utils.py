@@ -65,15 +65,30 @@ def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir, funcao_formatadora
         if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
         if pd.isna(lat) or pd.isna(lon): continue
-        coords_linha.append(f"{lon},{lat},0")
+        
+        # Injeta as coordenadas do traçado se o arruamento foi calculado
+        geom = row.get('ROTA_GEOMETRIA')
+        if isinstance(geom, list):
+            for L, l in geom: coords_linha.append(f"{L},{l},0")
+        else:
+            coords_linha.append(f"{lon},{lat},0")
         
         nome, qtd, cor = str(row.get('PROTOCOLO', 'Ponto')), float(row.get('QTD PREVISTA DE POSTES', 0)), row.get('COR_ICONE', 'gray')
-        desc = '<table border="1" style="border-collapse:collapse; width:100%;">' + "".join([f'<tr><td style="padding:3px;"><b>{html.escape(c)}</b></td><td style="padding:3px;">{funcao_formatadora(c, row.get(c, ""))}</td></tr>' for c in colunas_exibir]) + '</table>'
+        
+        # Mapeamento do Layout Tático para o KML
+        bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+        txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
+        p_bg = bg_colors.get(cor, '#9E9E9E')
+        p_c = txt_colors.get(cor, '#ffffff')
+        p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+
+        er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, row.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+        desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;">{er}</table></div>'
 
         kml.extend(['    <Placemark>', f'      <name>[{int(qtd)} Postes] {html.escape(nome)}</name>', f'      <styleUrl>#style_{cor}</styleUrl>', f'      <description><![CDATA[{desc}]]></description>', f'      <Point><coordinates>{lon},{lat},0</coordinates></Point>', '    </Placemark>'])
 
     if coords_linha:
-        kml.extend(['    <Placemark>', '      <name>Traçado da Rota</name>', '      <Style><LineStyle><color>ff00ffff</color><width>3</width></LineStyle></Style>', '      <LineString><tessellate>1</tessellate><coordinates>', ' '.join(coords_linha), '      </coordinates></LineString>', '    </Placemark>'])
+        kml.extend(['    <Placemark>', '      <name>Traçado da Rota</name>', '      <Style><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>', '      <LineString><tessellate>1</tessellate><coordinates>', ' '.join(coords_linha), '      </coordinates></LineString>', '    </Placemark>'])
 
     kml.extend(['  </Document>', '</kml>'])
     return '\n'.join(kml)
@@ -113,21 +128,9 @@ def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, base
 # ==========================================
 
 def injetar_logo():
-    """Injeta a logo da NIP acima do menu de navegação lateral (Global)."""
+    import os
     if os.path.exists("LOGO_NIP.png"):
-        with open("LOGO_NIP.png", "rb") as f:
-            encoded = base64.b64encode(f.read()).decode()
-        st.markdown(f"""
-            <style>
-                [data-testid="stSidebarNav"] {{
-                    background-image: url('data:image/png;base64,{encoded}');
-                    background-repeat: no-repeat;
-                    background-position: center 30px;
-                    background-size: 160px;
-                    padding-top: 150px;
-                }}
-            </style>
-            """, unsafe_allow_html=True)
+        st.logo("LOGO_NIP.png", icon_image=None)
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO NOTA' in colunas_disponiveis:
