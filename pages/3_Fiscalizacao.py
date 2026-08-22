@@ -16,9 +16,10 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
+from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
+injetar_logo()
 
 # ==========================================
 # FUNÇÕES VISUAIS E AUXILIARES
@@ -214,7 +215,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                 qtd_p = int(float(r.get('QTD PREVISTA DE POSTES', 0)))
                 ic = identificar_icone_folium(r, dfr.columns)
                 
-                # Mapeamento Estrito de Cores para o HTML do Pop-up (Igual ao Tático)
                 bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
                 txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
                 
@@ -226,13 +226,18 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     p_txt = f"📋 FISCALIZAÇÃO - {qtd_p} POSTES"
                 
                 er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
-                
-                # HTML Clone do Planejamento Tático
                 pop_html = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
                 
                 folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
+
+    t1, t2 = st.tabs(["📊 Dados Tabulares", "📉 Resumo por Técnico"])
+    with t1:
+        st.data_editor(st.session_state.df_routed_fisc.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'BASE_ATRIBUIDA', 'COR_ICONE'], errors='ignore'), use_container_width=True)
+    with t2:
+        dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows())} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
+        st.dataframe(dr, use_container_width=True)
 
 
 # ==========================================
@@ -265,6 +270,11 @@ elif status_exec == "IDLE":
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'FISCAL'
             else: st.error("❌ A planilha não possui a coluna 'FISCAL'.")
+
+        st.markdown("##### 📍 Regra de Atribuição")
+        ta = st.radio("Atribuição", ["Por Proximidade (Recomendado)", "Por Município Rígido"], index=0, label_visibility="collapsed")
+        if "Proximidade" in ta: st.caption("A IA persegue os maiores Bolsões e puxa o Fiscal mais próximo.")
+        else: st.caption("Trava o Fiscal apenas dentro da cidade informada na sua planilha.")
 
     with c_up2:
         st.markdown("### 📁 2. Obras de Fiscalização")
@@ -362,7 +372,6 @@ elif status_exec == "IDLE":
     # ==============================================================
     tbr = df_bases.to_dict('records')
     
-    # 1. Configura as âncoras (GPS inicial) e os limites de cada fiscal
     fiscal_anchors = {b['LEVANTADOR']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
     fiscal_capacities = {b['LEVANTADOR']: cm for b in tbr}
     fiscal_loads = {b['LEVANTADOR']: 0 for b in tbr}
@@ -370,23 +379,30 @@ elif status_exec == "IDLE":
     assigned_tasks = []
     unassigned_tasks = []
     
-    # 2. ORDENA GLOBALMENTE DO MAIOR PARA O MENOR BOLSÃO DE POSTES
     df_tasks = df_tasks.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
     
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
         
     for r in df_tasks.to_dict('records'):
         qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
+        qpo = extrair_qtd(r.get('QTD PREVISTA DE POSTES', 0))
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
+        ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
         
+        # Filtro de Município Rígido ou Flexível
+        if "Município" in ta:
+            vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
+        else:
+            vb = tbr
+            
         best_f = None
         best_d = float('inf')
         
-        # 3. Varre todos os fiscais que ainda têm espaço na cota
         if pd.notna(la) and pd.notna(lo):
-            for f_name, anchor in fiscal_anchors.items():
+            for b in vb:
+                f_name = b['LEVANTADOR']
                 if fiscal_loads[f_name] + qr <= fiscal_capacities[f_name]:
-                    d = haversine_scalar(la, lo, anchor[0], anchor[1])
+                    d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
                     if d < best_d:
                         best_d = d
                         best_f = f_name
@@ -394,15 +410,14 @@ elif status_exec == "IDLE":
         if best_f:
             fiscal_loads[best_f] += qr
             r['BASE_ATRIBUIDA'] = best_f
+            r['MUN_LIMPO'] = ms
             assigned_tasks.append(r)
             
-            # 4. ATUALIZAÇÃO DINÂMICA DE ÂNCORA:
-            # Ao receber a 1ª obra (que é a MAIOR), o fiscal se muda virtualmente para ela.
-            # As próximas obras (menores) serão alocadas para quem estiver ancorado perto!
+            # Ancoragem Dinâmica
             if fiscal_loads[best_f] == qr:
                 fiscal_anchors[best_f] = (la, lo)
         else:
-            r['MOTIVO_REJEICAO'] = "Estoque Lotado"
+            r['MOTIVO_REJEICAO'] = "Estoque Lotado ou Fora de Área"
             r['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
@@ -456,8 +471,6 @@ if status_exec == "RUNNING":
             
             ot = []
             if oe:
-                # O OR-Tools agora varre e encontra o melhor caminho (TSP), 
-                # conectando Base -> Obra Pequena (no caminho) -> Bolsão Maior automaticamente!
                 tr = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'])
                 if "Reversa" in cfg.get('sentido_rota', '') and tr:
                     fi = max(range(len(tr)), key=lambda i: haversine_scalar(bl, bL, float(tr[i]['LATITUDE']), float(tr[i]['LONGITUDE'])))
