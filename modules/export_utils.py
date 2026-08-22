@@ -40,6 +40,12 @@ def formatar_planilha_openpyxl(writer, sheet_name):
 def gerar_excel_bytes(df, col_prio, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
+    
+    # BLINDAGEM CENTRAL: Remove Pausa Almoço e Retorno Base de TODOS os roteirizadores (Tático e Fiscalização) no Excel
+    for col_name in ['PROTOCOLO', 'NOTA']:
+        if col_name in df_saida.columns:
+            df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+            
     colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
     
@@ -72,9 +78,10 @@ def limpar_colunas_excel(df_alvo, cols_originais):
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
-    for c in cols_originais:
-        if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
-            final_cols.append(c)
+    if cols_originais is not None:
+        for c in cols_originais:
+            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
+                final_cols.append(c)
             
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
     
@@ -106,7 +113,7 @@ def gerar_gpx_simples(df_kml, nome_rota):
     return "\n".join(gpx)
 
 def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
-    """Gera KML idêntico ao Tático (Pastas por Fiscal e Período) mas com Pop-ups coloridos de Fiscalização e Arruamento Real."""
+    """Gera KML idêntico ao Tático mas com Pop-ups coloridos de Fiscalização e Arruamento Real."""
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
     styles = {
@@ -174,7 +181,7 @@ def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_
     return "\n".join(kml)
 
 def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
-    """KML Original do Planejamento Tático (Pinos Vermelhos e Azuis) que havia sido apagado acidentalmente."""
+    """KML Original do Planejamento Tático (Pinos Vermelhos e Azuis)."""
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
     kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
