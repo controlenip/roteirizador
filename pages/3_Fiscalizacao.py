@@ -72,9 +72,15 @@ def count_real_obras(row):
         if nums: return int(nums[0])
     return 1
 
+# O NOVO MOTOR MATEMÁTICO QUE SOMA VALORES SEPARADOS POR '|'
 def extrair_qtd(val):
-    try: return float(str(val).replace(',', '.')) if pd.notna(val) and val != '' else 0.0
-    except: return 0.0
+    if pd.isna(val) or val == '': return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    try:
+        nums = re.findall(r'\d+\.?\d*', str(val).replace(',', '.'))
+        return sum(float(n) for n in nums) if nums else 0.0
+    except:
+        return 0.0
 
 def definir_cor_fiscalizacao(qtd):
     try:
@@ -84,12 +90,9 @@ def definir_cor_fiscalizacao(qtd):
 
 def limpar_colunas_excel(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    
-    # Proteção antibombas contra colunas duplicadas no Rename
     if 'PROTOCOLO' in df_alvo.columns:
         if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
         df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
-        
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
@@ -137,7 +140,6 @@ with st.sidebar:
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         
-        # Modo Ilimitado Aplicado Aqui
         st.success("📦 **Carga Total:** O sistema roteirizará 100% das obras da planilha para os fiscais (sem cortes por dia).")
         obras_dia = 999999
         limite_per = 1
@@ -183,7 +185,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Gráficos de Balanceamento
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -204,7 +205,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             donut = alt.Chart(df_chart).mark_arc(innerRadius=60).encode(theta=alt.Theta(field="Postes", type="quantitative"), color=alt.Color(field="Fiscal", type="nominal"), tooltip=["Fiscal", "Postes", "Obras"]).properties(height=350)
             st.altair_chart(donut, use_container_width=True)
 
-    # MAPA COM POP-UPS PADRÃO TÁTICO
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
@@ -406,6 +406,11 @@ elif status_exec == "IDLE":
     else: df_tasks['QTD PREVISTA DE POSTES'], df_tasks['COR_ICONE'] = 0.0, 'gray'
 
     df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
+    
+    # REAPLICAÇÃO: O fundir_super_pontos pode unir textos com '|'. Aplicamos a soma novamente.
+    if 'QTD PREVISTA DE POSTES' in df_tasks.columns:
+        df_tasks['QTD PREVISTA DE POSTES'] = df_tasks['QTD PREVISTA DE POSTES'].apply(extrair_qtd)
+        df_tasks['COR_ICONE'] = df_tasks['QTD PREVISTA DE POSTES'].apply(definir_cor_fiscalizacao)
 
     tbr = df_bases.to_dict('records')
     fiscal_anchors = {b['LEVANTADOR']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
