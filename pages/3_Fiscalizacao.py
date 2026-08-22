@@ -9,6 +9,7 @@ import re
 import time
 import gc
 import altair as alt
+import plotly.express as px
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -144,6 +145,19 @@ with st.sidebar:
 # ==========================================
 if is_done and not st.session_state.df_routed_fisc.empty:
     st.markdown("## 🎯 Dashboards de Produtividade")
+    
+    # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD EM DESTAQUE)
+    df_c = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
+    if not df_c.empty:
+        st.markdown(f"""
+        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
+            <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas e não roteirizadas porque apresentaram <b>coordenadas geográficas em branco, zeradas, invertidas</b> ou porque o GPS da obra apontou para um local que está <b>fora da Cerca Eletrônica de 70km</b> do município preenchido na planilha. O bloqueio é automático para garantir que a rota em campo não seja corrompida.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.session_state.df_routed_fisc['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed_fisc.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
     dfr = st.session_state.df_routed_fisc.copy()
     dfr_t = dfr[~dfr['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -195,20 +209,29 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
             
-            base_pie = alt.Chart(df_chart).encode(
-                theta=alt.Theta(field="Postes", type="quantitative", stack=True),
-                color=alt.Color(field="Fiscal", type="nominal", legend=alt.Legend(title="Fiscal", orient="right")),
-                order=alt.Order(field="Fiscal", type="nominal", sort="ascending"),
-                tooltip=["Fiscal", "Postes", "Obras", "Perc_Text"]
-            )
-            donut = base_pie.mark_arc(innerRadius=50, outerRadius=120)
-            
-            # CORREÇÃO DEFINITIVA DO TEXTO NO ALTAIR
-            text_donut = base_pie.mark_text(radius=85, size=12, color='white', fontWeight='bold').encode(
-                text='Perc_Text:N'
+            # SOLUÇÃO PROFISSIONAL: PLOTLY PARA O GRÁFICO DE ROSCA (CRIA SETAS E LINHAS DE CHAMADA AUTOMÁTICAS)
+            fig_pie = px.pie(
+                df_chart, 
+                values='Postes', 
+                names='Fiscal', 
+                hole=0.55,
+                custom_data=['Obras']
             )
             
-            st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
+            fig_pie.update_traces(
+                textposition='outside', 
+                textinfo='percent',
+                hovertemplate="<b>%{label}</b><br>Postes: %{value}<br>Obras: %{customdata[0]}<br>Fatia: %{percent}<extra></extra>",
+                marker=dict(line=dict(color='#ffffff', width=2))
+            )
+            
+            fig_pie.update_layout(
+                margin=dict(t=20, b=20, l=20, r=20),
+                showlegend=True,
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.0)
+            )
+            
+            st.plotly_chart(fig_pie, use_container_width=True)
             
         # Botão de Exportação para Relatório Executivo (PDF Seguro)
         try:
@@ -247,7 +270,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
             st.download_button("📥 Baixar Relatório Executivo (PDF)", data=gerar_pdf_bytes(df_chart), file_name=f"Relatorio_Fiscalizacao - {datetime.now().strftime('%d.%m.%Y')}.pdf", mime="application/pdf", use_container_width=True)
         except Exception:
-            st.info("💡 Dica: Você pode salvar os gráficos em alta resolução clicando no ícone de três pontos (⋮) no canto superior direito de cada gráfico.")
+            st.info("💡 Dica: Você pode salvar os gráficos em alta resolução clicando no ícone de câmera no canto superior direito do gráfico.")
 
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -438,18 +461,6 @@ elif status_exec == "IDLE":
         
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
-        
-        # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD)
-        if not df_rej.empty: 
-            st.markdown(f"""
-            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
-                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                    <b>Justificativa:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
-                    Elas foram isoladas automaticamente pelo sistema para não corromper o traçado dos Fiscais. Faça o download da <b>Planilha de Correção</b> na etapa de Empacotamento para verificar a falha de cada uma.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -648,6 +659,7 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
+            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -669,6 +681,7 @@ if status_exec == "PACKAGING":
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
+            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -697,6 +710,7 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
+            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fiscalizacao_agrupado(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
