@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import io
-import os
-import base64
+from modules.export_utils import injetar_logo
 
-# Configuração da Página
 st.set_page_config(page_title="FAQ e Modelos", page_icon="📖", layout="wide")
 
-LOGO_PATH = "assets/LOGO_NIP.png"
+# Aciona a Logo acima do Menu
+injetar_logo()
 
 def gerar_excel_modelo(df_modelo):
     output = io.BytesIO()
@@ -16,12 +15,7 @@ def gerar_excel_modelo(df_modelo):
     return output.getvalue()
 
 def renderizar_faq():
-    # Renderiza Logo na Barra Lateral
     with st.sidebar:
-        if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, "rb") as f:
-                encoded_logo = base64.b64encode(f.read()).decode()
-            st.markdown(f'<div style="text-align: center; margin-bottom: 25px;"><img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;"></div>', unsafe_allow_html=True)
         st.info("Aqui você encontra os Manuais e Templates oficiais do sistema.")
 
     st.markdown("<h1 class='brand-title' style='margin-bottom: 20px;'>📖 Central de Ajuda e Manual de Operação</h1>", unsafe_allow_html=True)
