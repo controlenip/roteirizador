@@ -7,6 +7,7 @@ import zipfile
 import html
 import re
 import time
+import gc
 import altair as alt
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
