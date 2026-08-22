@@ -17,9 +17,7 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-
-# IMPORT CORRIGIDO AQUI EMBAIXO! 👇
-from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao_agrupado, identificar_icone_folium
+from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao_agrupado, identificar_icone_folium, limpar_colunas_excel
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 injetar_logo()
@@ -88,29 +86,6 @@ def definir_cor_fiscalizacao(qtd):
         return 'green' if q <= 100 else 'blue' if q <= 200 else 'beige' if q <= 300 else 'orange' if q <= 400 else 'red'
     except: return 'gray'
 
-def limpar_colunas_excel(df_alvo, cols_originais):
-    df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    
-    rename_map = {}
-    if 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in cols_originais:
-        rename_map['PROTOCOLO'] = 'NOTA'
-    if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        rename_map['BASE_ATRIBUIDA'] = 'FISCAL'
-    df_alvo = df_alvo.rename(columns=rename_map)
-    
-    final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
-    for c in cols_originais:
-        if c in df_alvo.columns and c not in final_cols:
-            final_cols.append(c)
-        elif c == 'NOTA' and 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in final_cols:
-            final_cols.append('PROTOCOLO')
-            
-    for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM']:
-            final_cols.append(c)
-            
-    return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
-
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
@@ -131,7 +106,7 @@ is_done = st.session_state.roteamento_concluido_fisc
 is_locked = status_exec != "IDLE" or is_done
 
 st.markdown("<h1 class='brand-title'>📋 Planejamento de Fiscalização</h1>", unsafe_allow_html=True)
-st.info("💡 **A Regra do Bolsão:** A IA ancora os Fiscais nas obras com MAIS POSTES primeiro. Em seguida, intercala as obras menores no caminho, roteando em direção à maior nota.")
+st.info("💡 **A Regra do Bolsão:** A IA ancora os Fiscais nas obras com MAIS POSTES primeiro. Em seguida, varre as obras menores e finaliza a rota exatamente no maior foco do mapa.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -186,7 +161,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Gráficos com Valores Estampados (Altair Corrigido)
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -218,19 +192,21 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
-            # CORREÇÃO: stack=True e estrutura herdada para o mark_text no Altair
+            
+            # CORREÇÃO AQUI (stack=True dentro do encode do mark_text):
             base_pie = alt.Chart(df_chart).encode(
                 theta=alt.Theta(field="Postes", type="quantitative", stack=True),
                 color=alt.Color(field="Fiscal", type="nominal", legend=alt.Legend(title="Fiscal", orient="right")),
                 tooltip=["Fiscal", "Postes", "Obras", "Perc_Text"]
             )
             donut = base_pie.mark_arc(innerRadius=60)
-            text_donut = base_pie.mark_text(radiusOffset=20, size=12, color='black', fontWeight='bold').encode(
+            text_donut = base_pie.mark_text(radiusOffset=15, size=11, color='black', fontWeight='bold').encode(
+                theta=alt.Theta(field="Postes", type="quantitative", stack=True),
                 text='Perc_Text:N'
             )
             st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
             
-        # Botão de Exportação para Relatório Executivo (PDF Seguro)
+        # Botão de Exportação para Relatório Executivo (PDF)
         try:
             from reportlab.lib.pagesizes import letter
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
