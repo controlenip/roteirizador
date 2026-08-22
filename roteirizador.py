@@ -1,6 +1,5 @@
 import streamlit as st
-import os
-import base64
+from modules.export_utils import injetar_logo
 
 st.set_page_config(
     page_title="Roteirizador NIP v3.0",
@@ -9,24 +8,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CORREÇÃO: Apontando diretamente para a raiz do repositório
-LOGO_PATH = "LOGO_NIP.png"
+# Aciona a Logo acima do Menu
+injetar_logo()
 
 def main():
-    # Exibir a Logo na Barra Lateral
     with st.sidebar:
-        if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, "rb") as f:
-                encoded_logo = base64.b64encode(f.read()).decode()
-            st.markdown(
-                f'<div style="text-align: center; margin-bottom: 25px;">'
-                f'<img src="data:image/png;base64,{encoded_logo}" style="width: 70%; max-width: 180px; pointer-events: none;">'
-                f'</div>',
-                unsafe_allow_html=True
-            )
         st.success("Selecione um dos Módulos Acima 👆")
 
-    # Conteúdo da Página Inicial
     st.markdown("<h1 class='brand-title' style='text-align: center; margin-bottom: 30px;'>Bem-vindo à Plataforma Roteirizadora NIP v3.0 ⚡</h1>", unsafe_allow_html=True)
     
     st.markdown("""
