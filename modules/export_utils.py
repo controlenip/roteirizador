@@ -2,6 +2,9 @@ import pandas as pd
 import io
 import html
 import folium
+import os
+import base64
+import streamlit as st
 
 # ==========================================
 # GERAÇÃO DE EXCEL (DEMANDA GERAL E RESUMO)
@@ -108,6 +111,23 @@ def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, base
 # ==========================================
 # UI E AUXILIARES
 # ==========================================
+
+def injetar_logo():
+    """Injeta a logo da NIP acima do menu de navegação lateral (Global)."""
+    if os.path.exists("LOGO_NIP.png"):
+        with open("LOGO_NIP.png", "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+        st.markdown(f"""
+            <style>
+                [data-testid="stSidebarNav"] {{
+                    background-image: url('data:image/png;base64,{encoded}');
+                    background-repeat: no-repeat;
+                    background-position: center 30px;
+                    background-size: 160px;
+                    padding-top: 150px;
+                }}
+            </style>
+            """, unsafe_allow_html=True)
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO NOTA' in colunas_disponiveis:
