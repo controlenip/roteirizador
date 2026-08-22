@@ -28,7 +28,6 @@ TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
 # ==========================================
 # FUNÇÕES VISUAIS (DESIGN) E AUXILIARES
 # ==========================================
-
 def render_metric_card(title, value, icon, border_color, bg_color):
     return f"""
     <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
@@ -325,7 +324,10 @@ elif status_exec == "IDLE":
     if 'TIPO NOTA' in df_tasks.columns:
         tc = df_tasks['TIPO NOTA'].value_counts()
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("UNR", tc.get('UNR',0)); c2.metric("MGD", tc.get('MGD',0)); c3.metric("ASC", tc.get('ASC',0)); c4.metric("DIF", tc.get('DIF',0))
+        c1.markdown(render_metric_card("UNR", tc.get('UNR',0), "⚡", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+        c2.markdown(render_metric_card("MGD", tc.get('MGD',0), "🏭", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
+        c3.markdown(render_metric_card("ASC", tc.get('ASC',0), "🔌", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
+        c4.markdown(render_metric_card("DIF", tc.get('DIF',0), "⚠️", "#ef4444", "rgba(239,68,68,0.15)"), unsafe_allow_html=True)
         trej = st.multiselect("🗑️ DESCARTAR Tipos:", options=[str(x) for x in df_tasks['TIPO NOTA'].dropna().unique()], default=[])
         if trej: df_tasks = df_tasks[~df_tasks['TIPO NOTA'].isin(trej)]
     if not df_su.empty and cs_sel: df_tasks = atualizar_status_via_df(df_tasks, df_su, cs_sel)
@@ -442,6 +444,55 @@ elif status_exec == "IDLE":
             if not df_sp.empty: df_sp['BASE_ATRIBUIDA'], df_sp['MOTIVO_REJEICAO'] = "NÃO ALOCADO", "Obra Isolada"
             df_tasks = df_tasks[km].copy()
 
+    cg1, cg2 = st.columns([4, 1])
+    with cg1: st.markdown("#### 🌍 Cerca Eletrônica (Geofencing 70km)")
+    with cg2:
+        if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
+    
+    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty(); df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
+
+    # ==============================================================
+    # TEMPORIZADOR CERCA ELETRÔNICA (GEOFENCING)
+    # ==============================================================
+    if not df_tasks.empty:
+        mu = df_tasks['MUN_LIMPO'].unique(); tm = len(mu); md = {}
+        st_run_geo = time.time()
+        
+        def render_t_geo(curr, total):
+            e = time.time() - st_run_geo; f = curr / max(1, total)
+            rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
+            es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
+            html_timer = f"""
+            <div style="display:flex; gap:15px; margin-top: 10px; margin-bottom: 10px;">
+                <div style="flex:1; padding:10px; border-radius:8px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center;">
+                    <div style="font-size:0.8rem; color:#6c757d; font-weight:bold; margin-bottom:2px;">⏱️ Decorrido</div>
+                    <div style="font-size:1.5rem; font-weight:bold; color:#0D256C;">{es}</div>
+                </div>
+                <div style="flex:1; padding:10px; border-radius:8px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center;">
+                    <div style="font-size:0.8rem; color:#2e7d32; font-weight:bold; margin-bottom:2px;">🎯 Restante</div>
+                    <div style="font-size:1.5rem; font-weight:bold; color:#1b5e20;">{rs}</div>
+                </div>
+            </div>
+            """
+            tmp.markdown(html_timer, unsafe_allow_html=True)
+
+        for i, m in enumerate(mu):
+            pbg.progress((i + 1) / max(1, tm)); sgt.info(f"🛰️ Satélite: {m}")
+            render_t_geo(i + 1, tm)
+            try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.1)
+            except: lt, ln = np.nan, np.nan
+            md[m] = (lt, ln)
+            
+        sgt.info("📏 Aplicando Cerca...")
+        mo = df_tasks.apply(lambda r: haversine_scalar(r['LATITUDE'], r['LONGITUDE'], md.get(r['MUN_LIMPO'], (np.nan, np.nan))[0], md.get(r['MUN_LIMPO'], (np.nan, np.nan))[1]) > 70.0 if pd.notna(md.get(r['MUN_LIMPO'], (np.nan, np.nan))[0]) else False, axis=1)
+        if mo.sum() > 0:
+            df_tasks.loc[mo, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km)'
+            df_rej = pd.concat([df_rej, df_tasks[mo].copy()], ignore_index=True); df_tasks = df_tasks[~mo].copy()
+        
+        pbg.empty(); tmp.empty(); sgt.empty()
+        st.session_state.df_correcao_fiscalizacao = df_rej
+        if not df_rej.empty: st.warning(f"⚠️ {len(df_rej)} obras isoladas na Cerca Eletrônica (Baixe a Planilha de Correção no fim).")
+
     df_ta = pd.DataFrame()
     if tbr:
         df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
@@ -454,10 +505,6 @@ elif status_exec == "IDLE":
             qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
             la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE') == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
             vn = set(mtm.get(ms, [])) if ip else set(mta.get(ms, []))
-            
-            # Se for Atribuição por Proximidade, ignora o município fixo para as comuns
-            if "Proximidade" in ta and not ip: vn = set([b['LEVANTADOR'] for b in tbr])
-            
             vb = sorted([b for b in tbr if b['LEVANTADOR'] in vn and (not p4 or str(b.get('VEICULO', '')).upper() == '4X4')], key=lambda x: bc[x['LEVANTADOR']])
             bb, bd = None, float('inf')
             if pd.notna(la) and pd.notna(lo):
@@ -484,7 +531,6 @@ elif status_exec == "IDLE":
         df_ta, df_u = pd.DataFrame(at), pd.DataFrame(su)
         if not df_sp.empty: df_u = pd.concat([df_u, df_sp], ignore_index=True)
         st.session_state.df_unallocated, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
-        
         sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qe, cm * qe), unsafe_allow_html=True)
         
         if df_ta.empty: st.error("Nenhuma obra alocada."); st.stop()
