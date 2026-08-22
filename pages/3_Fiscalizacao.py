@@ -13,7 +13,7 @@ from streamlit_folium import st_folium
 from datetime import datetime
 
 # Importações dos Motores Matemáticos
-from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
+from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios, atualizar_status_via_df
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
@@ -127,7 +127,6 @@ with st.sidebar:
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         
-        # Modo Ilimitado Aplicado Aqui
         st.success("📦 **Carga Total:** O sistema roteirizará 100% das obras da planilha para os fiscais (sem cortes por dia).")
         obras_dia = 999999
         limite_per = 1
@@ -173,7 +172,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Gráficos de Balanceamento
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -194,7 +192,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             donut = alt.Chart(df_chart).mark_arc(innerRadius=60).encode(theta=alt.Theta(field="Postes", type="quantitative"), color=alt.Color(field="Fiscal", type="nominal"), tooltip=["Fiscal", "Postes", "Obras"]).properties(height=350)
             st.altair_chart(donut, use_container_width=True)
 
-    # MAPA COM POP-UPS PADRÃO TÁTICO
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
@@ -285,8 +282,8 @@ elif status_exec == "IDLE":
     if df_bases.empty or not task_files: st.stop()
     
     qtd_eq = df_bases['LEVANTADOR'].nunique()
+    cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     
-    # Card alterado para refletir Modo Ilimitado
     sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
@@ -345,8 +342,29 @@ elif status_exec == "IDLE":
     
     if not df_tasks.empty:
         mu = df_tasks['MUNICIPIO'].unique(); tm = len(mu); md = {}
+        st_run_geo = time.time()
+        
+        def render_t_geo(curr, total):
+            e = time.time() - st_run_geo; f = curr / max(1, total)
+            rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
+            es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
+            html_timer = f"""
+            <div style="display:flex; gap:15px; margin-top: 10px; margin-bottom: 10px;">
+                <div style="flex:1; padding:10px; border-radius:8px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center;">
+                    <div style="font-size:0.8rem; color:#6c757d; font-weight:bold; margin-bottom:2px;">⏱️ Decorrido</div>
+                    <div style="font-size:1.5rem; font-weight:bold; color:#0D256C;">{es}</div>
+                </div>
+                <div style="flex:1; padding:10px; border-radius:8px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center;">
+                    <div style="font-size:0.8rem; color:#2e7d32; font-weight:bold; margin-bottom:2px;">🎯 Restante</div>
+                    <div style="font-size:1.5rem; font-weight:bold; color:#1b5e20;">{rs}</div>
+                </div>
+            </div>
+            """
+            tmp.markdown(html_timer, unsafe_allow_html=True)
+
         for i, m in enumerate(mu):
             pbg.progress((i + 1) / max(1, tm)); sgt.info(f"🛰️ Satélite: {m}")
+            render_t_geo(i + 1, tm)
             try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.1)
             except: lt, ln = np.nan, np.nan
             md[m] = (lt, ln)
@@ -357,7 +375,7 @@ elif status_exec == "IDLE":
             df_tasks.loc[mo, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km)'
             df_rej = pd.concat([df_rej, df_tasks[mo].copy()], ignore_index=True); df_tasks = df_tasks[~mo].copy()
         
-        pbg.empty(); sgt.empty()
+        pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
         if not df_rej.empty: st.warning(f"⚠️ {len(df_rej)} obras isoladas na Cerca Eletrônica (Baixe a Planilha de Correção no fim).")
 
@@ -370,39 +388,27 @@ elif status_exec == "IDLE":
 
     df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
 
-    # ==============================================================
-    # A MÁGICA DA ALOCAÇÃO: BOLSÕES MAIORES PARA FISCAIS MAIS PERTO
-    # ==============================================================
     tbr = df_bases.to_dict('records')
-    
     fiscal_anchors = {b['LEVANTADOR']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
-    
     assigned_tasks = []
     unassigned_tasks = []
     
     df_tasks = df_tasks.sort_values(by=['QTD PREVISTA DE POSTES', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
-    
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
         
     for r in df_tasks.to_dict('records'):
         qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
-        qpo = extrair_qtd(r.get('QTD PREVISTA DE POSTES', 0))
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
         
-        # Filtro de Município Rígido ou Flexível
-        if "Município" in ta:
-            vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
-        else:
-            vb = tbr
+        if "Município" in ta: vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
+        else: vb = tbr
             
-        best_f = None
-        best_d = float('inf')
+        best_f, best_d = None, float('inf')
         
         if pd.notna(la) and pd.notna(lo) and vb:
             for b in vb:
                 f_name = b['LEVANTADOR']
-                # Remoção da trava de capacidade (cm), absorve 100% da planilha
                 d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
                 if d < best_d:
                     best_d = d
@@ -412,8 +418,6 @@ elif status_exec == "IDLE":
             r['BASE_ATRIBUIDA'] = best_f
             r['MUN_LIMPO'] = ms
             assigned_tasks.append(r)
-            
-            # Ancoragem Dinâmica: Puxa o fiscal sempre pro foco do bolsão
             fiscal_anchors[best_f] = (la, lo)
         else:
             r['MOTIVO_REJEICAO'] = "Fora de Área (Sem Fiscal)"
@@ -437,7 +441,6 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
-        # Definimos 'obras_por_dia' como 999999 para o VRP não cortar as rotas no meio
         st.session_state.vrp_state_fisc = {'config': {'velocidade_media_kmh': vel_kmh, 'obras_por_dia': 999999, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 1.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_fisc = "RUNNING"; tentar_rerun()
 
