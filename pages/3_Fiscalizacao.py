@@ -84,9 +84,18 @@ def definir_cor_fiscalizacao(qtd):
 
 def limpar_colunas_excel(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    if 'PROTOCOLO' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
-    if 'BASE_ATRIBUIDA' in df_alvo.columns: df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
-    elif 'LEVANTADOR' in df_alvo.columns and 'FISCAL' not in df_alvo.columns: df_alvo['FISCAL'] = df_alvo['LEVANTADOR']
+    
+    # Proteção antibombas contra colunas duplicadas no Rename
+    if 'PROTOCOLO' in df_alvo.columns:
+        if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
+        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
+        
+    if 'BASE_ATRIBUIDA' in df_alvo.columns:
+        if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
+        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
+    elif 'LEVANTADOR' in df_alvo.columns and 'FISCAL' not in df_alvo.columns: 
+        df_alvo['FISCAL'] = df_alvo['LEVANTADOR']
+        
     bs = ['NOTA', 'FISCAL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
     cg = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO PROJETO', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES', 'VALOR DA OBRA']
     mc = [c for c in cols_originais if c in df_alvo.columns and c not in bs and c != 'LINK_NAVEGACAO_OFFLINE' and not str(c).startswith('_')]
@@ -260,7 +269,6 @@ elif status_exec == "IDLE":
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
             if 'LEVANTADOR' in b_t.columns:
                 
-                # A MÁGICA DO EXPLODE: SEPARA FISCAIS NA MESMA CÉLULA
                 b_t['LEVANTADOR'] = b_t['LEVANTADOR'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('LEVANTADOR').reset_index(drop=True)
                 b_t['LEVANTADOR'] = b_t['LEVANTADOR'].str.strip().str.upper()
@@ -295,7 +303,6 @@ elif status_exec == "IDLE":
     qtd_eq = df_bases['LEVANTADOR'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     
-    # Agora a contagem reflete exatamente a quantidade de Fiscais após separar os nomes
     sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
@@ -595,11 +602,13 @@ if status_exec == "PACKAGING":
             dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
             if not dfc.empty:
                 dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
                 for cc in dfcc.columns:
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
             dfg = limpar_colunas_excel(df_routed.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+            dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
