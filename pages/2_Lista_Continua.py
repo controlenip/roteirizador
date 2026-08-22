@@ -85,7 +85,7 @@ with st.sidebar:
         data_ini = st.date_input("📅 Data Base:", value=datetime.today(), disabled=is_locked)
         
         st.markdown("---")
-        vel_kmh = st.slider("Velocidade Média (km/h)", 10, 100, 30, disabled=is_locked)
+        sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
 
     with st.expander("📡 Conexão de Rede", expanded=False):
@@ -355,7 +355,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_lista': tbr, 'colunas_exibir_lista': colunas_exibir})
-        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': vel_kmh, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Removido vel_kmh da UI, fixamos em 30
+        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -385,8 +386,23 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base']) if oe else []
-            if not ot: ot = oe
+            # LÓGICA DE SENTIDO DE ROTA (VARREDURA REVERSA OU PADRÃO)
+            if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
+                ot = []
+                if oe:
+                    max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
+                    p_longe = oe.pop(max_idx)
+                    ot.append(p_longe)
+                    
+                    cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
+                    while oe:
+                        closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
+                        nx = oe.pop(closest_idx)
+                        ot.append(nx)
+                        cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
+            else:
+                ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base']) if oe else []
+                if not ot: ot = oe
             
             rf = []
             c_l, c_L = bl, bL
