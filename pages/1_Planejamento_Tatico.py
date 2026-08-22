@@ -73,8 +73,7 @@ with st.sidebar:
         data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
         
         st.markdown("---")
-        vel_kmh = st.slider("Velocidade Média (km/h)", 10, 100, 30, disabled=is_locked)
-        tmp_obra = st.slider("Minutos na Obra:", 10, 120, 45, disabled=is_locked)
+        sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
 
     with st.expander("📡 Conexão de Rede", expanded=False):
@@ -165,6 +164,7 @@ elif status_exec == "IDLE":
             for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
+                
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
@@ -351,7 +351,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
-        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': vel_kmh, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': tmp_obra / 60.0}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Removemos vel_kmh e tmp_obra da UI, então forçamos aqui 30 e 45 respectivamente
+        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -381,8 +382,26 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base']) if oe else []
-            if not ot: ot = oe
+            # IMPLEMENTAÇÃO: Sentido do Roteamento (Varredura Reversa ou Lógica Padrão)
+            if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
+                # Varredura Reversa: Inicia do ponto mais DISTANTE e vem voltando pra base
+                ot = []
+                if oe:
+                    # Encontra a obra mais longe da base
+                    max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
+                    p_longe = oe.pop(max_idx)
+                    ot.append(p_longe)
+                    
+                    # A partir dela, vai pegando a mais próxima para ir construindo o caminho de volta
+                    cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
+                    while oe:
+                        closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
+                        nx = oe.pop(closest_idx)
+                        ot.append(nx)
+                        cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
+            else:
+                ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base']) if oe else []
+                if not ot: ot = oe
             
             rf, da, sa, dds = [], 1, 1, 1
             dtb = datetime.combine(cfg['data_inicio'], datetime.min.time()).replace(hour=8, minute=0)
