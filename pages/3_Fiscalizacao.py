@@ -19,8 +19,8 @@ from modules.data_processing import ler_planilha_cached, formatar_moeda, formata
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
-# IMPORTAÇÕES DA NOVA ARQUITETURA ISOLADA DE EXPORTAÇÃO
-from modules.export_utils import injetar_logo, gerar_excel_fisc, gerar_excel_resumo_fisc, gerar_gpx_simples, gerar_kml_fisc, identificar_icone_folium, limpar_colunas_fisc
+# IMPORTAÇÃO CORRIGIDA: AGORA PUXA DO EXPORT_FISC
+from modules.export_fisc import injetar_logo, gerar_excel_fisc, gerar_excel_resumo_fisc, gerar_gpx_simples, gerar_kml_fisc, identificar_icone_folium, limpar_colunas_fisc
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 injetar_logo()
@@ -464,14 +464,12 @@ elif status_exec == "IDLE":
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
         
-        # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD EM DESTAQUE - TELA DE TRIAGEM)
         if not df_rej.empty: 
             st.markdown(f"""
             <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
+                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção (Verifique o ZIP)</h4>
                 <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                    <b>Justificativa:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
-                    Elas foram isoladas automaticamente pelo sistema para não corromper o traçado dos Fiscais. Faça o download da <b>Planilha de Correção</b> na etapa de Empacotamento para verificar a falha de cada uma.
+                    <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas e não roteirizadas porque apresentaram <b>coordenadas geográficas em branco, zeradas, invertidas</b> ou porque o GPS da obra apontou para um local que está <b>fora da Cerca Eletrônica de 70km</b> do município preenchido na planilha. O bloqueio é automático para garantir que a rota em campo não seja corrompida.
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -653,6 +651,8 @@ if status_exec == "PACKAGING":
     df_routed, d_fmt = st.session_state.df_routed_fisc, datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
     try:
+        from modules.export_fisc import limpar_colunas_fisc
+        
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
@@ -671,6 +671,7 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
+            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -692,6 +693,7 @@ if status_exec == "PACKAGING":
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
+            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -720,6 +722,7 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
+            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fisc(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
