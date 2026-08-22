@@ -16,7 +16,9 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formata_campo_html, formatar_moeda, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import injetar_logo, identificar_icone_folium, gerar_excel_tatica, limpar_colunas_tatica, gerar_kml_tatica, gerar_gpx_simples
+
+# IMPORTAÇÃO CORRIGIDA PARA O NOVO MOTOR ISOLADO DO TÁTICO
+from modules.export_tatica import injetar_logo, identificar_icone_folium, gerar_excel_tatica, limpar_colunas_tatica, gerar_kml_tatica, gerar_gpx_simples, gerar_excel_resumo_tatica
 
 st.set_page_config(page_title="Roteirizador Tático", page_icon="🗺️", layout="wide")
 injetar_logo()
@@ -49,7 +51,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido': False, 'vrp_status': "IDLE", 'vrp_state': {}, 'df_routed': pd.DataFrame(), 'bases_records': [], 'colunas_exibir': [], 'colunas_originais_tat': []})
-    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated', 'df_correcao_tatica']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -91,6 +93,19 @@ with st.sidebar:
 
 if is_done and not st.session_state.df_routed.empty:
     st.markdown("## 🎯 Resultado do Planejamento")
+    
+    # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO
+    df_c = st.session_state.get('df_correcao_tatica', pd.DataFrame())
+    if not df_c.empty:
+        st.markdown(f"""
+        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
+            <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.session_state.df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
     dfr = st.session_state.df_routed.copy()
     dfr_t = dfr[~dfr['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -220,7 +235,6 @@ elif status_exec == "IDLE":
             df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
             opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
             sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
-            # CORREÇÃO DEFINITIVA DA PRIORIDADE (Apenas obras marcadas acima recebem 'Sim')
             df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
         else: df_tasks['PRIORIDADE'] = 'Não'
 
@@ -288,6 +302,7 @@ elif status_exec == "IDLE":
             df_rej = pd.concat([df_rej, df_tasks[mo].copy()], ignore_index=True); df_tasks = df_tasks[~mo].copy()
         
         pbg.empty(); tmp.empty(); sgt.empty()
+        st.session_state.df_correcao_tatica = df_rej
         
         if not df_rej.empty: 
             st.markdown(f"""
@@ -480,7 +495,15 @@ if status_exec == "PACKAGING":
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
                 res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
-            zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
+            zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
+            
+            dfc = st.session_state.get('df_correcao_tatica', pd.DataFrame())
+            if not dfc.empty:
+                dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
+                for cc in dfcc.columns:
+                    if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
+                out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
             linhas_gerais = []
             for _, r in df_routed.iterrows():
@@ -501,7 +524,7 @@ if status_exec == "PACKAGING":
             zx.writestr(f"Demanda_Tatica - {d_fmt}.xlsx", gerar_excel_tatica(dfg, st.session_state.colunas_originais_tat))
             
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_tatica(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
+            ks = gerar_kml_tatica(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
