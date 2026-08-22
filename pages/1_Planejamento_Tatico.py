@@ -17,14 +17,16 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios, atualizar_status_via_df
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import identificar_icone_folium, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado, gerar_gpx_simples
+from modules.export_utils import injetar_logo, identificar_icone_folium, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado, gerar_gpx_simples
 
 st.set_page_config(page_title="Modo Tático", page_icon="🎯", layout="wide")
+injetar_logo()
+
 STATUS_PADRAO = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
 TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
 
 # ==========================================
-# FUNÇÕES VISUAIS E AUXILIARES
+# FUNÇÕES VISUAIS (DESIGN) E AUXILIARES
 # ==========================================
 
 def render_metric_card(title, value, icon, border_color, bg_color):
@@ -123,7 +125,7 @@ with st.sidebar:
         obras_dia = st.number_input("Obras por Dia", 1, 30, step=1, disabled=is_locked)
         limite_per = st.number_input(f"Limite total de {tpc}s", 1, 5, step=1, disabled=is_locked)
         vel_kmh, t_obra = 30.0, 1.5
-
+        
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked)
@@ -452,6 +454,10 @@ elif status_exec == "IDLE":
             qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
             la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE') == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
             vn = set(mtm.get(ms, [])) if ip else set(mta.get(ms, []))
+            
+            # Se for Atribuição por Proximidade, ignora o município fixo para as comuns
+            if "Proximidade" in ta and not ip: vn = set([b['LEVANTADOR'] for b in tbr])
+            
             vb = sorted([b for b in tbr if b['LEVANTADOR'] in vn and (not p4 or str(b.get('VEICULO', '')).upper() == '4X4')], key=lambda x: bc[x['LEVANTADOR']])
             bb, bd = None, float('inf')
             if pd.notna(la) and pd.notna(lo):
@@ -478,6 +484,7 @@ elif status_exec == "IDLE":
         df_ta, df_u = pd.DataFrame(at), pd.DataFrame(su)
         if not df_sp.empty: df_u = pd.concat([df_u, df_sp], ignore_index=True)
         st.session_state.df_unallocated, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
+        
         sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qe, cm * qe), unsafe_allow_html=True)
         
         if df_ta.empty: st.error("Nenhuma obra alocada."); st.stop()
