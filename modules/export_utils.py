@@ -8,17 +8,22 @@ import streamlit as st
 from openpyxl.styles import PatternFill, Font, Alignment
 
 # ==========================================
-# GERAÇÃO DE EXCEL (RESPEITANDO A FORMATAÇÃO ORIGINAL)
+# GERAÇÃO DE EXCEL (RESPEITANDO A FORMATAÇÃO ORIGINAL E CORES DO TÁTICO)
 # ==========================================
 
-def formatar_planilha_openpyxl(writer, sheet_name):
-    """Aplica o padrão NIP (Azul Escuro) no arquivo Excel gerado e ajusta colunas."""
+def formatar_planilha_openpyxl(writer, sheet_name, df_orig):
+    """Aplica o padrão NIP e cores específicas (Tático e Fiscalização)."""
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
     
     header_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     header_font = Font(color='FFFFFF', bold=True, name='Calibri')
     
+    # Define os estilos condicionais do Tático
+    fill_superponto = PatternFill(start_color='FCE4D6', end_color='FCE4D6', fill_type='solid') # Laranjinha claro
+    font_prioridade = Font(color='FF0000', bold=True, name='Calibri') # Vermelho Negrito
+    
+    # Pinta o cabeçalho
     for cell in worksheet[1]:
         cell.fill = header_fill
         cell.font = header_font
@@ -26,6 +31,25 @@ def formatar_planilha_openpyxl(writer, sheet_name):
         
     worksheet.auto_filter.ref = worksheet.dimensions
     
+    # Aplica formatação linha a linha com base nos dados do DataFrame
+    col_prio_idx = df_orig.columns.get_loc('PRIORIDADE') + 1 if 'PRIORIDADE' in df_orig.columns else None
+    col_sp_idx = df_orig.columns.get_loc('SUPER_PONTO') + 1 if 'SUPER_PONTO' in df_orig.columns else None
+    
+    for r_idx, row in enumerate(worksheet.iter_rows(min_row=2), start=2):
+        is_prio = False
+        is_sp = False
+        
+        if col_prio_idx and row[col_prio_idx - 1].value == 'Sim':
+            is_prio = True
+            
+        if col_sp_idx and str(row[col_sp_idx - 1].value).startswith('SIM'):
+            is_sp = True
+            
+        for cell in row:
+            if is_sp: cell.fill = fill_superponto
+            if is_prio: cell.font = font_prioridade
+    
+    # Ajusta largura das colunas
     for col in worksheet.columns:
         max_length = 0
         column = col[0].column_letter
@@ -41,7 +65,7 @@ def gerar_excel_bytes(df, col_prio, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
     
-    # BLINDAGEM CENTRAL: Remove Pausa Almoço e Retorno Base de TODOS os roteirizadores (Tático e Fiscalização) no Excel
+    # BLINDAGEM CENTRAL: Remove Pausa Almoço e Retorno Base de TODOS os roteirizadores
     for col_name in ['PROTOCOLO', 'NOTA']:
         if col_name in df_saida.columns:
             df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -51,7 +75,7 @@ def gerar_excel_bytes(df, col_prio, colunas_originais=None):
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
-        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas')
+        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas', df_saida)
         
     return output.getvalue()
 
@@ -60,7 +84,7 @@ def gerar_excel_resumo_bytes(df_resumo):
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
-        formatar_planilha_openpyxl(writer, 'Resumo Operacional')
+        formatar_planilha_openpyxl(writer, 'Resumo Operacional', df_resumo)
     return output.getvalue()
 
 def limpar_colunas_excel(df_alvo, cols_originais):
@@ -80,7 +104,7 @@ def limpar_colunas_excel(df_alvo, cols_originais):
     
     if cols_originais is not None:
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
+            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
                 final_cols.append(c)
             
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
