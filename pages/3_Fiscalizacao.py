@@ -78,7 +78,8 @@ def extrair_qtd(val):
     try:
         nums = re.findall(r'\d+\.?\d*', str(val).replace(',', '.'))
         return sum(float(n) for n in nums) if nums else 0.0
-    except: return 0.0
+    except:
+        return 0.0
 
 def definir_cor_fiscalizacao(qtd):
     try:
@@ -134,6 +135,8 @@ with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Esforço e Limites", expanded=True):
         trava_global = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
+        # BOTAO CORRIGIDO AQUI:
+        sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         
@@ -271,6 +274,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows())} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
         st.dataframe(dr, use_container_width=True)
 
+
 # ==========================================
 # START DA APLICAÇÃO (UPLOAD DE DADOS)
 # ==========================================
@@ -320,6 +324,7 @@ elif status_exec == "IDLE":
     
     qtd_eq = df_bases['LEVANTADOR'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
+    
     sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
@@ -518,7 +523,6 @@ if status_exec == "RUNNING":
                 tr = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'])
                 if tr:
                     max_postes_idx = max(range(len(tr)), key=lambda i: extrair_qtd(tr[i].get('QTD PREVISTA DE POSTES', 0)))
-                    # Garante que o caminho termine no Mega Bolsão (Menor para o Maior)
                     if max_postes_idx < len(tr) / 2: tr.reverse()
                 ot = tr if tr else oe
             
@@ -534,7 +538,6 @@ if status_exec == "RUNNING":
                 return {'l': bl, 'L': bL, 't': c, 'd': c, 'oh': 0, 'lu': False}
             es = gi(da)
 
-            # Lógica Limpa: Sem pausas para Almoço e Sem Retorno para a Base
             for o in ot:
                 vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
                 vk = vkr * 1.3
@@ -594,57 +597,31 @@ if status_exec == "PACKAGING":
                 res.append({'FISCAL': b, 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO', 'TOTAL OBRAS': len(db), 'SUPER PONTOS': qs, 'POSTES AUDITADOS': int(pms.sum()), 'KM TOTAL PREVISTO': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
             zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
             
-            # Desagrupamento de Superpontos para o Excel Geral
-            linhas_gerais = []
-            for _, r in df_routed.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                if isinstance(r.get('_ORIGINAL_ROWS'), list):
-                    for orig in r['_ORIGINAL_ROWS']:
-                        nr = r.copy()
-                        for k, v in orig.items(): nr[k] = v
-                        linhas_gerais.append(nr)
-                else: linhas_gerais.append(r)
+            dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
+            if not dfc.empty:
+                dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
+                for cc in dfcc.columns:
+                    if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
+                out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_excel(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+            dfg = limpar_colunas_excel(df_routed.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_fisc)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
             
-            # Arquivos INDIVIDUAIS por Fiscal (Excel Desagrupado + KML + GPX)
-            for b_name in df_routed['BASE_ATRIBUIDA'].unique():
-                ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
-                df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
-                dk = df_fisc_ind[~df_fisc_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-                
-                # Excel Individual (Desagrupa Superpontos)
-                ld = []
-                for _, r in dk.iterrows():
-                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
-                        for orig in r['_ORIGINAL_ROWS']:
-                            nr = r.copy()
-                            for k, v in orig.items(): nr[k] = v
-                            ld.append(nr)
-                    else: ld.append(r)
-                if ld:
-                    dx = pd.DataFrame(ld)
-                    dx = limpar_colunas_excel(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
-                    dx = dx.loc[:, ~dx.columns.duplicated()].copy()
-                    for c in dx.columns:
-                        if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
-                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
-                
-                # KML e GPX Individual (Mantém Superponto unido no mapa)
-                kl = gerar_kml_fiscalizacao(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
-                zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
-                zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
-
-            # KML e GPX Total do Estado
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_fiscalizacao(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+            dfk = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+            ks = gerar_kml_fiscalizacao(dfk, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
-            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk, "ROTA TOTAL").encode('utf-8'))
+            
+            df_u = st.session_state.get('df_unallocated_fisc', pd.DataFrame())
+            if not df_u.empty:
+                ku = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>', '<Style id="wp"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>']
+                for _, r in df_u.iterrows():
+                    if pd.notna(r.get('LATITUDE')) and pd.notna(r.get('LONGITUDE')): ku.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO", "Rejeitado")))}</name><styleUrl>#wp</styleUrl><Point><coordinates>{r.get("LONGITUDE")},{r.get("LATITUDE")}</coordinates></Point></Placemark>')
+                ku.append('</Document></kml>'); zk.writestr(f"OBRAS_NAO_ALOCADAS - {d_fmt}.kml", "\n".join(ku).encode('utf-8'))
 
         st.session_state.bytes_zip_xl_fisc, st.session_state.bytes_zip_kml_fisc, st.session_state.bytes_zip_gpx_fisc = bu_xl.getvalue(), bu_kml.getvalue(), bu_gpx.getvalue()
         st.session_state.roteamento_concluido_fisc = True; st.session_state.vrp_status_fisc = "IDLE"; tentar_rerun()
