@@ -7,7 +7,7 @@ import base64
 import streamlit as st
 
 # ==========================================
-# GERAÇÃO DE EXCEL (DEMANDA GERAL E RESUMO)
+# GERAÇÃO DE EXCEL (RESPEITANDO A FORMATAÇÃO ORIGINAL)
 # ==========================================
 
 def gerar_excel_bytes(df, col_prio, colunas_originais=None):
@@ -25,6 +25,32 @@ def gerar_excel_resumo_bytes(df_resumo):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
     return output.getvalue()
+
+def limpar_colunas_excel(df_alvo, cols_originais):
+    """Nova lógica que respeita 100% as colunas originais do arquivo subido"""
+    df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
+    
+    rename_map = {}
+    if 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in cols_originais:
+        rename_map['PROTOCOLO'] = 'NOTA'
+    if 'BASE_ATRIBUIDA' in df_alvo.columns:
+        rename_map['BASE_ATRIBUIDA'] = 'FISCAL'
+    df_alvo = df_alvo.rename(columns=rename_map)
+    
+    # Priorizamos as colunas do Roteirizador, depois as Originais exatas
+    final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    for c in cols_originais:
+        if c in df_alvo.columns and c not in final_cols:
+            final_cols.append(c)
+        elif c == 'NOTA' and 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in final_cols:
+            final_cols.append('PROTOCOLO')
+            
+    # Adiciona colunas que sobraram e não são lixo de programação
+    for c in df_alvo.columns:
+        if c not in final_cols and not str(c).startswith('_') and c not in ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM']:
+            final_cols.append(c)
+            
+    return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
 # ==========================================
 # GERAÇÃO DE GPS OFFLINE (GPX) E KML
@@ -47,8 +73,10 @@ def gerar_gpx_simples(df_kml, nome_rota):
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
-def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir, funcao_formatadora):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '  <Document>', f'    <name>{html.escape(str(nome_rota))}</name>']
+def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
+    """Gera KML idêntico ao Tático (Pastas por Fiscal) mas com Pop-ups coloridos de Fiscalização."""
+    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
+    
     styles = {
         'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png',
         'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
@@ -58,75 +86,59 @@ def gerar_kml_fiscalizacao(df_kml, nome_rota, colunas_exibir, funcao_formatadora
         'gray': 'http://maps.google.com/mapfiles/kml/paddle/wht-blank.png'
     }
     for color, url in styles.items():
-        kml.extend([f'    <Style id="style_{color}">', f'      <IconStyle><Icon><href>{url}</href></Icon></IconStyle>', '    </Style>'])
-
-    coords_linha = []
-    for _, row in df_kml.iterrows():
-        if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-        lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-        if pd.isna(lat) or pd.isna(lon): continue
+        kml.extend([f'<Style id="style_{color}"><IconStyle><Icon><href>{url}</href></Icon></IconStyle></Style>'])
         
-        geom = row.get('ROTA_GEOMETRIA')
-        if isinstance(geom, list) and len(geom) > 0:
-            for pt in geom:
-                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    coords_linha.append(f"{pt[0]},{pt[1]},0")
-        else:
-            coords_linha.append(f"{lon},{lat},0")
-        
-        nome, qtd, cor = str(row.get('PROTOCOLO', 'Ponto')), float(row.get('QTD PREVISTA DE POSTES', 0)), row.get('COR_ICONE', 'gray')
-        
-        bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
-        txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
-        p_bg = bg_colors.get(cor, '#9E9E9E')
-        p_c = txt_colors.get(cor, '#ffffff')
-        p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
-
-        er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, row.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
-        desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;">{er}</table></div>'
-
-        kml.extend(['    <Placemark>', f'      <name>[{int(qtd)} Postes] {html.escape(nome)}</name>', f'      <styleUrl>#style_{cor}</styleUrl>', f'      <description><![CDATA[{desc}]]></description>', f'      <Point><coordinates>{lon},{lat},0</coordinates></Point>', '    </Placemark>'])
-
-    if coords_linha:
-        kml.extend(['    <Placemark>', '      <name>Traçado da Rota do Fiscal</name>', '      <Style><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>', '      <LineString><tessellate>1</tessellate><coordinates>', ' '.join(coords_linha), '      </coordinates></LineString>', '    </Placemark>'])
-
-    kml.extend(['  </Document>', '</kml>'])
-    return '\n'.join(kml)
-
-def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
-    
-    kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
-    kml.append('<Style id="s_red"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon></IconStyle></Style>')
-    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>')
+    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>')
 
     for b in bases_ativas:
-        pasta = f'  <Folder><name>Base: {b}</name>'
+        if pd.isna(b) or b == "NÃO ALOCADO": continue
+        pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
-        for p in df_b['PERIODO'].unique():
-            df_p = df_b[df_b['PERIODO'] == p]
-            pasta += f'<Folder><name>Período {p}</name>'
-            coords = []
-            for _, r in df_p.iterrows():
-                if isinstance(r.get('ROTA_GEOMETRIA'), list): coords.extend([f"{lon},{lat},0" for lon, lat in r['ROTA_GEOMETRIA']])
-            if coords:
-                pasta += '<Placemark><name>Rota</name><styleUrl>#s_line</styleUrl><LineString><coordinates>' + ' '.join(coords) + '</coordinates></LineString></Placemark>'
-            for _, r in df_p.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        
+        coords_linha = []
+        for _, r in df_b.iterrows():
+            geom = r.get('ROTA_GEOMETRIA')
+            if isinstance(geom, list) and len(geom) > 0:
+                for pt in geom:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        coords_linha.append(f"{pt[0]},{pt[1]},0")
+            else:
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                if pd.isna(lat) or pd.isna(lon): continue
-                desc = '<table border="1">' + "".join([f'<tr><td>{c}</td><td>{funcao_formatadora(c, r.get(c,""))}</td></tr>' for c in colunas_exibir]) + '</table>'
-                pasta += f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO")))}</name><styleUrl>#{"s_red" if r.get("PRIORIDADE")=="Sim" else "s_blue"}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>'
-            pasta += '</Folder>'
-        pasta += '</Folder>'
-        kml.append(pasta)
+                if pd.notna(lat) and pd.notna(lon):
+                    coords_linha.append(f"{lon},{lat},0")
+        
+        if coords_linha:
+            pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+
+        for _, r in df_b.iterrows():
+            if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+            lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+            if pd.isna(lat) or pd.isna(lon): continue
+            
+            qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
+            cor = r.get('COR_ICONE', 'gray')
+            nome = str(r.get('PROTOCOLO', 'Ponto'))
+            
+            bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+            txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
+            p_bg = bg_colors.get(cor, '#9E9E9E')
+            p_c = txt_colors.get(cor, '#ffffff')
+            p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+
+            er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+            desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
+
+            pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+            
+        pasta.append('</Folder>')
+        kml.extend(pasta)
+        
     kml.extend(['</Document>', '</kml>'])
     return "\n".join(kml)
 
 # ==========================================
 # UI E AUXILIARES
 # ==========================================
-
 def injetar_logo():
     import os
     if os.path.exists("LOGO_NIP.png"):
