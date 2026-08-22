@@ -78,8 +78,7 @@ def extrair_qtd(val):
     try:
         nums = re.findall(r'\d+\.?\d*', str(val).replace(',', '.'))
         return sum(float(n) for n in nums) if nums else 0.0
-    except:
-        return 0.0
+    except: return 0.0
 
 def definir_cor_fiscalizacao(qtd):
     try:
@@ -135,7 +134,6 @@ with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Esforço e Limites", expanded=True):
         trava_global = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
-        # BOTAO CORRIGIDO AQUI:
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
@@ -150,7 +148,7 @@ with st.sidebar:
     
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked) # Ativado por padrão para forçar o arruamento nos KMLs
 
     st.markdown("---")
     sb_html = st.empty()
@@ -184,7 +182,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Gráficos com Valores Estampados (Altair)
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -225,7 +222,41 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             text_donut = base_pie.mark_text(radiusOffset=15, size=12, color='black', fontWeight='bold').encode(text='Perc_Text:N')
             st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
             
-        st.caption("💡 **Dica de Exportação PDF:** Clique no botão de três pontinhos (⋮) no canto superior direito de cada gráfico e selecione **'Save as PNG'** ou **'Save as SVG'** para salvar com alta qualidade.")
+        # Botão de Exportação para PDF Real
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib import colors
+
+        def gerar_pdf_bytes(df_res):
+            pdf_buf = io.BytesIO()
+            doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+            elements = []
+            styles = getSampleStyleSheet()
+            
+            title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#0D256C'), spaceAfter=15)
+            elements.append(Paragraph("<b>Relatório Executivo de Fiscalização - NIP v3.0</b>", title_style))
+            elements.append(Spacer(1, 10))
+            
+            table_data = [["Fiscal", "Total Obras", "Postes Auditados", "KM Previsto"]]
+            for _, row in df_res.iterrows():
+                table_data.append([str(row['Fiscal']), str(row['Obras']), str(row['Postes']), f"{row.get('Perc_Text', '')}"])
+                
+            t = Table(table_data, colWidths=[200, 90, 100, 110])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0,0), (-1,0), 8),
+                ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8f9fa')),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
+            ]))
+            elements.append(t)
+            doc.build(elements)
+            return pdf_buf.getvalue()
+
+        st.download_button("📥 Baixar Relatório Executivo (PDF)", data=gerar_pdf_bytes(df_chart), file_name=f"Relatorio_Fiscalizacao - {datetime.now().strftime('%d.%m.%Y')}.pdf", mime="application/pdf", use_container_width=True)
 
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -324,7 +355,6 @@ elif status_exec == "IDLE":
     
     qtd_eq = df_bases['LEVANTADOR'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
-    
     sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
@@ -559,8 +589,12 @@ if status_exec == "RUNNING":
                 else:
                     if i%5==0: sgt.info(f"🛣️ Traçando asfalto **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf)); time.sleep(0.05)
-                    try: gd.append(obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh']))
-                    except: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                    try: 
+                        # CORREÇÃO: Força a busca real de ruas se o checkbox estiver ativo
+                        res_ruas = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                        gd.append(res_ruas)
+                    except: 
+                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
             
@@ -594,7 +628,7 @@ if status_exec == "PACKAGING":
                 br = next((x for x in st.session_state.bases_records_fisc if x['LEVANTADOR']==b), None)
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
                 pms = pd.to_numeric(db['QTD PREVISTA DE POSTES'], errors='coerce').fillna(0).round().astype(int)
-                res.append({'FISCAL': b, 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO', 'TOTAL OBRAS': len(db), 'SUPER PONTOS': qs, 'POSTES AUDITADOS': int(pms.sum()), 'KM TOTAL PREVISTO': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
+                res.append({'FISCAL': b, 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO', 'TOTAL OBRAS': sum(count_real_obras(r) for _, r in db.iterrows()), 'SUPER PONTOS': qs, 'POSTES AUDITADOS': int(pms.sum()), 'KM TOTAL PREVISTO': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
             zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
             
             dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
@@ -605,16 +639,60 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            dfg = limpar_colunas_excel(df_routed.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+            # Desagrupamento de Superpontos para o Excel Geral
+            linhas_gerais = []
+            for _, r in df_routed.iterrows():
+                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                    for orig in r['_ORIGINAL_ROWS']:
+                        nr = r.copy()
+                        for k, v in orig.items(): nr[k] = v
+                        linhas_gerais.append(nr)
+                else: linhas_gerais.append(r)
+            
+            df_excel_full = pd.DataFrame(linhas_gerais)
+            dfg = limpar_colunas_excel(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
             
-            dfk = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_fiscalizacao(dfk, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+            # Geração RIGOROSA de arquivos INDIVIDUAIS por Fiscal no ZIP
+            for b_name in df_routed['BASE_ATRIBUIDA'].unique():
+                if pd.isna(b_name) or b_name == "NÃO ALOCADO": continue
+                ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
+                df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
+                dk = df_fisc_ind[~df_fisc_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                
+                if dk.empty: continue
+                
+                # Excel Individual Desagrupado
+                ld = []
+                for _, r in dk.iterrows():
+                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                        for orig in r['_ORIGINAL_ROWS']:
+                            nr = r.copy()
+                            for k, v in orig.items(): nr[k] = v
+                            ld.append(nr)
+                    else: ld.append(r)
+                if ld:
+                    dx = pd.DataFrame(ld)
+                    dx = limpar_colunas_excel(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+                    dx = dx.loc[:, ~dx.columns.duplicated()].copy()
+                    for c in dx.columns:
+                        if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
+                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
+                
+                # KML e GPX Individual com Arruamento Real
+                kl = gerar_kml_fiscalizacao(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+                zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
+                zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
+
+            # KML e GPX Total
+            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+            ks = gerar_kml_fiscalizacao(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
-            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk, "ROTA TOTAL").encode('utf-8'))
+            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
             
             df_u = st.session_state.get('df_unallocated_fisc', pd.DataFrame())
             if not df_u.empty:
