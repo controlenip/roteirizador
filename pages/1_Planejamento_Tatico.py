@@ -185,8 +185,10 @@ elif status_exec == "IDLE":
         bf = st.file_uploader("Principais (Excel)", type=["xlsx", "xls"])
         if bf:
             b_t = ler_planilha_cached(bf.getvalue()); b_t.columns = normalize_cols(b_t.columns)
-            for pn in ['NOME', 'TECNICO', 'EQUIPE']:
-                if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
+            b_t = b_t.loc[:, ~b_t.columns.duplicated()].copy()
+            if 'LEVANTADOR' not in b_t.columns:
+                for pn in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR', 'FISCAL']:
+                    if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
             if 'LEVANTADOR' in b_t.columns:
                 opts = sorted([str(x) for x in b_t['LEVANTADOR'].dropna().unique() if str(x).upper().strip() != 'SEM LEVANTADOR'])
                 sel = st.multiselect("Equipes Ativas:", opts, default=opts)
@@ -202,6 +204,7 @@ elif status_exec == "IDLE":
                             for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
+            else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR'.")
         
         ta = st.radio("Atribuição", ["Por Município", "Por Proximidade"], index=0, label_visibility="collapsed")
     with c2:
@@ -217,19 +220,27 @@ elif status_exec == "IDLE":
         with st.expander("🧑‍🤝‍🧑 Equipes de Apoio (Temporários)"):
             tb_f = st.file_uploader("Apoio", type=["xlsx", "xls"], accept_multiple_files=True)
             if tb_f:
-                dbf = pd.concat([ler_planilha_cached(f.getvalue()).rename(columns=lambda c: 'LEVANTADOR' if c in ['NOME', 'TECNICO', 'EQUIPE'] else c) for f in tb_f], ignore_index=True)
-                dbf.columns = normalize_cols(dbf.columns)
-                if 'LEVANTADOR' in dbf.columns:
-                    sel = st.multiselect("Equipes de Apoio:", sorted([str(x) for x in dbf['LEVANTADOR'].dropna().unique()]), default=sorted([str(x) for x in dbf['LEVANTADOR'].dropna().unique()]))
-                    if sel:
-                        df_bases_temp = dbf[dbf['LEVANTADOR'].isin(sel)].copy()
-                        df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp.get('LATITUDE', np.nan), errors='coerce')
-                        df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp.get('LONGITUDE', np.nan), errors='coerce')
-                        df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
+                t_dfs = []
+                for f in tb_f:
+                    dt = ler_planilha_cached(f.getvalue()); dt.columns = normalize_cols(dt.columns)
+                    dt = dt.loc[:, ~dt.columns.duplicated()].copy()
+                    if 'LEVANTADOR' not in dt.columns:
+                        for pn in ['NOME', 'TECNICO', 'EQUIPE']:
+                            if pn in dt.columns: dt = dt.rename(columns={pn: 'LEVANTADOR'}); break
+                    t_dfs.append(dt)
+                if t_dfs:
+                    dbf = pd.concat(t_dfs, ignore_index=True)
+                    if 'LEVANTADOR' in dbf.columns:
+                        sel = st.multiselect("Equipes de Apoio:", sorted([str(x) for x in dbf['LEVANTADOR'].dropna().unique()]), default=sorted([str(x) for x in dbf['LEVANTADOR'].dropna().unique()]))
+                        if sel:
+                            df_bases_temp = dbf[dbf['LEVANTADOR'].isin(sel)].copy()
+                            df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp.get('LATITUDE', np.nan), errors='coerce')
+                            df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp.get('LONGITUDE', np.nan), errors='coerce')
+                            df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
 
         ig_d = st.checkbox("Filtro: Ignorar obras já despachadas?", value=False)
 
-    qe = df_bases.get('LEVANTADOR', pd.Series()).nunique() + df_bases_temp.get('LEVANTADOR', pd.Series()).nunique()
+    qe = (df_bases['LEVANTADOR'].nunique() if not df_bases.empty else 0) + (df_bases_temp['LEVANTADOR'].nunique() if not df_bases_temp.empty else 0)
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     sb_html.markdown(renderizar_painel_lateral(cm, 0, qe, cm * max(1, qe)), unsafe_allow_html=True)
 
@@ -238,6 +249,7 @@ elif status_exec == "IDLE":
     dfs = []
     for f in (t_f or []):
         d = ler_planilha_cached(f.getvalue()); d.columns = normalize_cols(d.columns)
+        d = d.loc[:, ~d.columns.duplicated()].copy()
         if not dfs: st.session_state.colunas_originais_tat = d.columns.tolist()
         d['_ORIGEM_BASE'] = 'LEVANTAMENTO'
         if 'PRIORIDADE' in d.columns: d['_PRIORIDADE_ORIGINAL'] = d['PRIORIDADE']
@@ -246,6 +258,7 @@ elif status_exec == "IDLE":
         dfs.append(d)
     for f in (s_f or []):
         d = ler_planilha_cached(f.getvalue()); d.columns = normalize_cols(d.columns)
+        d = d.loc[:, ~d.columns.duplicated()].copy()
         d['_ORIGEM_BASE'] = 'SANEAMENTO'
         if 'PRIORIDADE' in d.columns: d['_PRIORIDADE_ORIGINAL'] = d['PRIORIDADE']
         d['LATITUDE'] = d.get('LATITUDE PROJETO', d.get('LATITUDE'))
@@ -255,6 +268,7 @@ elif status_exec == "IDLE":
         dfs.append(d)
     for f in (g_f or []):
         d = pd.read_csv(f) if f.name.endswith('.csv') else ler_planilha_cached(f.getvalue()); d.columns = normalize_cols(d.columns)
+        d = d.loc[:, ~d.columns.duplicated()].copy()
         d['_ORIGEM_BASE'] = 'GENERICA'
         if 'PRIORIDADE' in d.columns: d['_PRIORIDADE_ORIGINAL'] = d['PRIORIDADE']
         if 'LATITUDE' not in d.columns or 'LONGITUDE' not in d.columns: continue
