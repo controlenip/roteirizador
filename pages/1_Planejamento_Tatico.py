@@ -1,15 +1,61 @@
-import streamlit as st, pandas as pd, numpy as np, folium, io, zipfile, html, re, time, os, gc
+import streamlit as st
+import pandas as pd
+import numpy as np
+import folium
+import io
+import zipfile
+import html
+import re
+import time
+import os
+import gc
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
+
+# Importações dos Motores Matemáticos
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios, atualizar_status_via_df
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import identificar_icone_folium, renderizar_painel_lateral, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado, gerar_gpx_simples
+from modules.export_utils import identificar_icone_folium, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_kml_agrupado, gerar_gpx_simples
 
 st.set_page_config(page_title="Modo Tático", page_icon="🎯", layout="wide")
 STATUS_PADRAO = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
 TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
+
+# ==========================================
+# FUNÇÕES VISUAIS (DESIGN) E AUXILIARES
+# ==========================================
+
+def render_metric_card(title, value, icon, border_color, bg_color):
+    """Renderiza o card métrico com o design original, limpo e profissional."""
+    return f"""
+    <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
+        <div style="background-color: {bg_color}; width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; margin-right: 15px;">
+            {icon}
+        </div>
+        <div>
+            <p style="margin: 0; font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">{title}</p>
+            <p style="margin: 0; font-size: 22px; color: #333; font-weight: bold;">{value}</p>
+        </div>
+    </div>
+    """
+
+def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade):
+    """Renderiza o Resumo de Capacidade da barra lateral com tamanho maior e mais respiro."""
+    return f"""
+    <div style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 4px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
+        <h4 style="margin-top: 0; color: #0D256C; font-size: 18px; border-bottom: 2px solid #55B929; padding-bottom: 10px; margin-bottom: 15px;">📊 Resumo da Capacidade</h4>
+        <p style="margin-bottom: 10px; font-size: 15px;"><b>Equipes Ativas:</b> <span style="color: #0D256C; font-weight: bold;">{qtd_equipes_ativas}</span></p>
+        <p style="margin-bottom: 10px; font-size: 15px;"><b>Cota p/ Equipe:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> obras</p>
+        <p style="margin-bottom: 15px; font-size: 15px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> obras</p>
+        <hr style="margin: 15px 0; border: 0; border-top: 1px solid #eee;">
+        <div style="text-align: center; margin-top: 15px;">
+            <p style="margin-bottom: 5px; font-size: 16px; color: #555;"><b>Obras Validadas:</b></p>
+            <span style="font-size: 36px; color: #0D256C; font-weight: 900;">{total_obras_prontas}</span>
+        </div>
+    </div>
+    """
 
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
@@ -42,16 +88,18 @@ def limpar_colunas_excel(df_alvo, cols_originais):
     return df_alvo[fc]
 
 def tentar_rerun():
-    if hasattr(st, 'rerun'):
-        st.rerun()
-    else:
-        st.experimental_rerun()
+    if hasattr(st, 'rerun'): st.rerun()
+    else: st.experimental_rerun()
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_tat': False, 'vrp_status_tat': "IDLE", 'vrp_state_tat': {}, 'df_routed_tat': pd.DataFrame(), 'bases_records_tat': [], 'colunas_exibir_tat': [], 'colunas_originais_tat': []})
     for k in ['bytes_zip_xl_tat', 'bytes_zip_kml_tat', 'bytes_zip_gpx_tat', 'start_time_run_tat', 'start_time_pkg_tat']: st.session_state.pop(k, None)
     ler_planilha_cached.clear(); tentar_rerun()
 
+
+# ==========================================
+# INÍCIO DA PÁGINA
+# ==========================================
 if "roteamento_concluido_tat" not in st.session_state: st.session_state.roteamento_concluido_tat = False
 if "vrp_status_tat" not in st.session_state: st.session_state.vrp_status_tat = "IDLE"
 
@@ -90,6 +138,7 @@ with st.sidebar:
         
     st.markdown("---")
     sb_html = st.empty()
+    
     if is_done and not st.session_state.df_routed_tat.empty:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
         st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_tat', b""), file_name=f"Tatico_Planilhas - {d_fmt}.zip", use_container_width=True)
@@ -97,6 +146,10 @@ with st.sidebar:
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_tat', b""), file_name=f"Tatico_GPS - {d_fmt}.zip", use_container_width=True)
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
+
+# ==========================================
+# EXIBIÇÃO DE RESULTADOS (SE CONCLUÍDO)
+# ==========================================
 if is_done and not st.session_state.df_routed_tat.empty:
     st.markdown("## 🎯 Resultados da Otimização")
     st.session_state.df_routed_tat['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed_tat.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
@@ -108,11 +161,12 @@ if is_done and not st.session_state.df_routed_tat.empty:
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     tp = sum(count_real_obras(r) for _, r in dfr_t[dfr_t['PRIORIDADE'] == 'Sim'].iterrows()) if 'PRIORIDADE' in dfr_t else 0
     
+    # Renderizando Cards com Novo Design
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f'<div class="metric-card" style="border-left:5px solid #0D256C;"><div class="metric-icon" style="background:rgba(13,37,108,0.12);">🎯</div><div class="metric-content"><div class="metric-title">TOTAL ROTEIRIZADAS</div><div class="metric-value">{tr}</div></div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card" style="border-left:5px solid #8b5cf6;"><div class="metric-icon" style="background:rgba(139,92,246,0.15);">👥</div><div class="metric-content"><div class="metric-title">Equipes Alocadas</div><div class="metric-value">{te}</div></div></div>', unsafe_allow_html=True)
-    c3.markdown(f'<div class="metric-card" style="border-left:5px solid #55B929;"><div class="metric-icon" style="background:rgba(85,185,41,0.15);">🛣️</div><div class="metric-content"><div class="metric-title">KM Previsto</div><div class="metric-value">{tk}</div></div></div>', unsafe_allow_html=True)
-    c4.markdown(f'<div class="metric-card" style="border-left:5px solid #ef4444;"><div class="metric-icon" style="background:rgba(239,68,68,0.15);">🚨</div><div class="metric-content"><div class="metric-title">Prioridades</div><div class="metric-value">{tp}</div></div></div>', unsafe_allow_html=True)
+    c1.markdown(render_metric_card("TOTAL ROTEIRIZADAS", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+    c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("KM Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
+    c4.markdown(render_metric_card("Prioridades", tp, "🚨", "#ef4444", "rgba(239,68,68,0.15)"), unsafe_allow_html=True)
 
     c_at = st.session_state.vrp_state_tat.get('config', {})
     m_eq = obras_dia * (len(dias_sel) if tpc == "Semana" else 1) * limite_per
@@ -129,16 +183,18 @@ if is_done and not st.session_state.df_routed_tat.empty:
         df_fin = dfr.copy(); df_fin['_HORA_INICIO_DT'], df_fin['_HORA_FIM_DT'] = pd.to_datetime(df_fin['_HORA_INICIO_DT']), pd.to_datetime(df_fin['_HORA_FIM_DT'])
         ch_t = sum([(g['_HORA_FIM_DT'].max() - g['_HORA_INICIO_DT'].min()).total_seconds()/3600.0 for _, g in df_fin.groupby(['BASE_ATRIBUIDA', 'PERIODO'])]) * c_hora
         cf1, cf2, cf3, cf4 = st.columns(4)
-        cf1.markdown(f'<div class="metric-card" style="border-left:5px solid #f59e0b;"><div class="metric-content"><div class="metric-title">⛽ Combustível Estimado</div><div class="metric-value">R$ {formatar_moeda(cc_t)}</div></div></div>', unsafe_allow_html=True)
-        cf2.markdown(f'<div class="metric-card" style="border-left:5px solid #8b5cf6;"><div class="metric-content"><div class="metric-title">👷 Mão de Obra</div><div class="metric-value">R$ {formatar_moeda(ch_t)}</div></div></div>', unsafe_allow_html=True)
-        cf3.markdown(f'<div class="metric-card" style="border-left:5px solid #ef4444;"><div class="metric-content"><div class="metric-title">💲 Custo Total</div><div class="metric-value">R$ {formatar_moeda(cc_t + ch_t)}</div></div></div>', unsafe_allow_html=True)
-        cf4.markdown(f'<div class="metric-card" style="border-left:5px solid #55B929;"><div class="metric-content"><div class="metric-title">📊 Custo / Obra</div><div class="metric-value">R$ {formatar_moeda((cc_t+ch_t)/tr if tr>0 else 0)}</div></div></div>', unsafe_allow_html=True)
+        cf1.markdown(render_metric_card("⛽ Combustível", f"R$ {formatar_moeda(cc_t)}", "⛽", "#f59e0b", "rgba(245,158,11,0.15)"), unsafe_allow_html=True)
+        cf2.markdown(render_metric_card("👷 Mão de Obra", f"R$ {formatar_moeda(ch_t)}", "👷", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
+        cf3.markdown(render_metric_card("💲 Custo Operação", f"R$ {formatar_moeda(cc_t + ch_t)}", "💲", "#ef4444", "rgba(239,68,68,0.15)"), unsafe_allow_html=True)
+        cf4.markdown(render_metric_card("📊 Custo por Obra", f"R$ {formatar_moeda((cc_t+ch_t)/tr if tr>0 else 0)}", "📊", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
-    HeatMap([[r['LATITUDE'], r['LONGITUDE']] for _, r in dfr_t.iterrows()], radius=15, blur=10).add_to(mapa)
-    mc = MarkerCluster().add_to(mapa)
+    
+    # Nomes Restaurados (Agrupamento e Calor)
+    HeatMap([[r['LATITUDE'], r['LONGITUDE']] for _, r in dfr_t.iterrows()], radius=15, blur=10, name="🔥 Mapa de Calor (Demandas)").add_to(mapa)
+    mc = MarkerCluster(name="📍 Agrupamento de Obras").add_to(mapa)
     
     for bn in dfr['BASE_ATRIBUIDA'].unique():
         cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
@@ -161,24 +217,17 @@ if is_done and not st.session_state.df_routed_tat.empty:
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
-    t1, t2, t3 = st.tabs(["📊 Tabela", "📉 Déficit", "🏨 Hotéis"])
+    # REMOVIDA A ABA DE HOTÉIS AQUI
+    t1, t2 = st.tabs(["📊 Tabela", "📉 Déficit"])
     with t1: st.data_editor(dfr.drop(columns=['ROTA_GEOMETRIA','_HORA_INICIO_DT','_HORA_FIM_DT','_ORIGINAL_ROWS','_ORIGEM_BASE','PERIODO','ALERTA_TOPOLOGIA','TEMPO_VIAGEM_MINUTOS'], errors='ignore'), use_container_width=True)
     with t2:
         df_dfc = pd.DataFrame([{"Levantador": b['LEVANTADOR'], "Obras": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows()), "Meta": m_eq, "Falta": max(0, m_eq - sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows()))} for b in st.session_state.bases_records_tat]).sort_values(by="Falta", ascending=False)
         st.dataframe(df_dfc, use_container_width=True)
-    with t3:
-        hs = False
-        for b in st.session_state.bases_records_tat:
-            n, lt, ln = b['LEVANTADOR'], b.get('LATITUDE'), b.get('LONGITUDE')
-            dt = dfr_t[dfr_t['BASE_ATRIBUIDA']==n]
-            if not dt.empty and pd.notna(lt) and pd.notna(ln):
-                cl, cL = dt['LATITUDE'].mean(), dt['LONGITUDE'].mean()
-                d = haversine_scalar(float(lt), float(ln), cl, cL)
-                if d > 60:
-                    hs = True
-                    st.markdown(f'<div style="background:#f8f9fa;border-left:5px solid #0D256C;padding:15px;margin-bottom:15px;"><h4 style="margin:0;">👨‍🔧 {n}</h4><p>⚠️ Pernoite Sugerido: Polo a {d:.1f} KM da base.</p><a href="https://www.google.com/maps/search/hoteis+pousadas/@{cl:.6f},{cL:.6f},12z" target="_blank">🏨 Buscar Hotéis no Polo</a></div>', unsafe_allow_html=True)
-        if not hs: st.success("✅ Logística Segura: Nenhuma equipe com pernoite detectado (>60km).")
 
+
+# ==========================================
+# START DA APLICAÇÃO (UPLOAD DE DADOS)
+# ==========================================
 elif status_exec == "IDLE":
     c1, c2 = st.columns(2)
     with c1:
@@ -208,7 +257,14 @@ elif status_exec == "IDLE":
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
             else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR'.")
         
+        # Explicação Dinâmica do Radio (Imagem 5)
+        st.markdown("##### 📍 Regra de Atribuição")
         ta = st.radio("Atribuição", ["Por Município", "Por Proximidade"], index=0, label_visibility="collapsed")
+        if ta == "Por Município":
+            st.caption("Lê estritamente o município escrito na planilha do técnico para iniciar as obras.")
+        else:
+            st.caption("Ignora o município escrito e puxa a obra mais próxima do GPS do técnico.")
+            
     with c2:
         st.markdown("### 📁 2. Demandas (Obras)")
         t_f = st.file_uploader("1️⃣ Levantamento", type=["xlsx", "xls"], accept_multiple_files=True)
@@ -244,7 +300,9 @@ elif status_exec == "IDLE":
 
     qe = (df_bases['LEVANTADOR'].nunique() if not df_bases.empty else 0) + (df_bases_temp['LEVANTADOR'].nunique() if not df_bases_temp.empty else 0)
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
-    sb_html.markdown(renderizar_painel_lateral(cm, 0, qe, cm * max(1, qe)), unsafe_allow_html=True)
+    
+    # Card da Barra Lateral Gigante
+    sb_html.markdown(render_sidebar_card(cm, 0, qe, cm * max(1, qe)), unsafe_allow_html=True)
 
     if not t_f and not s_f and not g_f: st.info("Aguardando planilhas..."); st.stop()
 
@@ -447,7 +505,8 @@ elif status_exec == "IDLE":
         df_ta, df_u = pd.DataFrame(at), pd.DataFrame(su)
         if not df_sp.empty: df_u = pd.concat([df_u, df_sp], ignore_index=True)
         st.session_state.df_unallocated, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
-        sb_html.markdown(renderizar_painel_lateral(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qe, cm * qe), unsafe_allow_html=True)
+        
+        sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qe, cm * qe), unsafe_allow_html=True)
         
         if df_ta.empty: st.error("Nenhuma obra alocada."); st.stop()
         
@@ -462,6 +521,9 @@ elif status_exec == "IDLE":
             st.session_state.vrp_state_tat = {'config': {'velocidade_media_kmh': vel_kmh, 'tempo_medio_obra': t_obra, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'sentido_rota': sentido_rota, 'trava_global_obras': trava_global}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
             st.session_state.vrp_status_tat = "RUNNING"; tentar_rerun()
 
+# ==========================================
+# CÁLCULO E ROTEIRIZAÇÃO VRP
+# ==========================================
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor de Inteligência (OR-Tools VRP)")
     if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
@@ -476,7 +538,21 @@ if status_exec == "RUNNING":
         e = time.time() - st_run; f = (bi + (ii / max(1, it))) / max(1, len(b_n))
         rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
         es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
-        tmp.markdown(f'<div style="display:flex;gap:10px;margin-bottom:15px;"><div style="flex:1;padding:15px;background:#f8f9fa;border:1px solid #dee2e6;text-align:center;"><div style="font-size:0.85rem;color:#6c757d;font-weight:bold;">⏱️ Decorrido</div><div style="font-size:1.8rem;color:#0D256C;">{es}</div></div><div style="flex:1;padding:15px;background:#e8f5e9;border:1px solid #a5d6a7;text-align:center;"><div style="font-size:0.85rem;color:#2e7d32;font-weight:bold;">🎯 Restante</div><div style="font-size:1.8rem;color:#1b5e20;">{rs}</div></div></div>', unsafe_allow_html=True)
+        
+        # Design Atualizado dos Timers (Imagem 4)
+        html_timer = f"""
+        <div style="display:flex; gap:15px; margin-bottom: 20px;">
+            <div style="flex:1; padding:20px; border-radius:10px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
+                <div style="font-size:0.9rem; color:#6c757d; font-weight:bold; margin-bottom:5px;">⏱️ Decorrido</div>
+                <div style="font-size:2rem; font-weight:bold; color:#0D256C;">{es}</div>
+            </div>
+            <div style="flex:1; padding:20px; border-radius:10px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
+                <div style="font-size:0.9rem; color:#2e7d32; font-weight:bold; margin-bottom:5px;">🎯 Restante</div>
+                <div style="font-size:2rem; font-weight:bold; color:#1b5e20;">{rs}</div>
+            </div>
+        </div>
+        """
+        tmp.markdown(html_timer, unsafe_allow_html=True)
 
     if b_i < len(b_n):
         bn = b_n[b_i]; pb.progress(b_i / max(1, len(b_n))); sgt.info(f"🧠 Analisando **{bn}**... ({b_i+1}/{len(b_n)})")
@@ -617,6 +693,9 @@ if status_exec == "RUNNING":
         st.session_state.df_routed_tat = pd.DataFrame(st_v['routed_data'])
         st.session_state.vrp_status_tat = "PACKAGING"; time.sleep(1); tentar_rerun()
 
+# ==========================================
+# PACOTES E DOWNLOAD
+# ==========================================
 if status_exec == "PACKAGING":
     st.markdown("## 📦 Empacotamento")
     df_routed, d_fmt = st.session_state.df_routed_tat, datetime.now().strftime("%d.%m.%Y")
