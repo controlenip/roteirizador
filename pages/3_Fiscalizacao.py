@@ -13,7 +13,7 @@ from streamlit_folium import st_folium
 from datetime import datetime
 
 # Importações dos Motores Matemáticos
-from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios, atualizar_status_via_df
+from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
@@ -127,6 +127,7 @@ with st.sidebar:
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         
+        # Modo Ilimitado Aplicado Aqui
         st.success("📦 **Carga Total:** O sistema roteirizará 100% das obras da planilha para os fiscais (sem cortes por dia).")
         obras_dia = 999999
         limite_per = 1
@@ -172,6 +173,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
+    # Gráficos de Balanceamento
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -192,6 +194,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             donut = alt.Chart(df_chart).mark_arc(innerRadius=60).encode(theta=alt.Theta(field="Postes", type="quantitative"), color=alt.Color(field="Fiscal", type="nominal"), tooltip=["Fiscal", "Postes", "Obras"]).properties(height=350)
             st.altair_chart(donut, use_container_width=True)
 
+    # MAPA COM POP-UPS PADRÃO TÁTICO
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
@@ -239,6 +242,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows())} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
         st.dataframe(dr, use_container_width=True)
 
+
 # ==========================================
 # START DA APLICAÇÃO (UPLOAD DE DADOS)
 # ==========================================
@@ -254,7 +258,13 @@ elif status_exec == "IDLE":
             for pn in ['NOME', 'FISCAL', 'TECNICO', 'COLABORADOR']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'LEVANTADOR'}); break
             if 'LEVANTADOR' in b_t.columns:
-                opts = sorted([str(x) for x in b_t['LEVANTADOR'].dropna().unique() if str(x).upper().strip() != 'SEM LEVANTADOR'])
+                
+                # A MÁGICA DO EXPLODE: SEPARA FISCAIS NA MESMA CÉLULA
+                b_t['LEVANTADOR'] = b_t['LEVANTADOR'].astype(str).str.split(r'\s*\|\s*')
+                b_t = b_t.explode('LEVANTADOR').reset_index(drop=True)
+                b_t['LEVANTADOR'] = b_t['LEVANTADOR'].str.strip().str.upper()
+                
+                opts = sorted([str(x) for x in b_t['LEVANTADOR'].dropna().unique() if str(x) not in ['SEM LEVANTADOR', 'NAN', 'NONE', '']])
                 sel = st.multiselect("Selecione os Fiscais Ativos:", opts, default=opts)
                 if sel:
                     df_bases = b_t[b_t['LEVANTADOR'].isin(sel)].copy()
@@ -284,6 +294,7 @@ elif status_exec == "IDLE":
     qtd_eq = df_bases['LEVANTADOR'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     
+    # Agora a contagem reflete exatamente a quantidade de Fiscais após separar os nomes
     sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
@@ -397,7 +408,6 @@ elif status_exec == "IDLE":
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
         
     for r in df_tasks.to_dict('records'):
-        qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
         
