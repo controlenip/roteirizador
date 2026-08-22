@@ -80,16 +80,17 @@ st.info("💡 Distribui as obras equitativamente entre as equipes, criando uma l
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Parâmetros de Rota", expanded=True):
-        st.success("📦 **Modo Contínuo:** Todas as obras serão alocadas numa lista única, sem corte de dias.")
-        trava_global = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
-        data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
+        st.success("📦 **Modo Contínuo:** Todas as obras serão alocadas numa lista única.")
+        trava_global = st.number_input("Trava Total de Obras", min_value=0, value=0, step=50, disabled=is_locked)
+        data_ini = st.date_input("📅 Data Base:", value=datetime.today(), disabled=is_locked)
         
-        st.markdown("---")
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
-        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         st.markdown("---")
         vel_kmh = st.slider("Velocidade Média (km/h)", 10, 100, 30, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
+
+    with st.expander("📡 Conexão de Rede", expanded=False):
+        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
 
     sb_html = st.empty()
 
@@ -103,12 +104,11 @@ with st.sidebar:
 if is_done and not st.session_state.df_routed_lista.empty:
     st.markdown("## 🎯 Resultado do Planejamento")
     
-    # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO
     df_c = st.session_state.get('df_correcao_lista', pd.DataFrame())
     if not df_c.empty:
         st.markdown(f"""
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
-            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
                 <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora do Filtro Geográfico de 70km do município. Elas foram isoladas para não corromper o mapa.
             </p>
@@ -305,16 +305,6 @@ elif status_exec == "IDLE":
         
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_lista = df_rej
-        
-        if not df_rej.empty: 
-            st.markdown(f"""
-            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
-                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                    <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas zeradas, invertidas ou caíram fora do limite de 70km do município de origem e foram bloqueadas para não corromper o roteamento.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
