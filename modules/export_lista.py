@@ -35,11 +35,10 @@ def formatar_planilha_openpyxl(writer, sheet_name):
                 pass
         worksheet.column_dimensions[column].width = min(max_length + 2, 60)
 
-def gerar_excel_bytes(df, col_prio, colunas_originais=None):
+def gerar_excel_lista(df, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
     
-    # Remove Pausa Almoço e Retorno Base do Excel final
     for col_name in ['PROTOCOLO', 'NOTA']:
         if col_name in df_saida.columns:
             df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -53,7 +52,7 @@ def gerar_excel_bytes(df, col_prio, colunas_originais=None):
         
     return output.getvalue()
 
-def gerar_excel_resumo_bytes(df_resumo):
+def gerar_excel_resumo_lista(df_resumo):
     output = io.BytesIO()
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -61,7 +60,7 @@ def gerar_excel_resumo_bytes(df_resumo):
         formatar_planilha_openpyxl(writer, 'Resumo Operacional')
     return output.getvalue()
 
-def limpar_colunas_excel(df_alvo, cols_originais):
+def limpar_colunas_lista(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
     if 'PROTOCOLO' in df_alvo.columns:
@@ -77,7 +76,7 @@ def limpar_colunas_excel(df_alvo, cols_originais):
     
     if cols_originais is not None:
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
+            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
                 final_cols.append(c)
                 
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
@@ -87,7 +86,7 @@ def limpar_colunas_excel(df_alvo, cols_originais):
             
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
-def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
+def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
     kml.append('<Style id="s_red"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon></IconStyle></Style>')
