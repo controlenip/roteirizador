@@ -42,8 +42,8 @@ def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativ
     <div style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 4px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
         <h4 style="margin-top: 0; color: #0D256C; font-size: 18px; border-bottom: 2px solid #55B929; padding-bottom: 10px; margin-bottom: 15px;">📊 Resumo da Capacidade</h4>
         <p style="margin-bottom: 10px; font-size: 15px;"><b>Fiscais Ativos:</b> <span style="color: #0D256C; font-weight: bold;">{qtd_equipes_ativas}</span></p>
-        <p style="margin-bottom: 10px; font-size: 15px;"><b>Cota p/ Fiscal:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> obras</p>
-        <p style="margin-bottom: 15px; font-size: 15px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> obras</p>
+        <p style="margin-bottom: 10px; font-size: 15px;"><b>Cota p/ Fiscal:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span></p>
+        <p style="margin-bottom: 15px; font-size: 15px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span></p>
         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #eee;">
         <div style="text-align: center; margin-top: 15px;">
             <p style="margin-bottom: 5px; font-size: 16px; color: #555;"><b>Obras Validadas:</b></p>
@@ -126,12 +126,15 @@ with st.sidebar:
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
-        tipo_periodo = st.radio("Agrupamento:", ["☀️ Dia", "📅 Semana"], index=1, horizontal=True, disabled=is_locked)
-        tpc = "Semana" if "Semana" in tipo_periodo else "Dia"
-        dias_sel = st.multiselect("Dias úteis:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked) if tpc == "Semana" else ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+        
+        # Modo Ilimitado Aplicado Aqui
+        st.success("📦 **Carga Total:** O sistema roteirizará 100% das obras da planilha para os fiscais (sem cortes por dia).")
+        obras_dia = 999999
+        limite_per = 1
+        tpc = "Dia"
+        dias_sel = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+        
         data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
-        obras_dia = st.number_input("Obras Previstas por Dia", min_value=1, value=30, step=1, disabled=is_locked)
-        limite_per = st.number_input(f"Limite total de {tpc}s", min_value=1, value=5, step=1, disabled=is_locked)
         vel_kmh = 30.0
     
     with st.expander("📡 Conexão de Rede", expanded=False):
@@ -239,7 +242,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows())} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
         st.dataframe(dr, use_container_width=True)
 
-
 # ==========================================
 # START DA APLICAÇÃO (UPLOAD DE DADOS)
 # ==========================================
@@ -283,8 +285,9 @@ elif status_exec == "IDLE":
     if df_bases.empty or not task_files: st.stop()
     
     qtd_eq = df_bases['LEVANTADOR'].nunique()
-    cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
-    sb_html.markdown(render_sidebar_card(cm, 0, qtd_eq, cm * max(1, qtd_eq)), unsafe_allow_html=True)
+    
+    # Card alterado para refletir Modo Ilimitado
+    sb_html.markdown(render_sidebar_card("Ilimitada", 0, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
 
     dfs = []
     for f in task_files:
@@ -373,8 +376,6 @@ elif status_exec == "IDLE":
     tbr = df_bases.to_dict('records')
     
     fiscal_anchors = {b['LEVANTADOR']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
-    fiscal_capacities = {b['LEVANTADOR']: cm for b in tbr}
-    fiscal_loads = {b['LEVANTADOR']: 0 for b in tbr}
     
     assigned_tasks = []
     unassigned_tasks = []
@@ -398,33 +399,33 @@ elif status_exec == "IDLE":
         best_f = None
         best_d = float('inf')
         
-        if pd.notna(la) and pd.notna(lo):
+        if pd.notna(la) and pd.notna(lo) and vb:
             for b in vb:
                 f_name = b['LEVANTADOR']
-                if fiscal_loads[f_name] + qr <= fiscal_capacities[f_name]:
-                    d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
-                    if d < best_d:
-                        best_d = d
-                        best_f = f_name
+                # Remoção da trava de capacidade (cm), absorve 100% da planilha
+                d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
+                if d < best_d:
+                    best_d = d
+                    best_f = f_name
                         
         if best_f:
-            fiscal_loads[best_f] += qr
             r['BASE_ATRIBUIDA'] = best_f
             r['MUN_LIMPO'] = ms
             assigned_tasks.append(r)
             
-            # Ancoragem Dinâmica
-            if fiscal_loads[best_f] == qr:
-                fiscal_anchors[best_f] = (la, lo)
+            # Ancoragem Dinâmica: Puxa o fiscal sempre pro foco do bolsão
+            fiscal_anchors[best_f] = (la, lo)
         else:
-            r['MOTIVO_REJEICAO'] = "Estoque Lotado ou Fora de Área"
+            r['MOTIVO_REJEICAO'] = "Fora de Área (Sem Fiscal)"
             r['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
     st.session_state.df_unallocated_fisc, st.session_state.tot_obras_nao_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_u.iterrows())
     
-    sb_html.markdown(render_sidebar_card(cm, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows()), qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
+    total_validadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
+    sb_html.markdown(render_sidebar_card("Ilimitada", total_validadas, qtd_eq, "Ilimitada"), unsafe_allow_html=True)
+    
     if df_ta.empty: st.error("Nenhuma obra pôde ser alocada aos Fiscais."); st.stop()
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
@@ -436,7 +437,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
-        st.session_state.vrp_state_fisc = {'config': {'velocidade_media_kmh': vel_kmh, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 1.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Definimos 'obras_por_dia' como 999999 para o VRP não cortar as rotas no meio
+        st.session_state.vrp_state_fisc = {'config': {'velocidade_media_kmh': vel_kmh, 'obras_por_dia': 999999, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 1.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['LEVANTADOR'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_fisc = "RUNNING"; tentar_rerun()
 
 # ==========================================
