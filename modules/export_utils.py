@@ -5,18 +5,48 @@ import folium
 import os
 import base64
 import streamlit as st
+from openpyxl.styles import PatternFill, Font, Alignment
 
 # ==========================================
 # GERAÇÃO DE EXCEL (RESPEITANDO A FORMATAÇÃO ORIGINAL)
 # ==========================================
+
+def formatar_planilha_openpyxl(writer, sheet_name):
+    """Aplica o padrão NIP no arquivo Excel gerado."""
+    workbook = writer.book
+    worksheet = writer.sheets[sheet_name]
+    
+    header_fill = PatternFill(start_color='0070C0', end_color='0070C0', fill_type='solid')
+    header_font = Font(color='FFFFFF', bold=True, name='Calibri')
+    
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+    worksheet.auto_filter.ref = worksheet.dimensions
+    
+    for col in worksheet.columns:
+        max_length = 0
+        column = col[0].column_letter
+        for cell in col:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        worksheet.column_dimensions[column].width = max_length + 2
 
 def gerar_excel_bytes(df, col_prio, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
     colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
+    
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
+        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas')
+        
     return output.getvalue()
 
 def gerar_excel_resumo_bytes(df_resumo):
@@ -24,10 +54,10 @@ def gerar_excel_resumo_bytes(df_resumo):
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
+        formatar_planilha_openpyxl(writer, 'Resumo Operacional')
     return output.getvalue()
 
 def limpar_colunas_excel(df_alvo, cols_originais):
-    """Nova lógica que respeita 100% as colunas originais do arquivo subido"""
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
     rename_map = {}
@@ -37,7 +67,6 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         rename_map['BASE_ATRIBUIDA'] = 'FISCAL'
     df_alvo = df_alvo.rename(columns=rename_map)
     
-    # Priorizamos as colunas do Roteirizador, depois as Originais exatas
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     for c in cols_originais:
         if c in df_alvo.columns and c not in final_cols:
@@ -45,7 +74,6 @@ def limpar_colunas_excel(df_alvo, cols_originais):
         elif c == 'NOTA' and 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in final_cols:
             final_cols.append('PROTOCOLO')
             
-    # Adiciona colunas que sobraram e não são lixo de programação
     for c in df_alvo.columns:
         if c not in final_cols and not str(c).startswith('_') and c not in ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM']:
             final_cols.append(c)
@@ -74,7 +102,7 @@ def gerar_gpx_simples(df_kml, nome_rota):
     return "\n".join(gpx)
 
 def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
-    """Gera KML idêntico ao Tático (Pastas por Fiscal) mas com Pop-ups coloridos de Fiscalização."""
+    """Gera KML idêntico ao Tático (Pastas por Fiscal e Período) mas com Pop-ups coloridos de Fiscalização e Arruamento Real."""
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
     styles = {
@@ -95,41 +123,46 @@ def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
         
-        coords_linha = []
-        for _, r in df_b.iterrows():
-            geom = r.get('ROTA_GEOMETRIA')
-            if isinstance(geom, list) and len(geom) > 0:
-                for pt in geom:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        coords_linha.append(f"{pt[0]},{pt[1]},0")
-            else:
+        for p in df_b['PERIODO'].unique():
+            df_p = df_b[df_b['PERIODO'] == p]
+            pasta.append(f'<Folder><name>Período {p}</name>')
+            
+            coords_linha = []
+            for _, r in df_p.iterrows():
+                geom = r.get('ROTA_GEOMETRIA')
+                if isinstance(geom, list) and len(geom) > 0:
+                    for pt in geom:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                            coords_linha.append(f"{pt[0]},{pt[1]},0")
+                else:
+                    lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+                    if pd.notna(lat) and pd.notna(lon):
+                        coords_linha.append(f"{lon},{lat},0")
+            
+            if coords_linha:
+                pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+
+            for _, r in df_p.iterrows():
+                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                if pd.notna(lat) and pd.notna(lon):
-                    coords_linha.append(f"{lon},{lat},0")
-        
-        if coords_linha:
-            pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+                if pd.isna(lat) or pd.isna(lon): continue
+                
+                qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
+                cor = r.get('COR_ICONE', 'gray')
+                nome = str(r.get('PROTOCOLO', 'Ponto'))
+                
+                bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+                txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
+                p_bg = bg_colors.get(cor, '#9E9E9E')
+                p_c = txt_colors.get(cor, '#ffffff')
+                p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
 
-        for _, r in df_b.iterrows():
-            if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-            lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-            if pd.isna(lat) or pd.isna(lon): continue
-            
-            qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
-            cor = r.get('COR_ICONE', 'gray')
-            nome = str(r.get('PROTOCOLO', 'Ponto'))
-            
-            bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
-            txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
-            p_bg = bg_colors.get(cor, '#9E9E9E')
-            p_c = txt_colors.get(cor, '#ffffff')
-            p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
 
-            er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
-            desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
-
-            pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
-            
+                pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+                
+            pasta.append('</Folder>')
         pasta.append('</Folder>')
         kml.extend(pasta)
         
