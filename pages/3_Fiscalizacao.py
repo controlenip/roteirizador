@@ -173,6 +173,9 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         df_chart['Perc_Postes'] = (df_chart['Postes'] / df_chart['Postes'].sum() * 100).fillna(0)
         df_chart['Perc_Text'] = df_chart['Perc_Postes'].apply(lambda x: f"{x:.1f}%")
         
+        # Correção do Gráfico de Rosca (Organizando os valores)
+        df_chart = df_chart.sort_values(by="Fiscal").reset_index(drop=True)
+        
         c_ch1, c_ch2 = st.columns([1.2, 1])
         with c_ch1:
             st.markdown("#### Balanceamento: Obras vs Postes")
@@ -192,11 +195,10 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
-            
-            # CORREÇÃO AQUI (stack=True dentro do encode do mark_text):
             base_pie = alt.Chart(df_chart).encode(
                 theta=alt.Theta(field="Postes", type="quantitative", stack=True),
                 color=alt.Color(field="Fiscal", type="nominal", legend=alt.Legend(title="Fiscal", orient="right")),
+                order=alt.Order(field="Fiscal", type="nominal"),
                 tooltip=["Fiscal", "Postes", "Obras", "Perc_Text"]
             )
             donut = base_pie.mark_arc(innerRadius=60)
@@ -229,7 +231,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     
                 t = Table(table_data, colWidths=[200, 90, 100, 110])
                 t.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#002060')),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
                     ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                     ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
@@ -613,6 +615,8 @@ if status_exec == "PACKAGING":
     df_routed, d_fmt = st.session_state.df_routed_fisc, datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
     try:
+        from modules.export_utils import limpar_colunas_excel
+        
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
@@ -631,13 +635,16 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
+            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 if isinstance(r.get('_ORIGINAL_ROWS'), list):
                     for orig in r['_ORIGINAL_ROWS']:
                         nr = r.copy()
-                        for k, v in orig.items(): nr[k] = v
+                        for k, v in orig.items(): 
+                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']:
+                                nr[k] = v
                         linhas_gerais.append(nr)
                 else: linhas_gerais.append(r)
             
@@ -646,10 +653,11 @@ if status_exec == "PACKAGING":
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
+            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE", st.session_state.colunas_originais_fisc))
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
+            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -661,7 +669,9 @@ if status_exec == "PACKAGING":
                     if isinstance(r.get('_ORIGINAL_ROWS'), list):
                         for orig in r['_ORIGINAL_ROWS']:
                             nr = r.copy()
-                            for k, v in orig.items(): nr[k] = v
+                            for k, v in orig.items(): 
+                                if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']:
+                                    nr[k] = v
                             ld.append(nr)
                     else: ld.append(r)
                 if ld:
@@ -670,12 +680,13 @@ if status_exec == "PACKAGING":
                     dx = dx.loc[:, ~dx.columns.duplicated()].copy()
                     for c in dx.columns:
                         if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
-                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
+                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE", st.session_state.colunas_originais_fisc))
                 
                 kl = gerar_kml_fiscalizacao_agrupado(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, [b_name], formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
+            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fiscalizacao_agrupado(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
