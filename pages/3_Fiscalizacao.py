@@ -18,7 +18,9 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao_agrupado, identificar_icone_folium, limpar_colunas_excel
+
+# IMPORTAÇÕES DA NOVA ARQUITETURA ISOLADA DE EXPORTAÇÃO
+from modules.export_utils import injetar_logo, gerar_excel_fisc, gerar_excel_resumo_fisc, gerar_gpx_simples, gerar_kml_fisc, identificar_icone_folium, limpar_colunas_fisc
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 injetar_logo()
@@ -461,6 +463,18 @@ elif status_exec == "IDLE":
         
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
+        
+        # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD EM DESTAQUE - TELA DE TRIAGEM)
+        if not df_rej.empty: 
+            st.markdown(f"""
+            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
+                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
+                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                    <b>Justificativa:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
+                    Elas foram isoladas automaticamente pelo sistema para não corromper o traçado dos Fiscais. Faça o download da <b>Planilha de Correção</b> na etapa de Empacotamento para verificar a falha de cada uma.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -639,8 +653,6 @@ if status_exec == "PACKAGING":
     df_routed, d_fmt = st.session_state.df_routed_fisc, datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
     try:
-        from modules.export_utils import limpar_colunas_excel
-        
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
@@ -649,7 +661,7 @@ if status_exec == "PACKAGING":
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
                 pms = pd.to_numeric(db['QTD PREVISTA DE POSTES'], errors='coerce').fillna(0).round().astype(int)
                 res.append({'FISCAL': b, 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO', 'TOTAL OBRAS': sum(count_real_obras(r) for _, r in db.iterrows()), 'SUPER PONTOS': qs, 'POSTES AUDITADOS': int(pms.sum()), 'KM TOTAL PREVISTO': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
-            zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_bytes(pd.DataFrame(res)))
+            zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_fisc(pd.DataFrame(res)))
             
             dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
             if not dfc.empty:
@@ -659,7 +671,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -673,15 +684,14 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_excel(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+            dfg = limpar_colunas_fisc(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE", st.session_state.colunas_originais_fisc))
+            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_fisc(dfg, st.session_state.colunas_originais_fisc))
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
-            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -700,19 +710,18 @@ if status_exec == "PACKAGING":
                     else: ld.append(r)
                 if ld:
                     dx = pd.DataFrame(ld)
-                    dx = limpar_colunas_excel(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
+                    dx = limpar_colunas_fisc(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_fisc)
                     dx = dx.loc[:, ~dx.columns.duplicated()].copy()
                     for c in dx.columns:
                         if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
-                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE", st.session_state.colunas_originais_fisc))
+                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_fisc(dx, st.session_state.colunas_originais_fisc))
                 
-                kl = gerar_kml_fiscalizacao_agrupado(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, [b_name], formatar_valor_coluna)
+                kl = gerar_kml_fisc(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, [b_name], formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_fiscalizacao_agrupado(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
+            ks = gerar_kml_fisc(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
             
