@@ -173,7 +173,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         df_chart['Perc_Postes'] = (df_chart['Postes'] / df_chart['Postes'].sum() * 100).fillna(0)
         df_chart['Perc_Text'] = df_chart['Perc_Postes'].apply(lambda x: f"{x:.1f}%")
         
-        # Correção do Gráfico de Rosca (Organizando os valores)
         df_chart = df_chart.sort_values(by="Fiscal").reset_index(drop=True)
         
         c_ch1, c_ch2 = st.columns([1.2, 1])
@@ -195,20 +194,23 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
+            
             base_pie = alt.Chart(df_chart).encode(
                 theta=alt.Theta(field="Postes", type="quantitative", stack=True),
                 color=alt.Color(field="Fiscal", type="nominal", legend=alt.Legend(title="Fiscal", orient="right")),
-                order=alt.Order(field="Fiscal", type="nominal"),
+                order=alt.Order(field="Fiscal", type="nominal", sort="ascending"),
                 tooltip=["Fiscal", "Postes", "Obras", "Perc_Text"]
             )
-            donut = base_pie.mark_arc(innerRadius=60)
-            text_donut = base_pie.mark_text(radiusOffset=15, size=11, color='black', fontWeight='bold').encode(
-                theta=alt.Theta(field="Postes", type="quantitative", stack=True),
+            donut = base_pie.mark_arc(innerRadius=50, outerRadius=120)
+            
+            # CORREÇÃO DEFINITIVA DO TEXTO NO ALTAIR
+            text_donut = base_pie.mark_text(radius=85, size=12, color='white', fontWeight='bold').encode(
                 text='Perc_Text:N'
             )
+            
             st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
             
-        # Botão de Exportação para Relatório Executivo (PDF)
+        # Botão de Exportação para Relatório Executivo (PDF Seguro)
         try:
             from reportlab.lib.pagesizes import letter
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -231,7 +233,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     
                 t = Table(table_data, colWidths=[200, 90, 100, 110])
                 t.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#002060')),
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
                     ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                     ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
@@ -436,7 +438,18 @@ elif status_exec == "IDLE":
         
         pbg.empty(); tmp.empty(); sgt.empty()
         st.session_state.df_correcao_fiscalizacao = df_rej
-        if not df_rej.empty: st.warning(f"⚠️ {len(df_rej)} obras isoladas na Cerca Eletrônica (Baixe a Planilha de Correção no fim).")
+        
+        # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD)
+        if not df_rej.empty: 
+            st.markdown(f"""
+            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
+                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
+                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                    <b>Justificativa:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
+                    Elas foram isoladas automaticamente pelo sistema para não corromper o traçado dos Fiscais. Faça o download da <b>Planilha de Correção</b> na etapa de Empacotamento para verificar a falha de cada uma.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -635,7 +648,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -657,7 +669,6 @@ if status_exec == "PACKAGING":
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
-            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -686,7 +697,6 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fiscalizacao_agrupado(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
