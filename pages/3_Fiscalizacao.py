@@ -17,7 +17,9 @@ from datetime import datetime
 from modules.data_processing import ler_planilha_cached, formatar_moeda, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
-from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao, identificar_icone_folium
+
+# IMPORT CORRIGIDO AQUI EMBAIXO! 👇
+from modules.export_utils import injetar_logo, gerar_excel_bytes, gerar_excel_resumo_bytes, gerar_gpx_simples, gerar_kml_fiscalizacao_agrupado, identificar_icone_folium
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 injetar_logo()
@@ -88,24 +90,26 @@ def definir_cor_fiscalizacao(qtd):
 
 def limpar_colunas_excel(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    if 'PROTOCOLO' in df_alvo.columns:
-        if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
-        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
+    
+    rename_map = {}
+    if 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in cols_originais:
+        rename_map['PROTOCOLO'] = 'NOTA'
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
-        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
-    elif 'LEVANTADOR' in df_alvo.columns and 'FISCAL' not in df_alvo.columns: 
-        df_alvo['FISCAL'] = df_alvo['LEVANTADOR']
-        
-    bs = ['NOTA', 'FISCAL', 'ORDEM', 'NOME_DIA', 'DIA_MES', 'PRIORIDADE', 'SUPER_PONTO']
-    cg = ['REGIONAL', 'MUNICIPIO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'TIPO PROJETO', 'STATUS DA FISCALIZACAO', 'QTD PREVISTA DE POSTES', 'VALOR DA OBRA']
-    mc = [c for c in cols_originais if c in df_alvo.columns and c not in bs and c != 'LINK_NAVEGACAO_OFFLINE' and not str(c).startswith('_')]
-    for c in cg:
-        if c in df_alvo.columns and c not in bs and c != 'LINK_NAVEGACAO_OFFLINE' and c not in mc: mc.append(c)
-    fc = []
-    for c in bs + mc + ['LINK_NAVEGACAO_OFFLINE']:
-        if c in df_alvo.columns and c not in fc: fc.append(c)
-    return df_alvo[fc]
+        rename_map['BASE_ATRIBUIDA'] = 'FISCAL'
+    df_alvo = df_alvo.rename(columns=rename_map)
+    
+    final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    for c in cols_originais:
+        if c in df_alvo.columns and c not in final_cols:
+            final_cols.append(c)
+        elif c == 'NOTA' and 'PROTOCOLO' in df_alvo.columns and 'PROTOCOLO' not in final_cols:
+            final_cols.append('PROTOCOLO')
+            
+    for c in df_alvo.columns:
+        if c not in final_cols and not str(c).startswith('_') and c not in ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM']:
+            final_cols.append(c)
+            
+    return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
@@ -182,6 +186,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
+    # Gráficos com Valores Estampados (Altair Corrigido)
     chart_data = []
     for b_name in dfr_t['BASE_ATRIBUIDA'].unique():
         df_f = dfr_t[dfr_t['BASE_ATRIBUIDA'] == b_name]
@@ -213,13 +218,16 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
+            # CORREÇÃO: stack=True e estrutura herdada para o mark_text no Altair
             base_pie = alt.Chart(df_chart).encode(
-                theta=alt.Theta(field="Postes", type="quantitative"),
+                theta=alt.Theta(field="Postes", type="quantitative", stack=True),
                 color=alt.Color(field="Fiscal", type="nominal", legend=alt.Legend(title="Fiscal", orient="right")),
                 tooltip=["Fiscal", "Postes", "Obras", "Perc_Text"]
             )
             donut = base_pie.mark_arc(innerRadius=60)
-            text_donut = base_pie.mark_text(radiusOffset=15, size=12, color='black', fontWeight='bold').encode(text='Perc_Text:N')
+            text_donut = base_pie.mark_text(radiusOffset=20, size=12, color='black', fontWeight='bold').encode(
+                text='Perc_Text:N'
+            )
             st.altair_chart((donut + text_donut).properties(height=350), use_container_width=True)
             
         # Botão de Exportação para Relatório Executivo (PDF Seguro)
@@ -307,7 +315,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
     with t2:
         dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": sum(count_real_obras(r) for _, r in dfr_t[dfr_t['BASE_ATRIBUIDA']==b['LEVANTADOR']].iterrows())} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
         st.dataframe(dr, use_container_width=True)
-
 
 # ==========================================
 # START DA APLICAÇÃO (UPLOAD DE DADOS)
@@ -522,7 +529,7 @@ elif status_exec == "IDLE":
         st.session_state.vrp_status_fisc = "RUNNING"; tentar_rerun()
 
 # ==========================================
-# CÁLCULO VRP (LÓGICA: SMALL -> BIG | TRAÇADO REAL COM SLEEP)
+# CÁLCULO VRP (LÓGICA: SMALL -> BIG)
 # ==========================================
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor VRP (Fiscalização de Bolsões)")
@@ -553,11 +560,16 @@ if status_exec == "RUNNING":
             
             ot = []
             if oe:
-                tr = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'])
-                if tr:
-                    max_postes_idx = max(range(len(tr)), key=lambda i: extrair_qtd(tr[i].get('QTD PREVISTA DE POSTES', 0)))
-                    if max_postes_idx < len(tr) / 2: tr.reverse()
-                ot = tr if tr else oe
+                max_idx = max(range(len(oe)), key=lambda i: extrair_qtd(oe[i].get('QTD PREVISTA DE POSTES', 0)))
+                p_max = oe.pop(max_idx)
+                
+                cl, cL = bl, bL
+                while oe:
+                    closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
+                    nx = oe.pop(closest_idx)
+                    ot.append(nx)
+                    cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
+                ot.append(p_max)
             
             rf, da, sa, dds = [], 1, 1, 1
             dtb = datetime.combine(cfg['data_inicio'], datetime.min.time()).replace(hour=8, minute=0)
@@ -593,7 +605,7 @@ if status_exec == "RUNNING":
                 else:
                     if i%5==0: sgt.info(f"🛣️ Traçando arruamento real **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
-                    time.sleep(0.15) # Atraso seguro para evitar bloqueio do OSRM público
+                    time.sleep(0.15) 
                     try: 
                         res_ruas = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
                         gd.append(res_ruas)
@@ -660,12 +672,12 @@ if status_exec == "PACKAGING":
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_bytes(dfg, "PRIORIDADE"))
             
-            for b_name in df_routed['BASE_ATRIBUIDA'].unique():
-                if pd.isna(b_name) or b_name == "NÃO ALOCADO": continue
+            fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
+            
+            for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
                 dk = df_fisc_ind[~df_fisc_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-                
                 if dk.empty: continue
                 
                 ld = []
@@ -684,12 +696,12 @@ if status_exec == "PACKAGING":
                         if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
                     zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
                 
-                kl = gerar_kml_fiscalizacao(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+                kl = gerar_kml_fiscalizacao_agrupado(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_fisc, [b_name], formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_fiscalizacao(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, formatar_valor_coluna)
+            ks = gerar_kml_fiscalizacao_agrupado(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
             
