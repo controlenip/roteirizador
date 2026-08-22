@@ -28,7 +28,6 @@ TIPOS_PRIORITARIOS = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
 # ==========================================
 
 def render_metric_card(title, value, icon, border_color, bg_color):
-    """Renderiza o card métrico com o design original, limpo e profissional."""
     return f"""
     <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
         <div style="background-color: {bg_color}; width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; margin-right: 15px;">
@@ -42,7 +41,6 @@ def render_metric_card(title, value, icon, border_color, bg_color):
     """
 
 def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade):
-    """Renderiza o Resumo de Capacidade da barra lateral com tamanho maior e mais respiro."""
     return f"""
     <div style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 4px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
         <h4 style="margin-top: 0; color: #0D256C; font-size: 18px; border-bottom: 2px solid #55B929; padding-bottom: 10px; margin-bottom: 15px;">📊 Resumo da Capacidade</h4>
@@ -126,11 +124,6 @@ with st.sidebar:
         obras_dia = st.number_input("Obras por Dia", 1, 30, step=1, disabled=is_locked)
         limite_per = st.number_input(f"Limite total de {tpc}s", 1, 5, step=1, disabled=is_locked)
         vel_kmh, t_obra = 30.0, 1.5
-
-    with st.expander("💰 Gestão Financeira", expanded=False):
-        c_comb = st.number_input("Custo Combustível (R$/L)", min_value=0.0, value=0.0, step=0.1, disabled=is_locked)
-        c_veic = st.number_input("Consumo (Km/L)", min_value=0.0, value=0.0, step=0.5, disabled=is_locked)
-        c_hora = st.number_input("Hora-Homem (R$)", min_value=0.0, value=0.0, step=1.0, disabled=is_locked)
         
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
@@ -161,7 +154,6 @@ if is_done and not st.session_state.df_routed_tat.empty:
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     tp = sum(count_real_obras(r) for _, r in dfr_t[dfr_t['PRIORIDADE'] == 'Sim'].iterrows()) if 'PRIORIDADE' in dfr_t else 0
     
-    # Renderizando Cards com Novo Design
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(render_metric_card("TOTAL ROTEIRIZADAS", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
     c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
@@ -177,22 +169,10 @@ if is_done and not st.session_state.df_routed_tat.empty:
     if f_obr > 0: st.markdown(f'<div style="background:#fff3cd;color:#856404;padding:15px;border-left:5px solid #ffeeba;border-radius:4px;"><h4 style="margin:0;">⚠️ Alerta de Estoque: Faltaram {f_obr} obras para atingir a meta global.</h4><p style="margin:0;">O sistema roteirizou o máximo de obras compatíveis ({tr}). Verifique a aba de Déficit.</p></div>', unsafe_allow_html=True)
     else: st.markdown(f'<div style="background:#d4edda;color:#155724;padding:15px;border-left:5px solid #c3e6cb;border-radius:4px;"><h4 style="margin:0;">✅ Meta de Despacho 100% Atingida ({m_gb} Obras)!</h4></div>', unsafe_allow_html=True)
 
-    if c_comb > 0 or c_hora > 0:
-        km_v = dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum()
-        cc_t = (km_v / c_veic * c_comb) if c_veic > 0 else 0
-        df_fin = dfr.copy(); df_fin['_HORA_INICIO_DT'], df_fin['_HORA_FIM_DT'] = pd.to_datetime(df_fin['_HORA_INICIO_DT']), pd.to_datetime(df_fin['_HORA_FIM_DT'])
-        ch_t = sum([(g['_HORA_FIM_DT'].max() - g['_HORA_INICIO_DT'].min()).total_seconds()/3600.0 for _, g in df_fin.groupby(['BASE_ATRIBUIDA', 'PERIODO'])]) * c_hora
-        cf1, cf2, cf3, cf4 = st.columns(4)
-        cf1.markdown(render_metric_card("⛽ Combustível", f"R$ {formatar_moeda(cc_t)}", "⛽", "#f59e0b", "rgba(245,158,11,0.15)"), unsafe_allow_html=True)
-        cf2.markdown(render_metric_card("👷 Mão de Obra", f"R$ {formatar_moeda(ch_t)}", "👷", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
-        cf3.markdown(render_metric_card("💲 Custo Operação", f"R$ {formatar_moeda(cc_t + ch_t)}", "💲", "#ef4444", "rgba(239,68,68,0.15)"), unsafe_allow_html=True)
-        cf4.markdown(render_metric_card("📊 Custo por Obra", f"R$ {formatar_moeda((cc_t+ch_t)/tr if tr>0 else 0)}", "📊", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
-
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-    co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
+    co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#ff9800', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548']
     
-    # Nomes Restaurados (Agrupamento e Calor)
     HeatMap([[r['LATITUDE'], r['LONGITUDE']] for _, r in dfr_t.iterrows()], radius=15, blur=10, name="🔥 Mapa de Calor (Demandas)").add_to(mapa)
     mc = MarkerCluster(name="📍 Agrupamento de Obras").add_to(mapa)
     
@@ -217,7 +197,6 @@ if is_done and not st.session_state.df_routed_tat.empty:
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
-    # REMOVIDA A ABA DE HOTÉIS AQUI
     t1, t2 = st.tabs(["📊 Tabela", "📉 Déficit"])
     with t1: st.data_editor(dfr.drop(columns=['ROTA_GEOMETRIA','_HORA_INICIO_DT','_HORA_FIM_DT','_ORIGINAL_ROWS','_ORIGEM_BASE','PERIODO','ALERTA_TOPOLOGIA','TEMPO_VIAGEM_MINUTOS'], errors='ignore'), use_container_width=True)
     with t2:
@@ -257,7 +236,6 @@ elif status_exec == "IDLE":
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE']); df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
             else: st.error("❌ A planilha não possui a coluna 'LEVANTADOR'.")
         
-        # Explicação Dinâmica do Radio (Imagem 5)
         st.markdown("##### 📍 Regra de Atribuição")
         ta = st.radio("Atribuição", ["Por Município", "Por Proximidade"], index=0, label_visibility="collapsed")
         if ta == "Por Município":
@@ -301,7 +279,6 @@ elif status_exec == "IDLE":
     qe = (df_bases['LEVANTADOR'].nunique() if not df_bases.empty else 0) + (df_bases_temp['LEVANTADOR'].nunique() if not df_bases_temp.empty else 0)
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     
-    # Card da Barra Lateral Gigante
     sb_html.markdown(render_sidebar_card(cm, 0, qe, cm * max(1, qe)), unsafe_allow_html=True)
 
     if not t_f and not s_f and not g_f: st.info("Aguardando planilhas..."); st.stop()
@@ -477,7 +454,7 @@ elif status_exec == "IDLE":
         at, ut = [], []
         for r in pd.concat([df_pp, df_cp], ignore_index=True).sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True]).to_dict('records'):
             qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
-            la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE') == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
+            la, lo, ms, ip, p4 = r.get('LATITUDE'), r.get('LONGITUDE'), str(r.get('MUN_LIMPO', '')), r.get('PRIORIDADE'] == 'Sim', str(r.get('TIPO VEICULO', '')).strip().upper() == '4X4'
             vn = set(mtm.get(ms, [])) if ip else set(mta.get(ms, []))
             vb = sorted([b for b in tbr if b['LEVANTADOR'] in vn and (not p4 or str(b.get('VEICULO', '')).upper() == '4X4')], key=lambda x: bc[x['LEVANTADOR']])
             bb, bd = None, float('inf')
@@ -539,7 +516,6 @@ if status_exec == "RUNNING":
         rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
         es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
         
-        # Design Atualizado dos Timers (Imagem 4)
         html_timer = f"""
         <div style="display:flex; gap:15px; margin-bottom: 20px;">
             <div style="flex:1; padding:20px; border-radius:10px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
@@ -736,7 +712,7 @@ if status_exec == "PACKAGING":
                 dx = limpar_colunas_excel(db.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS'], errors='ignore'), st.session_state.colunas_originais_tat)
                 for c in dx.columns:
                     if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
-                zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_bytes(dx, "PRIORIDADE"))
+                zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx",gerar_excel_bytes(dx, "PRIORIDADE"))
                 kl = gerar_kml_agrupado(dk, st.session_state.bases_records_tat, f"ROTA_{ns}", st.session_state.colunas_exibir_tat, [b], st.session_state.vrp_state_tat['config']['tipo_periodo'], formatar_valor_coluna)
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", re.sub(r'<Placemark>(?:(?!</Placemark>).)*?<name>(?:(?!</name>).)*?BASE:(?:(?!</name>).)*?</name>(?:(?!</Placemark>).)*?</Placemark>', '', kl, flags=re.IGNORECASE | re.DOTALL).encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
