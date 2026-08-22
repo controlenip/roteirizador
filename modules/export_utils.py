@@ -173,6 +173,56 @@ def gerar_kml_fiscalizacao_agrupado(df_kml, nome_arquivo, colunas_exibir, bases_
     kml.extend(['</Document>', '</kml>'])
     return "\n".join(kml)
 
+def gerar_kml_agrupado(df_kml, bases_records, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
+    """KML Original do Planejamento Tático (Pinos Vermelhos e Azuis) que havia sido apagado acidentalmente."""
+    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
+    
+    kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
+    kml.append('<Style id="s_red"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon></IconStyle></Style>')
+    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>')
+
+    for b in bases_ativas:
+        if pd.isna(b) or b == "NÃO ALOCADO": continue
+        pasta = [f'<Folder><name>Equipe: {html.escape(str(b))}</name>']
+        df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
+        
+        for p in df_b['PERIODO'].unique():
+            df_p = df_b[df_b['PERIODO'] == p]
+            pasta.append(f'<Folder><name>Período {p}</name>')
+            
+            coords_linha = []
+            for _, r in df_p.iterrows():
+                geom = r.get('ROTA_GEOMETRIA')
+                if isinstance(geom, list) and len(geom) > 0:
+                    for pt in geom:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                            coords_linha.append(f"{pt[0]},{pt[1]},0")
+                else:
+                    lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+                    if pd.notna(lat) and pd.notna(lon):
+                        coords_linha.append(f"{lon},{lat},0")
+            
+            if coords_linha:
+                pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+
+            for _, r in df_p.iterrows():
+                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+                if pd.isna(lat) or pd.isna(lon): continue
+                
+                is_prio = r.get('PRIORIDADE') == 'Sim'
+                cor = "s_red" if is_prio else "s_blue"
+                
+                desc = '<table border="1">' + "".join([f'<tr><td>{html.escape(c)}</td><td>{funcao_formatadora(c, r.get(c,""))}</td></tr>' for c in colunas_exibir]) + '</table>'
+                pasta.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO")))}</name><styleUrl>#{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+                
+            pasta.append('</Folder>')
+        pasta.append('</Folder>')
+        kml.extend(pasta)
+        
+    kml.extend(['</Document>', '</kml>'])
+    return "\n".join(kml)
+
 # ==========================================
 # UI E AUXILIARES
 # ==========================================
