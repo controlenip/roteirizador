@@ -42,8 +42,10 @@ def limpar_colunas_excel(df_alvo, cols_originais):
     return df_alvo[fc]
 
 def tentar_rerun():
-    try: st.rerun()
-    except: st.experimental_rerun()
+    if hasattr(st, 'rerun'):
+        st.rerun()
+    else:
+        st.experimental_rerun()
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_tat': False, 'vrp_status_tat': "IDLE", 'vrp_state_tat': {}, 'df_routed_tat': pd.DataFrame(), 'bases_records_tat': [], 'colunas_exibir_tat': [], 'colunas_originais_tat': []})
