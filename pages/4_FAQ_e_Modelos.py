@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
-from modules.export_utils import injetar_logo
+from modules.export_tatica import injetar_logo
 
 st.set_page_config(page_title="FAQ e Modelos", page_icon="📖", layout="wide")
 
