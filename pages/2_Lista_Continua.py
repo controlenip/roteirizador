@@ -84,6 +84,9 @@ with st.sidebar:
         data_ini = st.date_input("📅 Data Base (Início):", value=datetime.today(), disabled=is_locked)
         
         st.markdown("---")
+        # NOVO SELETOR ADICIONADO AQUI
+        obras_por_dia_est = st.number_input("Meta de Obras/Dia (Cálculo de Postes):", min_value=1, value=4, disabled=is_locked)
+        
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
         
@@ -278,7 +281,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Registrando parâmetros no config a partir do valor escolhido na tela
+        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -380,6 +384,8 @@ if status_exec == "PACKAGING":
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
+            obras_por_dia_est = st.session_state.vrp_state_lista.get('config', {}).get('obras_por_dia_est', 4.0)
+            
             if isinstance(data_ini, datetime): data_ini = data_ini.date()
             dia_mes_str = data_ini.strftime("%d/%m/%Y")
             dias_semana_pt = {0: "SEGUNDA-FEIRA", 1: "TERÇA-FEIRA", 2: "QUARTA-FEIRA", 3: "QUINTA-FEIRA", 4: "SEXTA-FEIRA", 5: "SÁBADO", 6: "DOMINGO"}
@@ -415,7 +421,7 @@ if status_exec == "PACKAGING":
                                 except: pass
                         if pv: qtd_postes += min(pv)
 
-                postes_dia = (qtd_postes / (qtd_obras / 4.0)) if qtd_obras > 0 else 0
+                postes_dia = (qtd_postes / (qtd_obras / float(obras_por_dia_est))) if qtd_obras > 0 else 0
                 postes_semana = postes_dia * 5.0
 
                 res.append({
