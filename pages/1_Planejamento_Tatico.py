@@ -137,7 +137,7 @@ if is_done and not st.session_state.df_routed.empty:
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     if not st.session_state.get('df_unallocated', pd.DataFrame()).empty:
-        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes ou ficaram distantes demais (Verifique o arquivo ZIP gerado).")
+        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes (Verifique o arquivo ZIP gerado).")
     else:
         st.success("✅ 100% das obras foram alocadas com sucesso.")
 
@@ -208,85 +208,124 @@ elif status_exec == "IDLE":
     with c_up2:
         st.markdown("### 📁 2. Demandas (Obras)")
         task_files = st.file_uploader("Suba as planilhas de Demandas", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+        
+    st.markdown("---")
+    st.markdown("### 📁 3. Planilha Genérica (Opcional)")
+    st.info("💡 Utilize este campo extra caso precise roteirizar planilhas auxiliares que não sigam o padrão do sistema. Você mapeará a prioridade e o status manualmente.")
+    generic_files = st.file_uploader("Suba uma Planilha Genérica", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
     
-    if df_bases.empty or not task_files: st.stop()
+    if df_bases.empty or (not task_files and not generic_files): st.stop()
     
     qtd_eq = df_bases['BASE_NOME'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     sb_html.markdown(render_sidebar_card(cm, 0, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
 
-    dfs = []
-    for f in task_files:
-        dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
-        dft.columns = normalize_cols(dft.columns)
-        if not dfs: st.session_state.colunas_originais_tat = dft.columns.tolist()
+    # ------------------ BLOCO OBRAS PADRÃO ------------------
+    df_tasks_padrao = pd.DataFrame()
+    if task_files:
+        dfs = []
+        for f in task_files:
+            dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
+            dft.columns = normalize_cols(dft.columns)
+            if not dfs: st.session_state.colunas_originais_tat = dft.columns.tolist()
+            for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
+                if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
+            dfs.append(dft)
         
-        # Flexibilização da coluna Identificadora
-        for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
-            if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
-        dfs.append(dft)
-    
-    df_tasks = pd.concat(dfs, ignore_index=True)
-    
-    # Criando coluna fake de Protocolo se realmente não achar nada pra não quebrar o motor
-    if 'PROTOCOLO' not in df_tasks.columns:
-        df_tasks['PROTOCOLO'] = "OBRA_" + df_tasks.index.astype(str)
-        
-    if 'PROTOCOLO' in df_tasks.columns:
-        df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-        df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True); df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
+        df_tasks_padrao = pd.concat(dfs, ignore_index=True)
+        if 'PROTOCOLO' in df_tasks_padrao.columns:
+            df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+            df_tasks_padrao = df_tasks_padrao.explode('PROTOCOLO').reset_index(drop=True); df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].str.strip()
 
-    st.markdown("---")
-    st.markdown("### 🎛️ 3. Regras da Planilha Genérica & Exportação")
-    
-    colunas_df = df_tasks.columns.tolist()
-    
-    c1_g, c2_g = st.columns(2)
-    with c1_g:
-        opcoes_prio = ["Nenhuma"] + colunas_df
-        idx_prio = opcoes_prio.index('TIPO NOTA') if 'TIPO NOTA' in colunas_df else 0
-        
-        col_prio = st.selectbox("🎯 1. Coluna que define a Prioridade:", opcoes_prio, index=idx_prio)
-        if col_prio != "Nenhuma":
-            df_tasks[col_prio] = df_tasks[col_prio].astype(str).str.strip().str.upper()
-            opts_n = sorted([str(x) for x in df_tasks[col_prio].unique() if str(x) != 'NAN'])
-            default_p = [n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']]
-            sel_p = st.multiselect("🚨 Quais valores representam Alta Prioridade?", options=opts_n, default=default_p)
-            df_tasks['PRIORIDADE'] = df_tasks[col_prio].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
-        else:
-            df_tasks['PRIORIDADE'] = 'Não'
+        st.markdown("#### ⚙️ Filtros - Demandas (Obras Padrão)")
+        c1_f, c2_f = st.columns([1, 1])
+        with c1_f:
+            cs = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks_padrao.columns else 'STATUS DA FISCALIZAÇÃO'
+            if cs in df_tasks_padrao.columns:
+                df_tasks_padrao[cs] = df_tasks_padrao[cs].astype(str).str.strip().str.upper()
+                opts_s = sorted([str(x) for x in df_tasks_padrao[cs].unique() if str(x) != 'NAN'])
+                sel_s = st.multiselect("1. Status Roteirizáveis:", options=opts_s, default=[s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']])
+                if not sel_s: st.stop()
+                df_tasks_padrao = df_tasks_padrao[df_tasks_padrao[cs].isin(sel_s)].copy()
+                
+        with c2_f:
+            if 'TIPO NOTA' in df_tasks_padrao.columns:
+                df_tasks_padrao['TIPO NOTA'] = df_tasks_padrao['TIPO NOTA'].astype(str).str.strip().str.upper()
+                opts_n = sorted([str(x) for x in df_tasks_padrao['TIPO NOTA'].unique() if str(x) != 'NAN'])
+                sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
+                df_tasks_padrao['PRIORIDADE'] = df_tasks_padrao['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
+            else: df_tasks_padrao['PRIORIDADE'] = 'Não'
 
-    with c2_g:
-        opcoes_status = ["Nenhuma"] + colunas_df
-        idx_status = 0
-        if 'STATUS DA FISCALIZACAO' in colunas_df: idx_status = opcoes_status.index('STATUS DA FISCALIZACAO')
-        elif 'STATUS DA FISCALIZAÇÃO' in colunas_df: idx_status = opcoes_status.index('STATUS DA FISCALIZAÇÃO')
+    # ------------------ BLOCO PLANILHA GENÉRICA ------------------
+    df_tasks_gen = pd.DataFrame()
+    if generic_files:
+        dfs_gen = []
+        for f in generic_files:
+            dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
+            dft.columns = normalize_cols(dft.columns)
+            
+            # Adiciona as colunas novas na lista do session state para aparecerem no Export
+            if 'colunas_originais_tat' not in st.session_state or not st.session_state.colunas_originais_tat:
+                st.session_state.colunas_originais_tat = dft.columns.tolist()
+            else:
+                for col in dft.columns:
+                    if col not in st.session_state.colunas_originais_tat:
+                        st.session_state.colunas_originais_tat.append(col)
+                        
+            for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
+                if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
+            dfs_gen.append(dft)
+            
+        df_tasks_gen = pd.concat(dfs_gen, ignore_index=True)
         
-        col_status = st.selectbox("🚦 2. Coluna de Status (Filtro Opcional):", opcoes_status, index=idx_status)
-        if col_status != "Nenhuma":
-            df_tasks[col_status] = df_tasks[col_status].astype(str).str.strip().str.upper()
-            opts_s = sorted([str(x) for x in df_tasks[col_status].unique() if str(x) != 'NAN'])
-            sel_s = st.multiselect("✅ Valores Roteirizáveis (Aptos):", options=opts_s, default=[s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']])
-            if not sel_s: st.stop()
-            df_tasks = df_tasks[df_tasks[col_status].isin(sel_s)].copy()
+        # Gera Protocolo falso caso não ache nada (Para não quebrar a Folium / Tabela)
+        if 'PROTOCOLO' not in df_tasks_gen.columns:
+            df_tasks_gen['PROTOCOLO'] = "GEN_" + df_tasks_gen.index.astype(str)
+            
+        if 'PROTOCOLO' in df_tasks_gen.columns:
+            df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+            df_tasks_gen = df_tasks_gen.explode('PROTOCOLO').reset_index(drop=True); df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].str.strip()
 
-    tc = [c for c in colunas_df if not c.startswith('_') and c != 'MUN_LIMPO']
-    padroes = ['ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE']
-    def_cols = [c for c in padroes if c in tc]
-    if not def_cols: def_cols = tc[:min(10, len(tc))]
-    
-    st.markdown("#### 📤 Configuração de Saída (Exportação)")
-    colunas_exibir = st.multiselect("Selecione as colunas que devem aparecer no Pop-up do KML e no Excel:", tc, default=def_cols)
+        st.markdown("#### ⚙️ Filtros - Planilha Genérica")
+        colunas_gen = df_tasks_gen.columns.tolist()
+        c1_g, c2_g = st.columns(2)
+        with c1_g:
+            col_prio = st.selectbox("🎯 1. Escolha a coluna de Prioridade (Genérica):", ["Nenhuma"] + colunas_gen)
+            if col_prio != "Nenhuma":
+                df_tasks_gen[col_prio] = df_tasks_gen[col_prio].astype(str).str.strip().str.upper()
+                opts_p = sorted([str(x) for x in df_tasks_gen[col_prio].unique() if str(x) != 'NAN'])
+                sel_p_gen = st.multiselect("🚨 Escolha os Valores de Alta Prioridade:", options=opts_p)
+                df_tasks_gen['PRIORIDADE'] = df_tasks_gen[col_prio].apply(lambda x: 'Sim' if str(x) in sel_p_gen else 'Não')
+            else:
+                df_tasks_gen['PRIORIDADE'] = 'Não'
+                
+        with c2_g:
+            col_status = st.selectbox("🚦 2. Escolha a coluna de Status (Filtro Opcional):", ["Nenhuma"] + colunas_gen)
+            if col_status != "Nenhuma":
+                df_tasks_gen[col_status] = df_tasks_gen[col_status].astype(str).str.strip().str.upper()
+                opts_s = sorted([str(x) for x in df_tasks_gen[col_status].unique() if str(x) != 'NAN'])
+                sel_s_gen = st.multiselect("✅ Valores Roteirizáveis (Aptos):", options=opts_s)
+                if sel_s_gen:
+                    df_tasks_gen = df_tasks_gen[df_tasks_gen[col_status].isin(sel_s_gen)].copy()
+                else:
+                    st.warning("Selecione os status aptos para roteirizar a planilha genérica.")
+                    st.stop()
+
+    # ------------------ FUSÃO DAS DUAS FONTES ------------------
+    df_tasks = pd.concat([df_tasks_padrao, df_tasks_gen], ignore_index=True)
+    if df_tasks.empty:
+        st.error("🚨 Nenhuma obra ou linha válida restou após aplicar os filtros.")
+        st.stop()
 
     st.markdown("---")
     cg1, cg2 = st.columns([4, 1])
     with cg1: st.markdown("#### 🌍 Limpeza Geográfica")
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
-
-    falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE'] if c not in df_tasks.columns]
-    if falta: st.error(f"🚨 Faltam colunas geográficas vitais na planilha de obras: {', '.join(falta)}."); st.stop()
     
+    falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO'] if c not in df_tasks.columns]
+    if falta: st.error(f"🚨 Faltam colunas obrigatórias nas planilhas: {', '.join(falta)}."); st.stop()
+
     df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
@@ -361,6 +400,20 @@ elif status_exec == "IDLE":
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
     if df_ta.empty: st.error("Nenhuma obra pôde ser alocada aos Fiscais."); st.stop()
+
+    with st.expander("🛠️ Configuração de Saída", expanded=True):
+        tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
+        
+        # LISTA ATUALIZADA BASEADA NA SUA IMAGEM, ABRANGENDO OBRAS E GENÉRICAS
+        cd = [
+            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
+            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
+            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
+        ]
+        
+        cp = [c for c in cd if c in tc]
+        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
+        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
