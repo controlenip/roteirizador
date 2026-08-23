@@ -24,9 +24,16 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
+        # Tira decimais dos Postes
         if 'POSTE' in c.upper(): return str(int(float(v)))
+        
         vf = float(v)
-        if 'DISTANCIA' in c.upper(): return f"{vf:.2f} KM"
+        # Regra de KM vs Metros
+        if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM']: 
+            return f"{vf:.2f} KM"
+        elif 'DISTANCIA' in c.upper(): 
+            return f"{vf:.2f} Metros"
+            
         return formata_campo_html(v)
     except:
         if isinstance(v, (datetime, pd.Timestamp)): return formata_campo_html(v.strftime('%d/%m/%Y'))
@@ -84,7 +91,6 @@ with st.sidebar:
         data_ini = st.date_input("📅 Data Base (Início):", value=datetime.today(), disabled=is_locked)
         
         st.markdown("---")
-        # NOVO SELETOR ADICIONADO AQUI
         obras_por_dia_est = st.number_input("Meta de Obras/Dia (Cálculo de Postes):", min_value=1, value=4, disabled=is_locked)
         
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
@@ -281,7 +287,6 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        # Registrando parâmetros no config a partir do valor escolhido na tela
         st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
