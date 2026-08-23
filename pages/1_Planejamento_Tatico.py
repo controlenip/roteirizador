@@ -43,6 +43,19 @@ def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativ
     </div>
     """
 
+def render_metric_card(title, value, icon, border_color, bg_color):
+    return f"""
+    <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
+        <div style="background-color: {bg_color}; width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; margin-right: 15px;">
+            {icon}
+        </div>
+        <div>
+            <p style="margin: 0; font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">{title}</p>
+            <p style="margin: 0; font-size: 22px; color: #333; font-weight: bold;">{value}</p>
+        </div>
+    </div>
+    """
+
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
@@ -111,7 +124,7 @@ if is_done and not st.session_state.df_routed.empty:
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     
-    # NOVO: Conta a quantidade de Super Pontos ao invés do valor financeiro
+    # NOVO: Conta a quantidade de Super Pontos (Onde _ORIGINAL_ROWS é uma lista com mais de 1 item)
     tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -165,7 +178,7 @@ elif status_exec == "IDLE":
             # NOVO: Priorizando as colunas de "NOME" do Levantador antes de bater com "EQUIPE" numérico
             for pn in ['LEVANTADOR', 'FISCAL', 'NOME_FISCAL', 'NOME', 'TECNICO', 'COLABORADOR', 'EQUIPE']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
-            
+                
             if 'BASE_NOME' in b_t.columns:
                 
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
@@ -312,7 +325,10 @@ elif status_exec == "IDLE":
     fiscal_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
     assigned_tasks, unassigned_tasks = [], []
     
-    if trava_global > 0: df_tasks = df_tasks.head(trava_global)
+    # ------------------ ISOLAMENTO DE FISCAIS AQUI ------------------
+    # Antes, a trava_global cortava os dados antes de fazer o sorteio de equipe, 
+    # o que poderia fazer a linha falhar se 'df_tasks' ficasse muito curto
+    
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
 
     for r in df_tasks.to_dict('records'):
@@ -340,6 +356,7 @@ elif status_exec == "IDLE":
             unassigned_tasks.append(r)
 
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
+    
     st.session_state.df_unallocated, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
@@ -385,12 +402,17 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
+            # IMPLEMENTAÇÃO: Sentido do Roteamento (Varredura Reversa ou Lógica Padrão)
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
+                # Varredura Reversa: Inicia do ponto mais DISTANTE e vem voltando pra base
                 ot = []
                 if oe:
+                    # Encontra a obra mais longe da base
                     max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
                     p_longe = oe.pop(max_idx)
                     ot.append(p_longe)
+                    
+                    # A partir dela, vai pegando a mais próxima para ir construindo o caminho de volta
                     cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
                     while oe:
                         closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
