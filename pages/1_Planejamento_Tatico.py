@@ -119,7 +119,7 @@ if is_done and not st.session_state.df_routed.empty:
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
             <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas.
+                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -141,7 +141,7 @@ if is_done and not st.session_state.df_routed.empty:
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     if not st.session_state.get('df_unallocated', pd.DataFrame()).empty:
-        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes (Verifique o arquivo ZIP gerado).")
+        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes ou ficaram distantes demais (Verifique o arquivo ZIP gerado).")
     else:
         st.success("✅ 100% das obras foram alocadas com sucesso.")
 
@@ -206,7 +206,7 @@ elif status_exec == "IDLE":
             else: st.error("❌ A planilha não possui coluna de nome da Equipe/Levantador.")
 
         st.markdown("##### 📍 Regra de Atribuição")
-        ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município Base"], index=0, label_visibility="collapsed")
+        ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município Base"], index=1, label_visibility="collapsed")
         st.caption("A proximidade empurra as obras para a equipe mais próxima no raio geral. Por Município isola a equipe.")
 
     with c_up2:
@@ -287,8 +287,6 @@ elif status_exec == "IDLE":
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
-    df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
-
     tbr = df_bases.to_dict('records')
     fiscal_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
     assigned_tasks, unassigned_tasks = [], []
@@ -319,7 +317,20 @@ elif status_exec == "IDLE":
             r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Fora de Área (Sem Fiscal)", "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
-    df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
+    df_ta = pd.DataFrame(assigned_tasks)
+    df_u = pd.DataFrame(unassigned_tasks)
+
+    dfs_fundidos = []
+    if not df_ta.empty:
+        for base in df_ta['BASE_ATRIBUIDA'].unique():
+            df_base = df_ta[df_ta['BASE_ATRIBUIDA'] == base].copy()
+            df_base_f, _ = fundir_super_pontos(df_base, raio_metros=raio_sp, agrupar_por_levantador=True)
+            dfs_fundidos.append(df_base_f)
+        if dfs_fundidos:
+            df_ta = pd.concat(dfs_fundidos, ignore_index=True)
+        else:
+            df_ta = pd.DataFrame()
+
     st.session_state.df_unallocated, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
@@ -328,7 +339,6 @@ elif status_exec == "IDLE":
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
         
-        # LISTA ATUALIZADA BASEADA NA SUA IMAGEM
         cd = [
             'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
             'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
@@ -371,7 +381,6 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            # IMPLEMENTAÇÃO: Sentido do Roteamento
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
                 ot = []
                 if oe:
@@ -477,16 +486,17 @@ if status_exec == "RUNNING":
 
 if status_exec == "PACKAGING":
     st.markdown("## 📦 Empacotamento Tático")
-    df_routed, d_fmt = st.session_state.df_routed, datetime.now().strftime("%d.%m.%Y")
+    df_routed = st.session_state.df_routed.copy()
+    df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+    
+    d_fmt = datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
     
-    # ---------------- LÓGICA DE EMPACOTAMENTO ----------------
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             
             obras_por_dia_est = st.session_state.vrp_state.get('config', {}).get('obras_por_dia', 4.0)
 
-            # --- RESUMO OPERACIONAL ---
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
@@ -532,7 +542,6 @@ if status_exec == "PACKAGING":
                 })
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
             
-            # --- OBRAS DE CORREÇÃO ---
             dfc = st.session_state.get('df_correcao_tatica', pd.DataFrame())
             if not dfc.empty:
                 dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
@@ -541,7 +550,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # --- MONTANDO O DATAFRAME COMPLETO (EXPANDINDO SUPER PONTOS) ---
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -563,7 +571,6 @@ if status_exec == "PACKAGING":
             
             df_excel_full = pd.DataFrame(linhas_gerais)
             
-            # Remover decimais dos postes
             for c in df_excel_full.columns:
                 if 'POSTE' in c.upper():
                     df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
@@ -573,7 +580,6 @@ if status_exec == "PACKAGING":
             if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
             if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
 
-            # ---> EXCEL E KML GLOBAL (ROTA TOTAL)
             dfg_total = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
             dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
             for cc in dfg_total.columns:
@@ -584,11 +590,11 @@ if status_exec == "PACKAGING":
             if not dfk_total.empty:
                 dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                 
+                tpc = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Semana')
                 ks_tot = gerar_kml_tatica(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
                 zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
                 zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
-            # ---> ARQUIVOS INDIVIDUAIS
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
                 
