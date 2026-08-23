@@ -111,7 +111,7 @@ if is_done and not st.session_state.df_routed.empty:
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
             <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora da <b>Cerca Eletrônica de 70km</b> do município de origem.
+                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -124,7 +124,6 @@ if is_done and not st.session_state.df_routed.empty:
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     
-    # NOVO: Conta a quantidade de Super Pontos (Onde _ORIGINAL_ROWS é uma lista com mais de 1 item)
     tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -133,7 +132,6 @@ if is_done and not st.session_state.df_routed.empty:
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    # NOVO: Mensagem de alocação movida para cá e sem abas inferiores
     if not st.session_state.get('df_unallocated', pd.DataFrame()).empty:
         st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes ou ficaram distantes demais (Verifique o arquivo ZIP gerado).")
     else:
@@ -175,10 +173,9 @@ elif status_exec == "IDLE":
             b_t = ler_planilha_cached(bf.getvalue()); b_t.columns = normalize_cols(b_t.columns)
             b_t = b_t.loc[:, ~b_t.columns.duplicated()].copy()
             
-            # NOVO: Priorizando as colunas de "NOME" do Levantador antes de bater com "EQUIPE" numérico
             for pn in ['LEVANTADOR', 'FISCAL', 'NOME_FISCAL', 'NOME', 'TECNICO', 'COLABORADOR', 'EQUIPE']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
-                
+            
             if 'BASE_NOME' in b_t.columns:
                 
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
@@ -252,11 +249,10 @@ elif status_exec == "IDLE":
         else: df_tasks['PRIORIDADE'] = 'Não'
 
     cg1, cg2 = st.columns([4, 1])
-    with cg1: st.markdown("#### 🌍 Cerca Eletrônica Municipal (Anti-Fuga)")
+    with cg1: st.markdown("#### 🌍 Limpeza Geográfica")
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
-    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
     df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
@@ -279,43 +275,7 @@ elif status_exec == "IDLE":
     
     df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']; df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
     
-    if not df_tasks.empty:
-        mu = df_tasks['MUNICIPIO'].unique(); tm = len(mu); md = {}
-        st_run_geo = time.time()
-        
-        def render_t_geo(curr, total):
-            e = time.time() - st_run_geo; f = curr / max(1, total)
-            rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
-            es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
-            html_timer = f"""
-            <div style="display:flex; gap:15px; margin-top: 10px; margin-bottom: 10px;">
-                <div style="flex:1; padding:10px; border-radius:8px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center;">
-                    <div style="font-size:0.8rem; color:#6c757d; font-weight:bold; margin-bottom:2px;">⏱️ Decorrido</div>
-                    <div style="font-size:1.5rem; font-weight:bold; color:#0D256C;">{es}</div>
-                </div>
-                <div style="flex:1; padding:10px; border-radius:8px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center;">
-                    <div style="font-size:0.8rem; color:#2e7d32; font-weight:bold; margin-bottom:2px;">🎯 Restante</div>
-                    <div style="font-size:1.5rem; font-weight:bold; color:#1b5e20;">{rs}</div>
-                </div>
-            </div>
-            """
-            tmp.markdown(html_timer, unsafe_allow_html=True)
-
-        for i, m in enumerate(mu):
-            pbg.progress((i + 1) / max(1, tm)); sgt.info(f"🛰️ Satélite IBGE: {m}")
-            render_t_geo(i + 1, tm)
-            try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.1)
-            except: lt, ln = np.nan, np.nan
-            md[m] = (lt, ln)
-            
-        sgt.info("📏 Aplicando régua na Cerca...")
-        mo = df_tasks.apply(lambda r: haversine_scalar(r['LATITUDE'], r['LONGITUDE'], md.get(r['MUNICIPIO'], (np.nan, np.nan))[0], md.get(r['MUNICIPIO'], (np.nan, np.nan))[1]) > 70.0 if pd.notna(md.get(r['MUNICIPIO'], (np.nan, np.nan))[0]) else False, axis=1)
-        if mo.sum() > 0:
-            df_tasks.loc[mo, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km)'
-            df_rej = pd.concat([df_rej, df_tasks[mo].copy()], ignore_index=True); df_tasks = df_tasks[~mo].copy()
-        
-        pbg.empty(); tmp.empty(); sgt.empty()
-        st.session_state.df_correcao_tatica = df_rej
+    st.session_state.df_correcao_tatica = df_rej
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -324,10 +284,6 @@ elif status_exec == "IDLE":
     tbr = df_bases.to_dict('records')
     fiscal_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
     assigned_tasks, unassigned_tasks = [], []
-    
-    # ------------------ ISOLAMENTO DE FISCAIS AQUI ------------------
-    # Antes, a trava_global cortava os dados antes de fazer o sorteio de equipe, 
-    # o que poderia fazer a linha falhar se 'df_tasks' ficasse muito curto
     
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
 
@@ -356,7 +312,6 @@ elif status_exec == "IDLE":
             unassigned_tasks.append(r)
 
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
-    
     st.session_state.df_unallocated, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
@@ -364,7 +319,14 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        cd = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
+        
+        # LISTA ATUALIZADA BASEADA NA SUA IMAGEM
+        cd = [
+            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
+            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
+            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
+        ]
+        
         cp = [c for c in cd if c in tc]
         colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
