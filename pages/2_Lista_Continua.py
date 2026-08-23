@@ -262,7 +262,14 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        cd = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
+        # Lista atualizada baseada na imagem fornecida
+        cd = [
+            'ID SISCO', 'FASE', 'PRIORIDADE', 'TIPO NOTA', 'PROTOCOLO', 
+            'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 
+            'LONGITUDE', 'LOCALIDADE', 'MUNICIPIO', 'INFORMACOES EXTRAS', 
+            'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 
+            'POSTE PREVISTO BT', 'POSTE PREVISTO MT'
+        ]
         cp = [c for c in cd if c in tc]
         colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
@@ -385,7 +392,8 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_lista)
+            # Passando as colunas exibidas para filtrar estritamente o Excel
+            dfg = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_exibir_lista)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
