@@ -131,7 +131,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     
-    # NOVO: Conta a quantidade de Super Pontos (Onde _ORIGINAL_ROWS é uma lista com mais de 1 item)
     tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -139,6 +138,9 @@ if is_done and not st.session_state.df_routed_lista.empty:
     c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
+
+    # NOVO: Card de sucesso em 100% (Substitui as abas de tabelas de Obras Não Alocadas)
+    st.success("✅ 100% das obras foram alocadas com sucesso.")
 
     st.markdown("### 🗺️ Mapa Operacional")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -163,14 +165,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
             folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
-
-    t1, t2 = st.tabs(["📊 Dados Tabulares", "📉 Obras Não Alocadas"])
-    with t1: st.data_editor(st.session_state.df_routed_lista.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore'), use_container_width=True)
-    with t2:
-        if not st.session_state.get('df_unallocated_lista', pd.DataFrame()).empty:
-            st.warning(f"⚠️ {len(st.session_state.df_unallocated_lista)} obras não couberam ou ficaram distantes demais.")
-            st.dataframe(st.session_state.df_unallocated_lista, use_container_width=True)
-        else: st.success("✅ 100% das obras foram alocadas.")
 
 elif status_exec == "IDLE":
     st.markdown("### 📁 Demandas (Obras e Equipes)")
