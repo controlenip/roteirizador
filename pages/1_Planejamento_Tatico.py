@@ -24,8 +24,16 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
+        # Tira decimais dos Postes
+        if 'POSTE' in c.upper(): return str(int(float(v)))
+        
         vf = float(v)
-        if 'DISTANCIA' in c.upper(): return f"{vf:.2f} KM"
+        # Regra de KM vs Metros
+        if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM']: 
+            return f"{vf:.2f} KM"
+        elif 'DISTANCIA' in c.upper(): 
+            return f"{vf:.2f} Metros"
+            
         return formata_campo_html(v)
     except:
         if isinstance(v, (datetime, pd.Timestamp)): return formata_campo_html(v.strftime('%d/%m/%Y'))
@@ -111,7 +119,7 @@ if is_done and not st.session_state.df_routed.empty:
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
             <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
+                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -133,7 +141,7 @@ if is_done and not st.session_state.df_routed.empty:
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     if not st.session_state.get('df_unallocated', pd.DataFrame()).empty:
-        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes ou ficaram distantes demais (Verifique o arquivo ZIP gerado).")
+        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes (Verifique o arquivo ZIP gerado).")
     else:
         st.success("✅ 100% das obras foram alocadas com sucesso.")
 
@@ -177,7 +185,6 @@ elif status_exec == "IDLE":
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             
             if 'BASE_NOME' in b_t.columns:
-                
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
@@ -253,6 +260,7 @@ elif status_exec == "IDLE":
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
+    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
     df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
@@ -333,7 +341,6 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
-        # Removemos vel_kmh e tmp_obra da UI, então forçamos aqui 30 e 45 respectivamente
         st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status = "RUNNING"; tentar_rerun()
 
@@ -364,17 +371,13 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            # IMPLEMENTAÇÃO: Sentido do Roteamento (Varredura Reversa ou Lógica Padrão)
+            # IMPLEMENTAÇÃO: Sentido do Roteamento
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
-                # Varredura Reversa: Inicia do ponto mais DISTANTE e vem voltando pra base
                 ot = []
                 if oe:
-                    # Encontra a obra mais longe da base
                     max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
                     p_longe = oe.pop(max_idx)
                     ot.append(p_longe)
-                    
-                    # A partir dela, vai pegando a mais próxima para ir construindo o caminho de volta
                     cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
                     while oe:
                         closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
@@ -476,15 +479,60 @@ if status_exec == "PACKAGING":
     st.markdown("## 📦 Empacotamento Tático")
     df_routed, d_fmt = st.session_state.df_routed, datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    
+    # ---------------- LÓGICA DE EMPACOTAMENTO ----------------
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
+            
+            obras_por_dia_est = st.session_state.vrp_state.get('config', {}).get('obras_por_dia', 4.0)
+
+            # --- RESUMO OPERACIONAL ---
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
-                res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
+                
+                qtd_obras = 0
+                qtd_postes = 0
+                for _, r in db.iterrows():
+                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                        qtd_obras += len(r['_ORIGINAL_ROWS'])
+                        for orig in r['_ORIGINAL_ROWS']:
+                            pv = []
+                            for k, v in orig.items():
+                                if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
+                                    try: 
+                                        val = float(v)
+                                        if val > 0: pv.append(val)
+                                    except: pass
+                            if pv: qtd_postes += min(pv)
+                    else:
+                        qtd_obras += 1
+                        pv = []
+                        for k, v in r.items():
+                            if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
+                                try: 
+                                    val = float(v)
+                                    if val > 0: pv.append(val)
+                                except: pass
+                        if pv: qtd_postes += min(pv)
+
+                postes_dia = (qtd_postes / (qtd_obras / float(obras_por_dia_est))) if qtd_obras > 0 else 0
+                postes_semana = postes_dia * 5.0
+
+                res.append({
+                    'Equipe': b, 
+                    'Obras Roteirizadas': qtd_obras, 
+                    'Postes/Dia (Est.)': int(round(postes_dia)),
+                    'Postes/Semana (Est.)': int(round(postes_semana)),
+                    'Postes Total': int(round(qtd_postes)),
+                    'Super Pontos': sum(1 for _, r_sp in db.iterrows() if isinstance(r_sp.get('_ORIGINAL_ROWS'), list) and len(r_sp.get('_ORIGINAL_ROWS')) > 1), 
+                    'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 
+                    'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
+                })
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
             
+            # --- OBRAS DE CORREÇÃO ---
             dfc = st.session_state.get('df_correcao_tatica', pd.DataFrame())
             if not dfc.empty:
                 dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
@@ -493,28 +541,72 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
+            # --- MONTANDO O DATAFRAME COMPLETO (EXPANDINDO SUPER PONTOS) ---
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                
+                is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1
+                sp_text = f"SIM ({len(r['_ORIGINAL_ROWS'])} Obras)" if is_sp else "NÃO"
+                
+                if is_sp:
                     for orig in r['_ORIGINAL_ROWS']:
                         nr = r.copy()
                         for k, v in orig.items(): 
-                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
+                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'ROTA_GEOMETRIA', 'PERIODO', 'NOME_DIA', 'DIA_MES']: nr[k] = v
+                        nr['SUPER_PONTO'] = sp_text
                         linhas_gerais.append(nr)
-                else: linhas_gerais.append(r)
+                else:
+                    rn = r.copy()
+                    rn['SUPER_PONTO'] = sp_text
+                    linhas_gerais.append(rn)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_tat)
-            dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
-            for cc in dfg.columns:
-                if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Tatica - {d_fmt}.xlsx", gerar_excel_tatica(dfg, st.session_state.colunas_originais_tat))
             
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_tatica(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
-            zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
-            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+            # Remover decimais dos postes
+            for c in df_excel_full.columns:
+                if 'POSTE' in c.upper():
+                    df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
+
+            col_exibir = st.session_state.colunas_exibir.copy()
+            if 'NOME_DIA' not in col_exibir: col_exibir.insert(0, 'NOME_DIA')
+            if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
+            if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
+
+            # ---> EXCEL E KML GLOBAL (ROTA TOTAL)
+            dfg_total = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
+            dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
+            for cc in dfg_total.columns:
+                if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
+            zx.writestr(f"Demanda_Tatica_Total - {d_fmt}.xlsx", gerar_excel_tatica(dfg_total, st.session_state.colunas_originais_tat))
+            
+            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+            if not dfk_total.empty:
+                dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
+                
+                ks_tot = gerar_kml_tatica(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
+                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
+                zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+
+            # ---> ARQUIVOS INDIVIDUAIS
+            for base in df_routed['BASE_ATRIBUIDA'].unique():
+                b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
+                
+                df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == base]
+                if not df_base_excel.empty:
+                    dfg = limpar_colunas_tatica(df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
+                    dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
+                    for cc in dfg.columns:
+                        if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
+                    zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_tatica(dfg, st.session_state.colunas_originais_tat))
+                    
+                dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
+                if not dfk_base.empty:
+                    dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
+                    
+                    ks = gerar_kml_tatica(dfk_base, f"Rota {b_safe}", col_exibir, [base], tpc, formatar_valor_coluna)
+                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
+                    zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
         st.session_state.bytes_zip_xl, st.session_state.bytes_zip_kml, st.session_state.bytes_zip_gpx = bu_xl.getvalue(), bu_kml.getvalue(), bu_gpx.getvalue()
         st.session_state.roteamento_concluido = True; st.session_state.vrp_status = "IDLE"; tentar_rerun()
