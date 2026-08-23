@@ -102,10 +102,11 @@ def limpar_colunas_tatica(df_alvo, cols_originais):
             nome_coluna = 'FISCAL' if c == 'BASE_ATRIBUIDA' else nome_coluna
             if nome_coluna in df_alvo.columns and nome_coluna not in final_cols and nome_coluna not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
                 final_cols.append(nome_coluna)
-                
-    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC', 'DISTANCIA_PROXIMO_PONTO_KM']
-    for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo: final_cols.append(c)
+    else:  
+        colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC', 'DISTANCIA_PROXIMO_PONTO_KM']
+        for c in df_alvo.columns:
+            if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo: final_cols.append(c)
+            
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
 def gerar_kml_tatica(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
