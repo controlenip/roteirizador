@@ -60,7 +60,7 @@ def gerar_excel_resumo_lista(df_resumo):
         formatar_planilha_openpyxl(writer, 'Resumo Operacional')
     return output.getvalue()
 
-def limpar_colunas_lista(df_alvo, cols_originais):
+def limpar_colunas_lista(df_alvo, cols_originais=None):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
     if 'PROTOCOLO' in df_alvo.columns:
@@ -71,19 +71,26 @@ def limpar_colunas_lista(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
+    # Colunas obrigatórias para roteirização e identificação
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
+        # Se recebemos a lista de colunas, iteramos APENAS sobre elas
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
+            # Tratamento caso o usuário tenha escolhido PROTOCOLO mas renomeamos para NOTA
+            nome_coluna = 'NOTA' if c == 'PROTOCOLO' else c
+            nome_coluna = 'FISCAL' if c == 'BASE_ATRIBUIDA' else nome_coluna
+            
+            if nome_coluna in df_alvo.columns and nome_coluna not in final_cols and nome_coluna not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
+                final_cols.append(nome_coluna)
+    else:
+        # Fallback de segurança: Adiciona tudo (Comportamento Antigo)
+        colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
+        for c in df_alvo.columns:
+            if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo:
                 final_cols.append(c)
                 
-    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
-    for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo:
-            final_cols.append(c)
-            
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
 def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
