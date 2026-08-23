@@ -24,6 +24,7 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
+        if 'POSTE' in c.upper(): return str(int(float(v)))
         vf = float(v)
         if 'DISTANCIA' in c.upper(): return f"{vf:.2f} KM"
         return formata_campo_html(v)
@@ -401,29 +402,60 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # 3. Montando a Tabela Geral com Inserção de Datas
+            # 3. Montando a Tabela Geral com Inserção de Datas e Marcador de Super Ponto
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                
+                is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1
+                sp_text = f"SIM ({len(r['_ORIGINAL_ROWS'])} Obras)" if is_sp else "NÃO"
+                
+                if is_sp:
                     for orig in r['_ORIGINAL_ROWS']:
                         nr = r.copy()
                         for k, v in orig.items(): 
                             if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
                         nr['DIA_SEMANA'] = dia_semana_str
                         nr['DIA_MES'] = dia_mes_str
+                        nr['SUPER_PONTO'] = sp_text
                         linhas_gerais.append(nr)
                 else:
                     rn = r.copy()
                     rn['DIA_SEMANA'] = dia_semana_str
                     rn['DIA_MES'] = dia_mes_str
+                    rn['SUPER_PONTO'] = sp_text
                     linhas_gerais.append(rn)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
             
+            # Remove decimais das colunas de Poste no Excel Global/Individual
+            for c in df_excel_full.columns:
+                if 'POSTE' in c.upper():
+                    df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').astype('Int64').astype(str).replace('<NA>', '')
+
             col_exibir = st.session_state.colunas_exibir_lista.copy()
             if 'DIA_SEMANA' not in col_exibir: col_exibir.insert(0, 'DIA_SEMANA')
             if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
+            if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
+
+            # ---> PLANILHA EXCEL GERAL (ROTA TOTAL)
+            dfg_total = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
+            dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
+            for cc in dfg_total.columns:
+                if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
+            zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, st.session_state.colunas_originais_lista))
+            
+            # ---> MAPA KML / GPS GPX GERAL (ROTA TOTAL)
+            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+            if not dfk_total.empty:
+                dfk_total['DIA_SEMANA'] = dia_semana_str
+                dfk_total['DIA_MES'] = dia_mes_str
+                dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
+                
+                ks_tot = gerar_kml_lista(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
+                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
+                zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+
 
             # 4. GERAÇÃO INDIVIDUAL POR EQUIPE/LEVANTADOR
             for base in df_routed['BASE_ATRIBUIDA'].unique():
@@ -443,6 +475,7 @@ if status_exec == "PACKAGING":
                 if not dfk_base.empty:
                     dfk_base['DIA_SEMANA'] = dia_semana_str
                     dfk_base['DIA_MES'] = dia_mes_str
+                    dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                     
                     ks = gerar_kml_lista(dfk_base, f"Rota {b_safe}", col_exibir, [base], formatar_valor_coluna)
                     zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
