@@ -14,7 +14,6 @@ from datetime import datetime
 
 from modules.data_processing import ler_planilha_cached, formata_campo_html, formatar_moeda, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
-# Adicionado a importação do obter_rota_ruas
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
 from modules.export_lista import injetar_logo, identificar_icone_folium, gerar_excel_lista, gerar_excel_resumo_lista, gerar_gpx_simples, gerar_kml_lista, limpar_colunas_lista
@@ -87,7 +86,6 @@ with st.sidebar:
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
         
-    # Adicionado o menu da Cerca Eletrônica / OSRM
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
@@ -183,7 +181,6 @@ elif status_exec == "IDLE":
         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
         df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True); df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
 
-    # BUSCADOR AUTOMÁTICO DE RESPONSÁVEL
     agent_col = None
     for col in ['LEVANTADOR_RESPONSAVEL', 'LEVANTADOR', 'FISCAL', 'EQUIPE', 'NOME_FISCAL']:
         if col in df_tasks.columns:
@@ -254,13 +251,19 @@ elif status_exec == "IDLE":
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
-    df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=True)
+    # FIX DE ISOLAMENTO GARANTIDO PARA EVITAR MISTURA DE FISCAIS:
+    dfs_fundidos = []
+    for base in df_tasks['BASE_ATRIBUIDA'].unique():
+        df_base = df_tasks[df_tasks['BASE_ATRIBUIDA'] == base].copy()
+        df_base_f, _ = fundir_super_pontos(df_base, raio_metros=raio_sp, agrupar_por_levantador=True)
+        dfs_fundidos.append(df_base_f)
+    df_tasks = pd.concat(dfs_fundidos, ignore_index=True)
 
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
 
     df_ta = df_tasks.copy()
-    df_u = pd.DataFrame() # Sem não alocadas na lista contínua pois já vem com equipe!
+    df_u = pd.DataFrame()
 
     st.session_state.df_unallocated_lista, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
@@ -268,21 +271,13 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        # Lista atualizada baseada na imagem fornecida (Mantida das correções anteriores)
-        cd = [
-            'ID SISCO', 'FASE', 'PRIORIDADE', 'TIPO NOTA', 'PROTOCOLO', 
-            'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 
-            'LONGITUDE', 'LOCALIDADE', 'MUNICIPIO', 'INFORMACOES EXTRAS', 
-            'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 
-            'POSTE PREVISTO BT', 'POSTE PREVISTO MT'
-        ]
+        cd = ['ID SISCO', 'FASE', 'PRIORIDADE', 'TIPO NOTA', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 'LONGITUDE', 'LOCALIDADE', 'MUNICIPIO', 'INFORMACOES EXTRAS', 'DISTANCIA BT', 'DISTANCIA MT', 'DISTANCIA TRAFO', 'POSTE PREVISTO BT', 'POSTE PREVISTO MT']
         cp = [c for c in cd if c in tc]
         colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        # Incluido os atributos de URL e opção de tracado_real
         st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
@@ -308,19 +303,15 @@ if status_exec == "RUNNING":
         
         if 'c_rotas' not in st_v:
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
-            
-            # Ponto de Partida Virtual: Centróide das obras do levantador
             bl = sum(float(x['LATITUDE']) for x in oe) / len(oe)
             bL = sum(float(x['LONGITUDE']) for x in oe) / len(oe)
             
-            # LÓGICA DE SENTIDO DE ROTA (VARREDURA REVERSA OU PADRÃO)
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
                 ot = []
                 if oe:
                     max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
                     p_longe = oe.pop(max_idx)
                     ot.append(p_longe)
-                    
                     cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
                     while oe:
                         closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
@@ -342,26 +333,28 @@ if status_exec == "RUNNING":
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            
-            # Nova lógica condicional de velocidade de processamento:
-            # Se for buscar arruamento na rede, processa em blocos pequenos. Senão, processa tudo.
             ei = min(oi + (30 if cfg.get('tracado_real') else len(rf)), len(rf)) 
             
             for i in range(oi, ei):
                 it = rf[i]
                 
-                # Faz a ramificação dependendo da checkbox
+                # FIX DE REDUNDÂNCIA GEOGRÁFICA: Garantir linha reta quando OSRM retornar vazio
+                fallback = ([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600)
+                
                 if not cfg.get('tracado_real'):
-                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                    gd.append(fallback)
                 else:
                     if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
                     time.sleep(0.15)
                     try: 
-                        gd.append(obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh']))
+                        res = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                        if not res or len(res) == 0 or len(res[0]) == 0:
+                            gd.append(fallback)
+                        else:
+                            gd.append(res)
                     except: 
-                        # Fallback no caso da requisição falhar
-                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                        gd.append(fallback)
                 
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
@@ -412,7 +405,6 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            # Passando as colunas exibidas para filtrar estritamente o Excel (Correção prévia mantida)
             dfg = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_exibir_lista)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
