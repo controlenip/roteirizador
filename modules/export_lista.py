@@ -70,7 +70,26 @@ def gerar_excel_resumo_lista(df_resumo):
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
-        formatar_planilha_openpyxl(writer, 'Resumo Operacional', df_resumo)
+        
+        # Formata o header do resumo
+        workbook = writer.book
+        worksheet = writer.sheets['Resumo Operacional']
+        header_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True, name='Calibri')
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+        worksheet.auto_filter.ref = worksheet.dimensions
+        for col in worksheet.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if cell.value and len(str(cell.value)) > max_length: max_length = len(str(cell.value))
+                except: pass
+            worksheet.column_dimensions[column].width = min(max_length + 2, 40)
+            
     return output.getvalue()
 
 def limpar_colunas_lista(df_alvo, cols_originais=None):
@@ -84,7 +103,7 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
-    # Colunas obrigatórias para roteirização e identificação
+    # Colunas obrigatórias fixadas no início
     final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
@@ -124,6 +143,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
     cores_kml = ['ff4b19e6', 'ffd4bc00', 'ffb5513f', 'ff889600', 'ff0098ff', 'ffb0279c', 'ff39dccd', 'ff148000', 'ffeb004b', 'ff1f618d', 'ffd35400', 'ff16a085', 'ff8e44ad', 'ff27ae60', 'ffe67e22']
 
+    # Gerando os estilos das linhas dinamicamente para cada levantador ter uma cor diferente
     for idx, b in enumerate(bases_ativas):
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         b_safe = re.sub(r'[^A-Za-z0-9]', '', str(b))
