@@ -389,7 +389,45 @@ if status_exec == "PACKAGING":
             for b in df_routed['BASE_ATRIBUIDA'].unique():
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
-                res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
+                
+                qtd_obras = 0
+                qtd_postes = 0
+                for _, r in db.iterrows():
+                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                        qtd_obras += len(r['_ORIGINAL_ROWS'])
+                        for orig in r['_ORIGINAL_ROWS']:
+                            pv = []
+                            for k, v in orig.items():
+                                if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
+                                    try: 
+                                        val = float(v)
+                                        if val > 0: pv.append(val)
+                                    except: pass
+                            if pv: qtd_postes += min(pv)
+                    else:
+                        qtd_obras += 1
+                        pv = []
+                        for k, v in r.items():
+                            if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
+                                try: 
+                                    val = float(v)
+                                    if val > 0: pv.append(val)
+                                except: pass
+                        if pv: qtd_postes += min(pv)
+
+                postes_dia = (qtd_postes / (qtd_obras / 4.0)) if qtd_obras > 0 else 0
+                postes_semana = postes_dia * 5.0
+
+                res.append({
+                    'Equipe': b, 
+                    'Obras Roteirizadas': qtd_obras, 
+                    'Postes/Dia (Est.)': int(round(postes_dia)),
+                    'Postes/Semana (Est.)': int(round(postes_semana)),
+                    'Postes Total': int(round(qtd_postes)),
+                    'Super Pontos': qs, 
+                    'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 
+                    'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
+                })
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_lista(pd.DataFrame(res)))
             
             dfc = st.session_state.get('df_correcao_lista', pd.DataFrame())
@@ -425,7 +463,6 @@ if status_exec == "PACKAGING":
             
             df_excel_full = pd.DataFrame(linhas_gerais)
             
-            # FIX: Arredondamento numérico seguro que previne TypeError com float64 e Int64
             for c in df_excel_full.columns:
                 if 'POSTE' in c.upper():
                     df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
