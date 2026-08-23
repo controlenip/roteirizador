@@ -277,7 +277,6 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        # Registrando data_inicio no config a partir do valor escolhido na tela
         st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
@@ -369,8 +368,13 @@ if status_exec == "RUNNING":
 
 if status_exec == "PACKAGING":
     st.markdown("## 📦 Empacotamento")
-    df_routed, d_fmt = st.session_state.df_routed_lista, datetime.now().strftime("%d.%m.%Y")
+    
+    df_routed = st.session_state.df_routed_lista.copy()
+    df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+
+    d_fmt = datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             
@@ -405,7 +409,7 @@ if status_exec == "PACKAGING":
                     for orig in r['_ORIGINAL_ROWS']:
                         nr = r.copy()
                         for k, v in orig.items(): 
-                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
+                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
                         nr['DIA_SEMANA'] = dia_semana_str
                         nr['DIA_MES'] = dia_mes_str
                         linhas_gerais.append(nr)
@@ -417,7 +421,6 @@ if status_exec == "PACKAGING":
             
             df_excel_full = pd.DataFrame(linhas_gerais)
             
-            # Adicionando as Datas dinamicamente aos cards e as planilhas
             col_exibir = st.session_state.colunas_exibir_lista.copy()
             if 'DIA_SEMANA' not in col_exibir: col_exibir.insert(0, 'DIA_SEMANA')
             if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
