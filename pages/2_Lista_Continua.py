@@ -14,7 +14,8 @@ from datetime import datetime
 
 from modules.data_processing import ler_planilha_cached, formata_campo_html, formatar_moeda, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
-from modules.routing_engine import resolver_tsp_ortools
+# Adicionado a importação do obter_rota_ruas
+from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
 from modules.export_lista import injetar_logo, identificar_icone_folium, gerar_excel_lista, gerar_excel_resumo_lista, gerar_gpx_simples, gerar_kml_lista, limpar_colunas_lista
 
@@ -73,7 +74,7 @@ is_done = st.session_state.roteamento_concluido_lista
 is_locked = status_exec != "IDLE" or is_done
 
 st.markdown("<h1 class='brand-title'>📜 Lista Contínua</h1>", unsafe_allow_html=True)
-st.info("💡 Gera uma lista de execução contínua com base na atribuição já existente na planilha de obras. Não requer OSRM.")
+st.info("💡 Gera uma lista de execução contínua com base na atribuição já existente na planilha de obras.")
 
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
@@ -85,6 +86,11 @@ with st.sidebar:
         st.markdown("---")
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
+        
+    # Adicionado o menu da Cerca Eletrônica / OSRM
+    with st.expander("📡 Conexão de Rede", expanded=False):
+        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
 
     sb_html = st.empty()
 
@@ -262,7 +268,7 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        # Lista atualizada baseada na imagem fornecida
+        # Lista atualizada baseada na imagem fornecida (Mantida das correções anteriores)
         cd = [
             'ID SISCO', 'FASE', 'PRIORIDADE', 'TIPO NOTA', 'PROTOCOLO', 
             'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 
@@ -276,8 +282,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        # Velocidade fixa 30km/h. Sem acesso a rede (OSRM não roda aqui)
-        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Incluido os atributos de URL e opção de tracado_real
+        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -322,8 +328,7 @@ if status_exec == "RUNNING":
                         ot.append(nx)
                         cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
             else:
-                # Modificado para rodar TSP apenas via Haversine
-                ot = resolver_tsp_ortools(oe, bl, bL, "") if oe else []
+                ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'] if cfg.get('tracado_real') else "") if oe else []
                 if not ot: ot = oe
             
             rf = []
@@ -337,11 +342,26 @@ if status_exec == "RUNNING":
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            ei = min(oi + len(rf), len(rf)) # Completa tudo rápido (sem internet OSRM)
+            
+            # Nova lógica condicional de velocidade de processamento:
+            # Se for buscar arruamento na rede, processa em blocos pequenos. Senão, processa tudo.
+            ei = min(oi + (30 if cfg.get('tracado_real') else len(rf)), len(rf)) 
+            
             for i in range(oi, ei):
                 it = rf[i]
-                # Linha Reta Rápida (Haversine) - OSRM removido
-                gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                
+                # Faz a ramificação dependendo da checkbox
+                if not cfg.get('tracado_real'):
+                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                else:
+                    if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
+                    render_t(b_i, i, len(rf))
+                    time.sleep(0.15)
+                    try: 
+                        gd.append(obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh']))
+                    except: 
+                        # Fallback no caso da requisição falhar
+                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
                 
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
@@ -392,7 +412,7 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            # Passando as colunas exibidas para filtrar estritamente o Excel
+            # Passando as colunas exibidas para filtrar estritamente o Excel (Correção prévia mantida)
             dfg = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_exibir_lista)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
