@@ -24,16 +24,12 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
-        # Tira decimais dos Postes
         if 'POSTE' in c.upper(): return str(int(float(v)))
-        
         vf = float(v)
-        # Regra de KM vs Metros
         if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM']: 
             return f"{vf:.2f} KM"
         elif 'DISTANCIA' in c.upper(): 
             return f"{vf:.2f} Metros"
-            
         return formata_campo_html(v)
     except:
         if isinstance(v, (datetime, pd.Timestamp)): return formata_campo_html(v.strftime('%d/%m/%Y'))
@@ -224,43 +220,73 @@ elif status_exec == "IDLE":
         dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
         dft.columns = normalize_cols(dft.columns)
         if not dfs: st.session_state.colunas_originais_tat = dft.columns.tolist()
-        for cc in ['NOTA', 'PROTOCOLO', 'OS']:
+        
+        # Flexibilização da coluna Identificadora
+        for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
             if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
         dfs.append(dft)
     
     df_tasks = pd.concat(dfs, ignore_index=True)
+    
+    # Criando coluna fake de Protocolo se realmente não achar nada pra não quebrar o motor
+    if 'PROTOCOLO' not in df_tasks.columns:
+        df_tasks['PROTOCOLO'] = "OBRA_" + df_tasks.index.astype(str)
+        
     if 'PROTOCOLO' in df_tasks.columns:
         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
         df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True); df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
 
     st.markdown("---")
-    falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO'] if c not in df_tasks.columns]
-    if falta: st.error(f"🚨 Faltam colunas: {', '.join(falta)}."); st.stop()
+    st.markdown("### 🎛️ 3. Regras da Planilha Genérica & Exportação")
     
-    c1_f, c2_f = st.columns([1, 1])
-    with c1_f:
-        cs = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
-        if cs in df_tasks.columns:
-            df_tasks[cs] = df_tasks[cs].astype(str).str.strip().str.upper()
-            opts_s = sorted([str(x) for x in df_tasks[cs].unique() if str(x) != 'NAN'])
-            sel_s = st.multiselect("1. Status Roteirizáveis:", options=opts_s, default=[s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']])
-            if not sel_s: st.stop()
-            df_tasks = df_tasks[df_tasks[cs].isin(sel_s)].copy()
-            
-    with c2_f:
-        if 'TIPO NOTA' in df_tasks.columns:
-            df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
-            opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
-            sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
-            df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
-        else: df_tasks['PRIORIDADE'] = 'Não'
+    colunas_df = df_tasks.columns.tolist()
+    
+    c1_g, c2_g = st.columns(2)
+    with c1_g:
+        opcoes_prio = ["Nenhuma"] + colunas_df
+        idx_prio = opcoes_prio.index('TIPO NOTA') if 'TIPO NOTA' in colunas_df else 0
+        
+        col_prio = st.selectbox("🎯 1. Coluna que define a Prioridade:", opcoes_prio, index=idx_prio)
+        if col_prio != "Nenhuma":
+            df_tasks[col_prio] = df_tasks[col_prio].astype(str).str.strip().str.upper()
+            opts_n = sorted([str(x) for x in df_tasks[col_prio].unique() if str(x) != 'NAN'])
+            default_p = [n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']]
+            sel_p = st.multiselect("🚨 Quais valores representam Alta Prioridade?", options=opts_n, default=default_p)
+            df_tasks['PRIORIDADE'] = df_tasks[col_prio].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
+        else:
+            df_tasks['PRIORIDADE'] = 'Não'
 
+    with c2_g:
+        opcoes_status = ["Nenhuma"] + colunas_df
+        idx_status = 0
+        if 'STATUS DA FISCALIZACAO' in colunas_df: idx_status = opcoes_status.index('STATUS DA FISCALIZACAO')
+        elif 'STATUS DA FISCALIZAÇÃO' in colunas_df: idx_status = opcoes_status.index('STATUS DA FISCALIZAÇÃO')
+        
+        col_status = st.selectbox("🚦 2. Coluna de Status (Filtro Opcional):", opcoes_status, index=idx_status)
+        if col_status != "Nenhuma":
+            df_tasks[col_status] = df_tasks[col_status].astype(str).str.strip().str.upper()
+            opts_s = sorted([str(x) for x in df_tasks[col_status].unique() if str(x) != 'NAN'])
+            sel_s = st.multiselect("✅ Valores Roteirizáveis (Aptos):", options=opts_s, default=[s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']])
+            if not sel_s: st.stop()
+            df_tasks = df_tasks[df_tasks[col_status].isin(sel_s)].copy()
+
+    tc = [c for c in colunas_df if not c.startswith('_') and c != 'MUN_LIMPO']
+    padroes = ['ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE']
+    def_cols = [c for c in padroes if c in tc]
+    if not def_cols: def_cols = tc[:min(10, len(tc))]
+    
+    st.markdown("#### 📤 Configuração de Saída (Exportação)")
+    colunas_exibir = st.multiselect("Selecione as colunas que devem aparecer no Pop-up do KML e no Excel:", tc, default=def_cols)
+
+    st.markdown("---")
     cg1, cg2 = st.columns([4, 1])
     with cg1: st.markdown("#### 🌍 Limpeza Geográfica")
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
+
+    falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE'] if c not in df_tasks.columns]
+    if falta: st.error(f"🚨 Faltam colunas geográficas vitais na planilha de obras: {', '.join(falta)}."); st.stop()
     
-    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
     df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
@@ -336,19 +362,6 @@ elif status_exec == "IDLE":
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
     if df_ta.empty: st.error("Nenhuma obra pôde ser alocada aos Fiscais."); st.stop()
 
-    with st.expander("🛠️ Configuração de Saída", expanded=True):
-        tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        
-        cd = [
-            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
-            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
-            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
-        ]
-        
-        cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
-        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
-
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
         st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
@@ -381,6 +394,7 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
+            # IMPLEMENTAÇÃO: Sentido do Roteamento
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
                 ot = []
                 if oe:
