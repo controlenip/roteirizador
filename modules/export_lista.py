@@ -10,13 +10,15 @@ from openpyxl.styles import PatternFill, Font, Alignment
 # EXPORTADORES DA LISTA CONTÍNUA
 # ==========================================
 
-def formatar_planilha_openpyxl(writer, sheet_name):
+def formatar_planilha_openpyxl(writer, sheet_name, df_orig):
     """Aplica o padrão NIP (Azul Escuro) no arquivo Excel gerado."""
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
     
     header_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     header_font = Font(color='FFFFFF', bold=True, name='Calibri')
+    fill_superponto = PatternFill(start_color='FCE4D6', end_color='FCE4D6', fill_type='solid')
+    font_prioridade = Font(color='FF0000', bold=True, name='Calibri')
     
     for cell in worksheet[1]:
         cell.fill = header_fill
@@ -24,6 +26,16 @@ def formatar_planilha_openpyxl(writer, sheet_name):
         cell.alignment = Alignment(horizontal='center', vertical='center')
         
     worksheet.auto_filter.ref = worksheet.dimensions
+    
+    col_prio_idx = df_orig.columns.get_loc('PRIORIDADE') + 1 if 'PRIORIDADE' in df_orig.columns else None
+    col_sp_idx = df_orig.columns.get_loc('SUPER_PONTO') + 1 if 'SUPER_PONTO' in df_orig.columns else None
+    
+    for r_idx, row in enumerate(worksheet.iter_rows(min_row=2), start=2):
+        is_prio = col_prio_idx and str(row[col_prio_idx - 1].value).strip().upper() == 'SIM'
+        is_sp = col_sp_idx and str(row[col_sp_idx - 1].value).strip().upper().startswith('SIM')
+        for cell in row:
+            if is_sp: cell.fill = fill_superponto
+            if is_prio: cell.font = font_prioridade
     
     for col in worksheet.columns:
         max_length = 0
@@ -49,7 +61,7 @@ def gerar_excel_lista(df, colunas_originais=None):
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
-        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas')
+        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas', df_saida)
         
     return output.getvalue()
 
@@ -58,7 +70,7 @@ def gerar_excel_resumo_lista(df_resumo):
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
-        formatar_planilha_openpyxl(writer, 'Resumo Operacional')
+        formatar_planilha_openpyxl(writer, 'Resumo Operacional', df_resumo)
     return output.getvalue()
 
 def limpar_colunas_lista(df_alvo, cols_originais=None):
@@ -73,7 +85,7 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
     # Colunas obrigatórias para roteirização e identificação
-    final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
@@ -94,7 +106,7 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
 def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
-    # Injetando Estilos de Ícones Padrões e Contorno (Baseado nas especificações)
+    # Injetando Estilos de Ícones Padrões e Contorno
     kml.append('<Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
     kml.append('<Style id="linha-ligacao-rede"><LineStyle><color>8800ffff</color><width>2</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
 
@@ -112,7 +124,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
     cores_kml = ['ff4b19e6', 'ffd4bc00', 'ffb5513f', 'ff889600', 'ff0098ff', 'ffb0279c', 'ff39dccd', 'ff148000', 'ffeb004b', 'ff1f618d', 'ffd35400', 'ff16a085', 'ff8e44ad', 'ff27ae60', 'ffe67e22']
 
-    # Gerando os estilos das linhas de rota dinamicamente para cada levantador
     for idx, b in enumerate(bases_ativas):
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         b_safe = re.sub(r'[^A-Za-z0-9]', '', str(b))
@@ -130,7 +141,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
             df_p = df_b[df_b['PERIODO'] == p]
             pasta.append(f'<Folder><name>Rota Principal</name>')
             
-            # --- DESENHO DO ARRUAMENTO / TRAÇADO ---
             coords_linha = []
             for _, r in df_p.iterrows():
                 geom = r.get('ROTA_GEOMETRIA')
@@ -147,7 +157,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
                 pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
 
-            # --- GERAÇÃO DOS MARCADORES E CARDS (POP-UP) ---
             for _, r in df_p.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
@@ -156,7 +165,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r['_ORIGINAL_ROWS']) > 1
                 is_prio = str(r.get('PRIORIDADE')).upper() == 'SIM'
                 
-                # Identificando a Cor / Formato pelo Status da Obra
                 if is_sp:
                     bg_color, text_color = "#FFD700", "#000000"
                     qty = len(r.get('_ORIGINAL_ROWS', []))
@@ -174,7 +182,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     icon = "icon-blue"
                     nome_ponto = f"[{r.get('ORDEM', '')}] Doc: {r.get('PROTOCOLO', '')}"
 
-                # Cabeçalho HTML do Pop-Up
                 desc = f'''<![CDATA[
                 <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
                     <div style="background:{bg_color}; color:{text_color}; padding:8px 10px; font-size:13px; font-weight:bold;">{header_txt}</div>
@@ -190,10 +197,9 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 dist_ant = f"{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0.0)} KM"
                 dist_prox = f"{r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)} KM"
 
-                # Bloco do Protocolo
                 if is_sp:
                     prot_list = [orig.get('PROTOCOLO', orig.get('NOTA', '')) for orig in r['_ORIGINAL_ROWS']]
-                    prot_html = "<div style='max-height:95px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:3px;'><b>[{i+1}]</b> {html.escape(str(p))}</li>" for i, p in enumerate(prot_list)]) + "</ul></div>"
+                    prot_html = "<div style='max-height:95px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:3px;'><b>[{i+1}]</b> {html.escape(str(pr))}</li>" for i, pr in enumerate(prot_list)]) + "</ul></div>"
                 else:
                     prot_html = html.escape(str(r.get('PROTOCOLO', r.get('NOTA', ''))))
 
@@ -204,12 +210,16 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
                 '''
 
-                # Iterando as Colunas Visíveis Solicitadas (Apenas o que o usuário marcou nos botões azuis)
                 for c in colunas_exibir:
                     if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES']: continue
                     
+                    if c.upper() == 'SUPER_PONTO':
+                        val_html = f"SIM ({qty} Obras)" if is_sp else "NÃO"
+                        desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(c)}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
+                        continue
+
                     if is_sp and c.upper() not in ['LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'ZONA', 'REGIONAL']:
-                        vals = [orig.get(c, '') for orig in r['_ORIGINAL_ROWS']]
+                        vals = [orig.get(c, '') for orig in r.get('_ORIGINAL_ROWS', [])]
                         val_html = "<div style='max-height:95px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:3px;'><b>[{i+1}]</b> {funcao_formatadora(c, v)}</li>" for i, v in enumerate(vals)]) + "</ul></div>"
                     else:
                         val_html = funcao_formatadora(c, r.get(c, ''))
