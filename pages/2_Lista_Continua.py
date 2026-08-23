@@ -379,14 +379,12 @@ if status_exec == "PACKAGING":
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             
-            # 1. Configurando a Data Base selecionada
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
             if isinstance(data_ini, datetime): data_ini = data_ini.date()
             dia_mes_str = data_ini.strftime("%d/%m/%Y")
             dias_semana_pt = {0: "SEGUNDA-FEIRA", 1: "TERÇA-FEIRA", 2: "QUARTA-FEIRA", 3: "QUINTA-FEIRA", 4: "SEXTA-FEIRA", 5: "SÁBADO", 6: "DOMINGO"}
             dia_semana_str = dias_semana_pt[data_ini.weekday()]
 
-            # 2. Resumo Geral
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
@@ -402,7 +400,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # 3. Montando a Tabela Geral com Inserção de Datas e Marcador de Super Ponto
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -428,24 +425,22 @@ if status_exec == "PACKAGING":
             
             df_excel_full = pd.DataFrame(linhas_gerais)
             
-            # Remove decimais das colunas de Poste no Excel Global/Individual
+            # FIX: Arredondamento numérico seguro que previne TypeError com float64 e Int64
             for c in df_excel_full.columns:
                 if 'POSTE' in c.upper():
-                    df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').astype('Int64').astype(str).replace('<NA>', '')
+                    df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
 
             col_exibir = st.session_state.colunas_exibir_lista.copy()
             if 'DIA_SEMANA' not in col_exibir: col_exibir.insert(0, 'DIA_SEMANA')
             if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
             if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
 
-            # ---> PLANILHA EXCEL GERAL (ROTA TOTAL)
             dfg_total = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
             dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
             for cc in dfg_total.columns:
                 if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, st.session_state.colunas_originais_lista))
             
-            # ---> MAPA KML / GPS GPX GERAL (ROTA TOTAL)
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
             if not dfk_total.empty:
                 dfk_total['DIA_SEMANA'] = dia_semana_str
@@ -456,12 +451,9 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
                 zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
-
-            # 4. GERAÇÃO INDIVIDUAL POR EQUIPE/LEVANTADOR
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
                 
-                # ---> PLANILHA EXCEL INDIVIDUAL
                 df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == base]
                 if not df_base_excel.empty:
                     dfg = limpar_colunas_lista(df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
@@ -470,7 +462,6 @@ if status_exec == "PACKAGING":
                         if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
                     zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_lista(dfg, st.session_state.colunas_originais_lista))
                     
-                # ---> MAPA KML / GPS GPX INDIVIDUAL
                 dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
                 if not dfk_base.empty:
                     dfk_base['DIA_SEMANA'] = dia_semana_str
