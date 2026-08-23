@@ -209,11 +209,11 @@ elif status_exec == "IDLE":
         st.markdown("### 📁 2. Demandas (Obras)")
         task_files = st.file_uploader("Suba as planilhas de Demandas", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
         
-    st.markdown("---")
-    st.markdown("### 📁 3. Planilha Genérica (Opcional)")
-    st.info("💡 Utilize este campo extra caso precise roteirizar planilhas auxiliares que não sigam o padrão do sistema. Você mapeará a prioridade e o status manualmente.")
-    generic_files = st.file_uploader("Suba uma Planilha Genérica", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
-    
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("### 📁 3. Planilha Genérica (Opcional)")
+        st.info("💡 Utilize este campo extra caso precise roteirizar planilhas auxiliares que não sigam o padrão do sistema. Você mapeará a prioridade e o status manualmente.")
+        generic_files = st.file_uploader("Suba uma Planilha Genérica", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+        
     if df_bases.empty or (not task_files and not generic_files): st.stop()
     
     qtd_eq = df_bases['BASE_NOME'].nunique()
@@ -237,6 +237,7 @@ elif status_exec == "IDLE":
             df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
             df_tasks_padrao = df_tasks_padrao.explode('PROTOCOLO').reset_index(drop=True); df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].str.strip()
 
+        st.markdown("---")
         st.markdown("#### ⚙️ Filtros - Demandas (Obras Padrão)")
         c1_f, c2_f = st.columns([1, 1])
         with c1_f:
@@ -264,7 +265,6 @@ elif status_exec == "IDLE":
             dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
             dft.columns = normalize_cols(dft.columns)
             
-            # Adiciona as colunas novas na lista do session state para aparecerem no Export
             if 'colunas_originais_tat' not in st.session_state or not st.session_state.colunas_originais_tat:
                 st.session_state.colunas_originais_tat = dft.columns.tolist()
             else:
@@ -278,7 +278,6 @@ elif status_exec == "IDLE":
             
         df_tasks_gen = pd.concat(dfs_gen, ignore_index=True)
         
-        # Gera Protocolo falso caso não ache nada (Para não quebrar a Folium / Tabela)
         if 'PROTOCOLO' not in df_tasks_gen.columns:
             df_tasks_gen['PROTOCOLO'] = "GEN_" + df_tasks_gen.index.astype(str)
             
@@ -286,6 +285,7 @@ elif status_exec == "IDLE":
             df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
             df_tasks_gen = df_tasks_gen.explode('PROTOCOLO').reset_index(drop=True); df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].str.strip()
 
+        st.markdown("---")
         st.markdown("#### ⚙️ Filtros - Planilha Genérica")
         colunas_gen = df_tasks_gen.columns.tolist()
         c1_g, c2_g = st.columns(2)
@@ -404,7 +404,6 @@ elif status_exec == "IDLE":
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
         
-        # LISTA ATUALIZADA BASEADA NA SUA IMAGEM, ABRANGENDO OBRAS E GENÉRICAS
         cd = [
             'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
             'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
@@ -447,7 +446,6 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            # IMPLEMENTAÇÃO: Sentido do Roteamento
             if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
                 ot = []
                 if oe:
