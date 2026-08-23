@@ -130,12 +130,14 @@ if is_done and not st.session_state.df_routed_lista.empty:
     tr = len(dfr_t)
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
-    tv = formatar_moeda(pd.to_numeric(dfr_t['VALOR DA OBRA'], errors='coerce').sum()) if 'VALOR DA OBRA' in dfr_t else "R$ 0,00"
+    
+    # NOVO: Conta a quantidade de Super Pontos (Onde _ORIGINAL_ROWS é uma lista com mais de 1 item)
+    tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(render_metric_card("Obras Roteirizadas", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
     c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
-    c3.markdown(render_metric_card("Valor Total na Rua", tv, "💰", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     st.markdown("### 🗺️ Mapa Operacional")
