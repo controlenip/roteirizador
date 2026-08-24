@@ -148,14 +148,13 @@ with st.sidebar:
 if is_done and not st.session_state.df_routed_fisc.empty:
     st.markdown("## 🎯 Dashboards de Produtividade")
     
-    # JUSTIFICATIVA DOS ARQUIVOS DE CORREÇÃO (CARD EM DESTAQUE)
     df_c = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
     if not df_c.empty:
         st.markdown(f"""
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
             <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas e não roteirizadas porque apresentaram <b>coordenadas geográficas em branco, zeradas, invertidas</b> ou porque o GPS da obra apontou para um local que está <b>fora da Cerca Eletrônica de 70km</b> do município preenchido na planilha. O bloqueio é automático para garantir que a rota em campo não seja corrompida.
+                <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas porque apresentaram coordenadas geográficas em branco, zeradas ou invertidas.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -188,7 +187,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
     if not df_chart.empty:
         df_chart['Perc_Postes'] = (df_chart['Postes'] / df_chart['Postes'].sum() * 100).fillna(0)
         df_chart['Perc_Text'] = df_chart['Perc_Postes'].apply(lambda x: f"{x:.1f}%")
-        
         df_chart = df_chart.sort_values(by="Fiscal").reset_index(drop=True)
         
         c_ch1, c_ch2 = st.columns([1.2, 1])
@@ -210,8 +208,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             
         with c_ch2:
             st.markdown("#### % Fatia de Postes por Fiscal")
-            
-            # SOLUÇÃO PROFISSIONAL: PLOTLY PARA O GRÁFICO DE ROSCA (CRIA SETAS E LINHAS DE CHAMADA AUTOMÁTICAS)
             fig_pie = px.pie(
                 df_chart, 
                 values='Postes', 
@@ -219,23 +215,19 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                 hole=0.55,
                 custom_data=['Obras']
             )
-            
             fig_pie.update_traces(
                 textposition='outside', 
                 textinfo='percent',
                 hovertemplate="<b>%{label}</b><br>Postes: %{value}<br>Obras: %{customdata[0]}<br>Fatia: %{percent}<extra></extra>",
                 marker=dict(line=dict(color='#ffffff', width=2))
             )
-            
             fig_pie.update_layout(
                 margin=dict(t=20, b=20, l=20, r=20),
                 showlegend=True,
                 legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.0)
             )
-            
             st.plotly_chart(fig_pie, use_container_width=True)
             
-        # Botão de Exportação para Relatório Executivo (PDF Seguro)
         try:
             from reportlab.lib.pagesizes import letter
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -307,7 +299,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     p_bg, p_c = bg_colors.get(c_i, '#9E9E9E'), txt_colors.get(c_i, '#ffffff')
                     p_txt = f"📋 FISCALIZAÇÃO - {qtd_p} POSTES"
                 
-                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
                 pop_html = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
                 
                 folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
@@ -345,11 +337,16 @@ elif status_exec == "IDLE":
                 sel = st.multiselect("Selecione os Fiscais Ativos:", opts, default=opts)
                 if sel:
                     df_bases = b_t[b_t['LEVANTADOR'].isin(sel)].copy()
+                    
+                    # CORREÇÃO: Cria a coluna Normalizada para Bater com as Obras
+                    cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
+                    if cr in df_bases.columns:
+                        df_bases['MUN_LIMPO_BASE'] = normalizar_municipios(df_bases[cr])
+
                     if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
                         df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
                         df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-                    elif 'RESIDENCIA' in df_bases.columns or 'MUNICIPIO' in df_bases.columns:
-                        cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
+                    elif cr in df_bases.columns:
                         mc = {}
                         with st.spinner("🌍 Mapeando bases..."):
                             for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
@@ -360,7 +357,7 @@ elif status_exec == "IDLE":
         st.markdown("##### 📍 Regra de Atribuição")
         ta = st.radio("Atribuição", ["Por Proximidade (Recomendado)", "Por Município Rígido"], index=0, label_visibility="collapsed")
         if "Proximidade" in ta: st.caption("A IA persegue os maiores Bolsões e puxa o Fiscal mais próximo.")
-        else: st.caption("Trava o Fiscal apenas dentro da cidade informada na sua planilha.")
+        else: st.caption("Trava o Fiscal rigorosamente à cidade informada na sua planilha.")
 
     with c_up2:
         st.markdown("### 📁 2. Obras de Fiscalização")
@@ -400,7 +397,7 @@ elif status_exec == "IDLE":
         df_tasks = df_tasks[df_tasks[cs].isin(sel_s)].copy()
 
     cg1, cg2 = st.columns([4, 1])
-    with cg1: st.markdown("#### 🌍 Cerca Eletrônica (Geofencing 70km)")
+    with cg1: st.markdown("#### 🌍 Limpeza de Coordenadas Geográficas")
     with cg2:
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
@@ -426,53 +423,18 @@ elif status_exec == "IDLE":
     
     df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']; df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
     
-    if not df_tasks.empty:
-        mu = df_tasks['MUNICIPIO'].unique(); tm = len(mu); md = {}
-        st_run_geo = time.time()
-        
-        def render_t_geo(curr, total):
-            e = time.time() - st_run_geo; f = curr / max(1, total)
-            rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else "Calc..."
-            es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
-            html_timer = f"""
-            <div style="display:flex; gap:15px; margin-top: 10px; margin-bottom: 10px;">
-                <div style="flex:1; padding:10px; border-radius:8px; background-color:#f8f9fa; border:1px solid #dee2e6; text-align:center;">
-                    <div style="font-size:0.8rem; color:#6c757d; font-weight:bold; margin-bottom:2px;">⏱️ Decorrido</div>
-                    <div style="font-size:1.5rem; font-weight:bold; color:#0D256C;">{es}</div>
-                </div>
-                <div style="flex:1; padding:10px; border-radius:8px; background-color:#e8f5e9; border:1px solid #a5d6a7; text-align:center;">
-                    <div style="font-size:0.8rem; color:#2e7d32; font-weight:bold; margin-bottom:2px;">🎯 Restante</div>
-                    <div style="font-size:1.5rem; font-weight:bold; color:#1b5e20;">{rs}</div>
-                </div>
-            </div>
-            """
-            tmp.markdown(html_timer, unsafe_allow_html=True)
-
-        for i, m in enumerate(mu):
-            pbg.progress((i + 1) / max(1, tm)); sgt.info(f"🛰️ Satélite: {m}")
-            render_t_geo(i + 1, tm)
-            try: lt, ln = obter_coordenadas_municipio_cached(m); time.sleep(0.1)
-            except: lt, ln = np.nan, np.nan
-            md[m] = (lt, ln)
-            
-        sgt.info("📏 Aplicando Cerca...")
-        mo = df_tasks.apply(lambda r: haversine_scalar(r['LATITUDE'], r['LONGITUDE'], md.get(r['MUNICIPIO'], (np.nan, np.nan))[0], md.get(r['MUNICIPIO'], (np.nan, np.nan))[1]) > 70.0 if pd.notna(md.get(r['MUNICIPIO'], (np.nan, np.nan))[0]) else False, axis=1)
-        if mo.sum() > 0:
-            df_tasks.loc[mo, 'MOTIVO_REJEICAO'] = 'Fora do Município (> 70km)'
-            df_rej = pd.concat([df_rej, df_tasks[mo].copy()], ignore_index=True); df_tasks = df_tasks[~mo].copy()
-        
-        pbg.empty(); tmp.empty(); sgt.empty()
-        st.session_state.df_correcao_fiscalizacao = df_rej
-        
-        if not df_rej.empty: 
-            st.markdown(f"""
-            <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-                <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção (Verifique o ZIP)</h4>
-                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                    <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas e não roteirizadas porque apresentaram <b>coordenadas geográficas em branco, zeradas, invertidas</b> ou porque o GPS da obra apontou para um local que está <b>fora da Cerca Eletrônica de 70km</b> do município preenchido na planilha. O bloqueio é automático para garantir que a rota em campo não seja corrompida.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+    pbg.empty(); tmp.empty(); sgt.empty()
+    st.session_state.df_correcao_fiscalizacao = df_rej
+    
+    if not df_rej.empty: 
+        st.markdown(f"""
+        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção (Verifique o ZIP)</h4>
+            <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas porque apresentaram <b>coordenadas geográficas em branco, zeradas ou invertidas</b>.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -499,8 +461,11 @@ elif status_exec == "IDLE":
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
         
-        if "Município" in ta: vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
-        else: vb = tbr
+        # CORREÇÃO: Match Exato do Município Limpo
+        if "Município" in ta: 
+            vb = [b for b in tbr if str(b.get('MUN_LIMPO_BASE', '')) == ms]
+        else: 
+            vb = tbr
             
         best_f, best_d = None, float('inf')
         
