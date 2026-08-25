@@ -8,7 +8,7 @@ import html
 import re
 import time
 import gc
-from folium.plugins import MarkerCluster, HeatMap
+from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
 
@@ -16,7 +16,6 @@ from modules.data_processing import ler_planilha_cached, formata_campo_html, for
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
-# Importação exclusiva da nova página
 from modules.export_saneamento import injetar_logo, identificar_icone_folium, gerar_excel_saneamento, limpar_colunas_saneamento, gerar_kml_saneamento, gerar_gpx_simples, gerar_excel_resumo_saneamento
 
 st.set_page_config(page_title="Saneamento", page_icon="🧹", layout="wide")
@@ -37,10 +36,23 @@ def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativ
     <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 20px;">
         <h4 style="margin-top: 0; color: #0D256C; font-size: 16px; border-bottom: 2px solid #55B929; padding-bottom: 5px;">📊 Resumo da Capacidade</h4>
         <p style="margin-bottom: 5px; font-size: 14px;"><b>Equipes Ativas:</b> <span style="color: #0D256C; font-weight: bold;">{qtd_equipes_ativas}</span></p>
-        <p style="margin-bottom: 5px; font-size: 14px;"><b>Cota p/ Equipe:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> obras</p>
-        <p style="margin-bottom: 5px; font-size: 14px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> obras</p>
+        <p style="margin-bottom: 5px; font-size: 14px;"><b>Cota p/ Equipe:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> tarefas</p>
+        <p style="margin-bottom: 5px; font-size: 14px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> tarefas</p>
         <hr style="margin: 10px 0; border: 0; border-top: 1px solid #ddd;">
-        <p style="margin-bottom: 0; font-size: 15px; text-align: center;"><b>Obras Validadas:</b> <br><span style="font-size: 24px; color: #0D256C; font-weight: 900;">{total_obras_prontas}</span></p>
+        <p style="margin-bottom: 0; font-size: 15px; text-align: center;"><b>Tarefas Validadas:</b> <br><span style="font-size: 24px; color: #0D256C; font-weight: 900;">{total_obras_prontas}</span></p>
+    </div>
+    """
+
+def render_metric_card(title, value, icon, border_color, bg_color):
+    return f"""
+    <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
+        <div style="background-color: {bg_color}; width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; margin-right: 15px;">
+            {icon}
+        </div>
+        <div>
+            <p style="margin: 0; font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">{title}</p>
+            <p style="margin: 0; font-size: 22px; color: #333; font-weight: bold;">{value}</p>
+        </div>
     </div>
     """
 
@@ -61,13 +73,13 @@ status_exec = st.session_state.vrp_status_san
 is_done = st.session_state.roteamento_concluido_san
 is_locked = status_exec != "IDLE" or is_done
 
-st.markdown("<h1 class='brand-title'>🧹 Saneamento</h1>", unsafe_allow_html=True)
-st.info("💡 Distribui as obras de Saneamento equitativamente, criando rotas circulares focadas na eficiência.")
+st.markdown("<h1 class='brand-title'>🧹 Roteirizador Saneamento</h1>", unsafe_allow_html=True)
+st.info("💡 Focado em operações de Saneamento Rápido. Exige Latitude/Longitude na planilha.")
 
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Capacidade e Prazos", expanded=True):
-        obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=6, disabled=is_locked)
+        obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=25, disabled=is_locked)
         tpc = st.radio("Visão de Trabalho:", ["Dia", "Semana"], index=1, disabled=is_locked)
         limite_per = st.number_input(f"Qtd de {tpc}s de Rota:", min_value=1, value=1, disabled=is_locked)
         dias_sel = st.multiselect("Dias Úteis na Semana:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked)
@@ -91,15 +103,15 @@ with st.sidebar:
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
 if is_done and not st.session_state.df_routed_san.empty:
-    st.markdown("## 🎯 Resultado do Saneamento")
+    st.markdown("## 🎯 Resultado do Planejamento")
     
     df_c = st.session_state.get('df_correcao_san', pd.DataFrame())
     if not df_c.empty:
         st.markdown(f"""
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
-            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção</h4>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas, invertidas ou caíram fora do limite municipal.
+                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -114,9 +126,9 @@ if is_done and not st.session_state.df_routed_san.empty:
     tv = formatar_moeda(pd.to_numeric(dfr_t['VALOR DA OBRA'], errors='coerce').sum()) if 'VALOR DA OBRA' in dfr_t else "R$ 0,00"
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(render_metric_card("Obras Planejadas", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+    c1.markdown(render_metric_card("Tarefas Planejadas", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
     c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
-    c3.markdown(render_metric_card("Valor Total", tv, "💰", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("Valor Total (Se Aplicável)", tv, "💰", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
     st.markdown("### 🗺️ Mapa Operacional")
@@ -158,11 +170,11 @@ elif status_exec == "IDLE":
     with c_up1:
         st.markdown("### 👥 1. Bases de Equipes")
         df_bases = pd.DataFrame()
-        bf = st.file_uploader("Suba a planilha de Equipes (Saneamento)", type=["xlsx", "xls"])
+        bf = st.file_uploader("Suba a planilha de Equipes (Excel)", type=["xlsx", "xls"])
         if bf:
             b_t = ler_planilha_cached(bf.getvalue()); b_t.columns = normalize_cols(b_t.columns)
             b_t = b_t.loc[:, ~b_t.columns.duplicated()].copy()
-            for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR']:
+            for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR', 'FISCAL']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
                 
@@ -184,14 +196,14 @@ elif status_exec == "IDLE":
                             for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
-            else: st.error("❌ A planilha não possui coluna de nome da Equipe.")
+            else: st.error("❌ A planilha não possui coluna de nome da Equipe/Levantador.")
 
         st.markdown("##### 📍 Regra de Atribuição")
         ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município Base"], index=0, label_visibility="collapsed")
-        st.caption("A proximidade empurra as obras para a equipe mais próxima.")
+        st.caption("A proximidade empurra as obras para a equipe mais próxima no raio geral. Por Município isola a equipe.")
 
     with c_up2:
-        st.markdown("### 📁 2. Demandas de Saneamento")
+        st.markdown("### 📁 2. Demandas (Obras)")
         task_files = st.file_uploader("Suba as planilhas de Demandas", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
     
     if df_bases.empty or not task_files: st.stop()
@@ -205,50 +217,54 @@ elif status_exec == "IDLE":
         dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
         dft.columns = normalize_cols(dft.columns)
         if not dfs: st.session_state.colunas_originais_san = dft.columns.tolist()
-        for cc in ['NOTA', 'PROTOCOLO', 'OS']:
-            if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
         dfs.append(dft)
     
     df_tasks = pd.concat(dfs, ignore_index=True)
+    
+    # -------------------------------------------------------------
+    # SINCRONIA MÁGICA: Mapeamento de Latitude/Longitude do Projeto
+    # -------------------------------------------------------------
+    if 'LATITUDE PROJETO' in df_tasks.columns and 'LATITUDE' not in df_tasks.columns:
+        df_tasks['LATITUDE'] = df_tasks['LATITUDE PROJETO']
+    if 'LONGITUDE PROJETO' in df_tasks.columns and 'LONGITUDE' not in df_tasks.columns:
+        df_tasks['LONGITUDE'] = df_tasks['LONGITUDE PROJETO']
+
+    for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
+        if cc in df_tasks.columns: df_tasks['PROTOCOLO'] = df_tasks[cc]; break
+
     if 'PROTOCOLO' in df_tasks.columns:
         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
         df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True); df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].str.strip()
 
     st.markdown("---")
     falta = [c for c in ['MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'PROTOCOLO'] if c not in df_tasks.columns]
-    if falta: st.error(f"🚨 Faltam colunas: {', '.join(falta)}."); st.stop()
+    if falta: st.error(f"🚨 Faltam colunas: {', '.join(falta)}. Certifique-se de que a planilha possui LATITUDE PROJETO e LONGITUDE PROJETO."); st.stop()
     
     c1_f, c2_f = st.columns([1, 1])
     with c1_f:
-        cs = 'STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO'
+        # LÓGICA DE STATUS FOCADA NO SANEAMENTO (Prioriza STATUS CLIENTE)
+        cs = 'STATUS CLIENTE' if 'STATUS CLIENTE' in df_tasks.columns else ('STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO')
         if cs in df_tasks.columns:
             df_tasks[cs] = df_tasks[cs].astype(str).str.strip().str.upper()
             opts_s = sorted([str(x) for x in df_tasks[cs].unique() if str(x) != 'NAN'])
-            sel_s = st.multiselect("1. Status Roteirizáveis:", options=opts_s, default=[s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']])
+            default_s = [s for s in opts_s if s in ['APTO PARA CAMPO', 'EM CAMPO']] if 'FISCAL' in cs else opts_s
+            sel_s = st.multiselect("1. Status Roteirizáveis:", options=opts_s, default=default_s)
             if not sel_s: st.stop()
             df_tasks = df_tasks[df_tasks[cs].isin(sel_s)].copy()
             
     with c2_f:
-        if 'TIPO NOTA' in df_tasks.columns:
-            df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
-            opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
-            sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
-            df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
+        if 'TIPO DEMANDA' in df_tasks.columns:
+            df_tasks['TIPO DEMANDA'] = df_tasks['TIPO DEMANDA'].astype(str).str.strip().str.upper()
+            opts_n = sorted([str(x) for x in df_tasks['TIPO DEMANDA'].unique() if str(x) != 'NAN'])
+            sel_p = st.multiselect("🚨 2. Demandas de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if 'RELIGACAO' in n or 'EMERGENCIA' in n])
+            df_tasks['PRIORIDADE'] = df_tasks['TIPO DEMANDA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
         else: df_tasks['PRIORIDADE'] = 'Não'
 
-    cg1, cg2 = st.columns([4, 1])
-    with cg1: st.markdown("#### 🌍 Limpeza de Coordenadas Geográficas")
-    with cg2:
-        if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
+    st.markdown("#### 🌍 Limpeza de Coordenadas Geográficas")
+    if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
-    pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
     df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
     
-    m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
-    if m_m.sum() > 0:
-        df_tasks.loc[m_m, 'MOTIVO_REJEICAO'] = 'Município Vazio'
-        df_rej = pd.concat([df_rej, df_tasks[m_m].copy()], ignore_index=True); df_tasks = df_tasks[~m_m].copy()
-
     df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
     df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
     m_na, m_0 = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna(), (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
@@ -262,18 +278,9 @@ elif status_exec == "IDLE":
     mc = m_na | m_0 | m_pos | m_inv
     if mc.sum() > 0: df_rej = pd.concat([df_rej, df_tasks[mc].copy()], ignore_index=True); df_tasks = df_tasks[~mc].copy()
     
-    df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']; df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
+    df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']
     
     st.session_state.df_correcao_san = df_rej
-    if not df_rej.empty: 
-        st.markdown(f"""
-        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
-            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção</h4>
-            <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
-                <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
@@ -314,17 +321,21 @@ elif status_exec == "IDLE":
     st.session_state.df_unallocated_san, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
-    if df_ta.empty: st.error("Nenhuma obra pôde ser alocada."); st.stop()
+    if df_ta.empty: st.error("Nenhuma obra pôde ser alocada às equipes."); st.stop()
 
-    with st.expander("🛠️ Configuração de Saída", expanded=True):
+    with st.expander("🛠️ Configuração de Saída (Colunas)", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        cd = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'LEVANTADOR', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
+        
+        # OBRIGATÓRIAS - Saneamento NIP
+        cd = ['NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO']
+        
         cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
+        colunas_exibir = st.multiselect("Colunas que vão aparecer no Mapa e Excel:", tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_san': tbr, 'colunas_exibir_san': colunas_exibir})
+        # Velocidade cravada em 30km/h e tempo fixado em 45min
         st.session_state.vrp_state_san = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_san = "RUNNING"; tentar_rerun()
 
@@ -459,7 +470,7 @@ if status_exec == "RUNNING":
         st.session_state.vrp_status_san = "PACKAGING"; time.sleep(1); tentar_rerun()
 
 if status_exec == "PACKAGING":
-    st.markdown("## 📦 Empacotamento")
+    st.markdown("## 📦 Empacotamento Saneamento")
     df_routed, d_fmt = st.session_state.df_routed_san, datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
     try:
@@ -491,7 +502,7 @@ if status_exec == "PACKAGING":
                 else: linhas_gerais.append(r)
             
             df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_saneamento(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), st.session_state.colunas_originais_san)
+            dfg = limpar_colunas_saneamento(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM'], errors='ignore'), st.session_state.colunas_originais_san)
             dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
             for cc in dfg.columns:
                 if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
