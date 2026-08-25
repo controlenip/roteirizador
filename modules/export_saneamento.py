@@ -71,18 +71,13 @@ def limpar_colunas_saneamento(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
-    # Colunas bases da roteirização
     final_cols = ['FISCAL', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'PERIODO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'HORA_INICIO', 'HORA_FIM']
-    
-    # As colunas Obrigatórias solicitadas pelo usuário (Mapeamento normalizado)
     req_cols = ['NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO']
     
-    # Adicionando os Requisitos
     for req in req_cols:
         if req in df_alvo.columns and req not in final_cols:
             final_cols.append(req)
             
-    # Adicionando o que sobrou de forma orgânica
     if cols_originais is not None:
         for c in cols_originais:
             if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
@@ -97,8 +92,10 @@ def limpar_colunas_saneamento(df_alvo, cols_originais):
 
 def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
-    kml.append('<Style id="s_blue"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
-    kml.append('<Style id="s_red"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon></IconStyle></Style>')
+    
+    # KML Exclusivo: Apenas Azul (Normal) e Amarelo (Super Ponto)
+    kml.append('<Style id="s_blue"><IconStyle><scale>1.2</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
+    kml.append('<Style id="s_yellow"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle></Style>')
     
     colors = ['ff0000ff', 'ff00ff00', 'ffff0000', 'ff00ffff', 'ffffff00', 'ffff00ff']
     
@@ -109,9 +106,7 @@ def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tip
         
         for p_idx, p in enumerate(df_b['PERIODO'].unique()):
             df_p = df_b[df_b['PERIODO'] == p]
-            
             c_line = colors[p_idx % len(colors)]
-            kml.append(f'<Style id="s_line_{p_idx}"><LineStyle><color>{c_line}</color><width>4</width></LineStyle></Style>')
             
             nome_pasta_per = f"{tipo_periodo} {p}" if tipo_periodo == "Dia" else f"Semana {p}"
             pasta.append(f'<Folder><name>{nome_pasta_per}</name>')
@@ -121,26 +116,46 @@ def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tip
                 geom = r.get('ROTA_GEOMETRIA')
                 if isinstance(geom, list) and len(geom) > 0:
                     for pt in geom:
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                            coords_linha.append(f"{pt[0]},{pt[1]},0")
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2: coords_linha.append(f"{pt[0]},{pt[1]},0")
                 else:
                     lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                    if pd.notna(lat) and pd.notna(lon):
-                        coords_linha.append(f"{lon},{lat},0")
+                    if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
             
             if coords_linha:
-                pasta.append(f'<Placemark><name>Traçado da Rota</name><styleUrl>#s_line_{p_idx}</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+                kml.append(f'<Style id="s_line_{b}_{p_idx}"><LineStyle><color>{c_line}</color><width>4</width></LineStyle></Style>')
+                pasta.append(f'<Placemark><name>Traçado da Rota</name><styleUrl>#s_line_{b}_{p_idx}</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + '\n'.join(coords_linha) + '\n</coordinates></LineString></Placemark>')
 
             for _, r in df_p.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                 if pd.isna(lat) or pd.isna(lon): continue
                 
-                is_prio = r.get('PRIORIDADE') == 'Sim'
-                cor = "s_red" if is_prio else "s_blue"
+                is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r['_ORIGINAL_ROWS']) > 1
+                qty = len(r.get('_ORIGINAL_ROWS', [])) if is_sp else 1
                 
-                desc = '<table border="1">' + "".join([f'<tr><td>{html.escape(c)}</td><td>{funcao_formatadora(c, r.get(c,""))}</td></tr>' for c in colunas_exibir]) + '</table>'
-                pasta.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO")))}</name><styleUrl>#{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+                cor = "s_yellow" if is_sp else "s_blue"
+                nome_ponto = f"[{r.get('ORDEM', '')}] 🏢 SUPER PONTO ({qty} un.)" if is_sp else f"[{r.get('ORDEM', '')}] Doc: {r.get('PROTOCOLO', '')}"
+                bg_color = "#FFD700" if is_sp else "#0D256C"
+                text_color = "#000000" if is_sp else "#ffffff"
+
+                desc = f'''<![CDATA[
+                <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
+                    <div style="background:{bg_color}; color:{text_color}; padding:8px 10px; font-size:13px; font-weight:bold;">{html.escape(nome_ponto)}</div>
+                    <div style="padding:10px; background:#fafafa; font-size:12px;">
+                        <table style="width:100%; border-collapse:collapse;">
+                '''
+                
+                for c in colunas_exibir:
+                    if c.upper() in ['PROTOCOLO', 'NOTA']: continue
+                    if is_sp and c.upper() not in ['LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'ZONA', 'REGIONAL']:
+                        vals = [orig.get(c, '') for orig in r.get('_ORIGINAL_ROWS', [])]
+                        val_html = "<div style='max-height:80px; overflow-y:auto; border:1px solid #ccc; padding:4px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:2px;'><b>[{i+1}]</b> {funcao_formatadora(c, v)}</li>" for i, v in enumerate(vals)]) + "</ul></div>"
+                    else:
+                        val_html = funcao_formatadora(c, r.get(c, ''))
+                    desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:40%;'>{html.escape(c)}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
+
+                desc += "</table></div></div>]]>"
+                pasta.append(f'<Placemark><name>{html.escape(nome_ponto)}</name><styleUrl>#{cor}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
                 
             pasta.append('</Folder>')
         pasta.append('</Folder>')
@@ -167,7 +182,13 @@ def gerar_gpx_simples(df_kml, nome_rota):
     return "\n".join(gpx)
 
 def injetar_logo():
-    if os.path.exists("LOGO_NIP.png"): st.logo("LOGO_NIP.png", icon_image=None)
+    import os
+    import streamlit as st
+    if os.path.exists("LOGO_NIP.png"):
+        try:
+            st.logo("LOGO_NIP.png", link="/")
+        except:
+            st.logo("LOGO_NIP.png")
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO DEMANDA' in colunas_disponiveis:
