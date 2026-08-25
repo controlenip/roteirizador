@@ -136,7 +136,6 @@ if is_done and not st.session_state.df_routed_san.empty:
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
     
-    # Contagem matemática exata: Quantas notas reais estão dentro do df roteirizado
     tr_real = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in dfr_t.iterrows())
     qs_total = len(dfr_t[dfr_t['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in dfr_t.columns else 0
 
@@ -146,9 +145,6 @@ if is_done and not st.session_state.df_routed_san.empty:
     c3.markdown(render_metric_card("Super Pontos", qs_total, "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    # ---------------------------------------------------------
-    # JUSTIFICATIVA DE ROTEAMENTO (IA ANALÍTICA DE CAPACIDADE)
-    # ---------------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True)
     
     capacidade_diaria = obras_dia * te
@@ -213,7 +209,8 @@ elif status_exec == "IDLE":
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
                 
-                b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).strsplit(r'\s*\|\s*')
+                # LINHA CORRIGIDA: .str.split() em vez de .strsplit()
+                b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
                 
