@@ -21,7 +21,6 @@ from modules.export_saneamento import injetar_logo, identificar_icone_folium, ge
 st.set_page_config(page_title="Saneamento", page_icon="🧹", layout="wide")
 injetar_logo()
 
-# VACINA CSS: Garante que a logo fique com o tamanho nativo padrão (pequena) APENAS nesta página, sem mexer nas outras!
 st.markdown('''
     <style>
         [data-testid="stSidebarHeader"] img, [data-testid="stLogo"] img {
@@ -92,7 +91,6 @@ st.info("💡 Focado em operações de Saneamento Rápido. Exige Latitude/Longit
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Capacidade e Prazos", expanded=True):
-        # CORREÇÃO DO ERRO NAMEERROR: A variável trava_global foi adicionada
         trava_global = st.number_input("Trava Total de Tarefas:", min_value=0, value=0, step=50, disabled=is_locked)
         obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=25, disabled=is_locked)
         tpc = st.radio("Visão de Trabalho:", ["Dia", "Semana"], index=1, disabled=is_locked)
@@ -124,7 +122,7 @@ if is_done and not st.session_state.df_routed_san.empty:
     if not df_c.empty:
         st.markdown(f"""
         <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
-            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção (Verifique o ZIP)</h4>
+            <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_c)} Obras Retidas para Correção</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
                 <b>Justificativa Técnica:</b> Estas obras apresentaram coordenadas em branco, zeradas ou invertidas.
             </p>
@@ -135,16 +133,38 @@ if is_done and not st.session_state.df_routed_san.empty:
     dfr = st.session_state.df_routed_san.copy()
     dfr_t = dfr[~dfr['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
     
-    tr = len(dfr_t)
     te = dfr['BASE_ATRIBUIDA'].nunique()
     tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
-    tv = formatar_moeda(pd.to_numeric(dfr_t['VALOR DA OBRA'], errors='coerce').sum()) if 'VALOR DA OBRA' in dfr_t else "R$ 0,00"
+    
+    # Contagem matemática exata: Quantas notas reais estão dentro do df roteirizado
+    tr_real = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in dfr_t.iterrows())
+    qs_total = len(dfr_t[dfr_t['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in dfr_t.columns else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(render_metric_card("Tarefas Planejadas", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+    c1.markdown(render_metric_card("Tarefas Planejadas", tr_real, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
     c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
-    c3.markdown(render_metric_card("Valor Total (Se Aplicável)", tv, "💰", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("Super Pontos", qs_total, "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
+
+    # ---------------------------------------------------------
+    # JUSTIFICATIVA DE ROTEAMENTO (IA ANALÍTICA DE CAPACIDADE)
+    # ---------------------------------------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    capacidade_diaria = obras_dia * te
+    total_dias_rota = (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
+    capacidade_total_projeto = capacidade_diaria * total_dias_rota
+    obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in st.session_state.get('df_unallocated_san', pd.DataFrame()).iterrows())
+
+    if obras_nao_alocadas == 0:
+        st.success(f"✅ **100% de Aproveitamento Logístico:** O sistema operou com uma capacidade limite de absorção de **{capacidade_total_projeto} tarefas** ({te} equipes x {obras_dia} tarefas/dia x {total_dias_rota} dias). O roteamento encontrou espaço de sobra e englobou com sucesso todas as **{tr_real} tarefas válidas** fornecidas pela sua planilha.")
+    else:
+        if tr_real >= capacidade_total_projeto:
+            st.warning(f"⚠️ **Limite de Capacidade da Agenda Atingido:** O seu projeto foi configurado para absorver no máximo **{capacidade_total_projeto} tarefas** ({te} equipes x {obras_dia} tarefas/dia x {total_dias_rota} dias). O sistema trabalhou até a lotação máxima das equipes, por isso **{obras_nao_alocadas} tarefas ficaram de fora** do roteamento. <br><br>💡 *Ação Recomendada:* Para alocar o restante, aumente a Cota Diária, adicione mais Dias à visão de trabalho ou insira uma nova Equipe no arquivo base.", icon="⚠️")
+        else:
+            st.warning(f"⚠️ **Isolamento Geográfico (Tempo de Viagem Esgotado):** A capacidade máxima era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} tarefas não puderam ser encaixadas**. <br><br>📝 *Explicação Técnica:* Como o motor logístico obedece rigorosamente a velocidade média e a jornada diária, essas tarefas ficaram de fora por estarem excessivamente isoladas geograficamente. O tempo de direção até elas estouraria o dia de trabalho das equipes. <br><br>💡 *Ação Recomendada:* Posicione uma base mais próxima dessa região ou adicione dias extras ao roteamento.", icon="📍")
+            
+    st.markdown("---")
 
     st.markdown("### 🗺️ Mapa Operacional")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -164,7 +184,7 @@ if is_done and not st.session_state.df_routed_san.empty:
             
             for r in dp.to_dict('records'):
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                c_i = 'red' if str(r.get('PRIORIDADE')) == 'Sim' else 'blue'
+                c_i = 'orange' if str(r.get('SUPER_PONTO', '')).startswith('SIM') else 'blue'
                 ic = identificar_icone_folium(r, dfr.columns)
                 er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_san if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
                 pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
@@ -176,7 +196,7 @@ if is_done and not st.session_state.df_routed_san.empty:
     with t1: st.data_editor(st.session_state.df_routed_san.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore'), use_container_width=True)
     with t2:
         if not st.session_state.get('df_unallocated_san', pd.DataFrame()).empty:
-            st.warning(f"⚠️ {len(st.session_state.df_unallocated_san)} obras não couberam na cota de dias/equipes ou ficaram distantes demais.")
+            st.warning(f"⚠️ {len(st.session_state.df_unallocated_san)} obras não couberam na cota ou ficaram distantes demais.")
             st.dataframe(st.session_state.df_unallocated_san, use_container_width=True)
         else: st.success("✅ 100% das obras foram alocadas.")
 
@@ -193,7 +213,7 @@ elif status_exec == "IDLE":
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
                 
-                b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
+                b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).strsplit(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
                 
@@ -236,9 +256,6 @@ elif status_exec == "IDLE":
     
     df_tasks = pd.concat(dfs, ignore_index=True)
     
-    # -------------------------------------------------------------
-    # SINCRONIA MÁGICA: Mapeamento de Latitude/Longitude do Projeto
-    # -------------------------------------------------------------
     if 'LATITUDE PROJETO' in df_tasks.columns and 'LATITUDE' not in df_tasks.columns:
         df_tasks['LATITUDE'] = df_tasks['LATITUDE PROJETO']
     if 'LONGITUDE PROJETO' in df_tasks.columns and 'LONGITUDE' not in df_tasks.columns:
@@ -257,7 +274,6 @@ elif status_exec == "IDLE":
     
     c1_f, c2_f = st.columns([1, 1])
     with c1_f:
-        # LÓGICA DE STATUS FOCADA NO SANEAMENTO (Prioriza STATUS CLIENTE)
         cs = 'STATUS CLIENTE' if 'STATUS CLIENTE' in df_tasks.columns else ('STATUS DA FISCALIZACAO' if 'STATUS DA FISCALIZACAO' in df_tasks.columns else 'STATUS DA FISCALIZAÇÃO')
         if cs in df_tasks.columns:
             df_tasks[cs] = df_tasks[cs].astype(str).str.strip().str.upper()
@@ -340,17 +356,13 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída (Colunas)", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        
-        # OBRIGATÓRIAS - Saneamento NIP
         cd = ['NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO']
-        
         cp = [c for c in cd if c in tc]
         colunas_exibir = st.multiselect("Colunas que vão aparecer no Mapa e Excel:", tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_san': tbr, 'colunas_exibir_san': colunas_exibir})
-        # Velocidade cravada em 30km/h e tempo fixado em 45min
         st.session_state.vrp_state_san = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_san = "RUNNING"; tentar_rerun()
 
@@ -494,7 +506,7 @@ if status_exec == "PACKAGING":
             for b in df_routed['BASE_ATRIBUIDA'].unique():
                 db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
-                res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
+                res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_saneamento(pd.DataFrame(res)))
             
             dfc = st.session_state.get('df_correcao_san', pd.DataFrame())
@@ -505,26 +517,40 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            linhas_gerais = []
-            for _, r in df_routed.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                if isinstance(r.get('_ORIGINAL_ROWS'), list):
-                    for orig in r['_ORIGINAL_ROWS']:
-                        nr = r.copy()
-                        for k, v in orig.items(): 
-                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
-                        linhas_gerais.append(nr)
-                else: linhas_gerais.append(r)
+            fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
-            df_excel_full = pd.DataFrame(linhas_gerais)
-            dfg = limpar_colunas_saneamento(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM'], errors='ignore'), st.session_state.colunas_originais_san)
-            dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
-            for cc in dfg.columns:
-                if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Saneamento - {d_fmt}.xlsx", gerar_excel_saneamento(dfg, st.session_state.colunas_originais_san))
-            
+            # GERAÇÃO INDIVIDUAL PARA CADA EQUIPE NO SANEAMENTO
+            for b_name in fiscais_reais:
+                ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
+                df_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
+                dk = df_ind[~df_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                if dk.empty: continue
+
+                ld = []
+                for _, r in dk.iterrows():
+                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                        for orig in r['_ORIGINAL_ROWS']:
+                            nr = r.copy()
+                            for k, v in orig.items(): 
+                                if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
+                            ld.append(nr)
+                    else: ld.append(r)
+
+                if ld:
+                    dx = pd.DataFrame(ld)
+                    dx = limpar_colunas_saneamento(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM'], errors='ignore'), st.session_state.colunas_originais_san)
+                    dx = dx.loc[:, ~dx.columns.duplicated()].copy()
+                    for c in dx.columns:
+                        if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
+                    zx.writestr(f"ROTA_{ns} - {d_fmt}.xlsx", gerar_excel_saneamento(dx, st.session_state.colunas_originais_san))
+
+                kl = gerar_kml_saneamento(dk, f"ROTA_{ns}", st.session_state.colunas_exibir_san, [b_name], tpc, formatar_valor_coluna)
+                zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
+                zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
+
+            # ARQUIVOS TOTAIS
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-            ks = gerar_kml_saneamento(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir_san, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
+            ks = gerar_kml_saneamento(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir_san, fiscais_reais, tpc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
