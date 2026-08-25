@@ -43,13 +43,15 @@ def formatar_valor_coluna(c, v):
         if isinstance(v, (datetime, pd.Timestamp)): return formata_campo_html(v.strftime('%d/%m/%Y'))
         return formata_campo_html(str(v))
 
-def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade):
+def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade, is_continuo):
+    txt_modo = "Contínuo (Força Bruta)" if is_continuo else "Padrão (Com Limites)"
+    cor_modo = "#FF9800" if is_continuo else "#55B929"
     return f"""
     <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 20px;">
-        <h4 style="margin-top: 0; color: #0D256C; font-size: 16px; border-bottom: 2px solid #55B929; padding-bottom: 5px;">📊 Resumo da Capacidade</h4>
+        <h4 style="margin-top: 0; color: #0D256C; font-size: 16px; border-bottom: 2px solid #55B929; padding-bottom: 5px;">📊 Resumo da Operação</h4>
         <p style="margin-bottom: 5px; font-size: 14px;"><b>Equipes Ativas:</b> <span style="color: #0D256C; font-weight: bold;">{qtd_equipes_ativas}</span></p>
+        <p style="margin-bottom: 5px; font-size: 14px;"><b>Modo do Motor:</b> <span style="color: {cor_modo}; font-weight: bold;">{txt_modo}</span></p>
         <p style="margin-bottom: 5px; font-size: 14px;"><b>Cota p/ Equipe:</b> <span style="color: #d9534f; font-weight: bold;">{limite_por_equipe}</span> tarefas</p>
-        <p style="margin-bottom: 5px; font-size: 14px;"><b>Capacidade Total:</b> <span style="color: #55B929; font-weight: bold;">{total_capacidade}</span> tarefas</p>
         <hr style="margin: 10px 0; border: 0; border-top: 1px solid #ddd;">
         <p style="margin-bottom: 0; font-size: 15px; text-align: center;"><b>Tarefas Validadas:</b> <br><span style="font-size: 24px; color: #0D256C; font-weight: 900;">{total_obras_prontas}</span></p>
     </div>
@@ -86,15 +88,23 @@ is_done = st.session_state.roteamento_concluido_san
 is_locked = status_exec != "IDLE" or is_done
 
 st.markdown("<h1 class='brand-title'>🧹 Roteirizador Saneamento</h1>", unsafe_allow_html=True)
-st.info("💡 Focado em operações de Saneamento Rápido. Exige Latitude/Longitude na planilha.")
+st.info("💡 Focado em operações de Saneamento Rápido. Selecione o modo Contínuo se quiser absorver toda a carga sem travas.")
 
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
+    
+    modo_operacao = st.radio("Modo de Operação do Motor:", ["📌 Padrão (Respeitar Limites)", "🚀 Contínuo (Roteirizar 100%)"], index=0, disabled=is_locked)
+    is_continuo = "Contínuo" in modo_operacao
+
     with st.expander("Capacidade e Prazos", expanded=True):
         trava_global = st.number_input("Trava Total de Tarefas:", min_value=0, value=0, step=50, disabled=is_locked)
         obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=25, disabled=is_locked)
         tpc = st.radio("Visão de Trabalho:", ["Dia", "Semana"], index=1, disabled=is_locked)
-        limite_per = st.number_input(f"Qtd de {tpc}s de Rota:", min_value=1, value=1, disabled=is_locked)
+        
+        # Desabilita o limite de tempo se estiver no modo contínuo (pois ele criará dias infinitos)
+        limite_per = st.number_input(f"Qtd de {tpc}s de Rota:", min_value=1, value=1, disabled=is_locked or is_continuo)
+        if is_continuo: st.caption("*(Ignorado no modo Contínuo)*")
+            
         dias_sel = st.multiselect("Dias Úteis na Semana:", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"], default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], disabled=is_locked)
         data_ini = st.date_input("📅 Data de Início:", value=datetime.today(), disabled=is_locked)
         
@@ -152,13 +162,22 @@ if is_done and not st.session_state.df_routed_san.empty:
     capacidade_total_projeto = capacidade_diaria * total_dias_rota
     obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in st.session_state.get('df_unallocated_san', pd.DataFrame()).iterrows())
 
-    if obras_nao_alocadas == 0:
-        st.success(f"✅ **100% de Aproveitamento Logístico:** O sistema operou com uma capacidade limite de absorção de **{capacidade_total_projeto} tarefas** ({te} equipes x {obras_dia} tarefas/dia x {total_dias_rota} dias). O roteamento encontrou espaço de sobra e englobou com sucesso todas as **{tr_real} tarefas válidas** fornecidas pela sua planilha.")
-    else:
-        if tr_real >= capacidade_total_projeto:
-            st.warning(f"⚠️ **Limite de Capacidade da Agenda Atingido:** O seu projeto foi configurado para absorver no máximo **{capacidade_total_projeto} tarefas** ({te} equipes x {obras_dia} tarefas/dia x {total_dias_rota} dias). O sistema trabalhou até a lotação máxima das equipes, por isso **{obras_nao_alocadas} tarefas ficaram de fora** do roteamento. <br><br>💡 *Ação Recomendada:* Para alocar o restante, aumente a Cota Diária, adicione mais Dias à visão de trabalho ou insira uma nova Equipe no arquivo base.", icon="⚠️")
+    # IA Analítica Dinâmica baseada no Modo de Operação
+    is_continuo_res = st.session_state.vrp_state_san.get('config', {}).get('modo_continuo', False)
+
+    if is_continuo_res:
+        if obras_nao_alocadas == 0:
+            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. As travas de limite de tempo, quantidade de dias e barreiras de distância foram desativadas e o algoritmo expandiu a agenda automaticamente para absorver toda a carga.")
         else:
-            st.warning(f"⚠️ **Isolamento Geográfico (Tempo de Viagem Esgotado):** A capacidade máxima era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} tarefas não puderam ser encaixadas**. <br><br>📝 *Explicação Técnica:* Como o motor logístico obedece rigorosamente a velocidade média e a jornada diária, essas tarefas ficaram de fora por estarem excessivamente isoladas geograficamente. O tempo de direção até elas estouraria o dia de trabalho das equipes. <br><br>💡 *Ação Recomendada:* Posicione uma base mais próxima dessa região ou adicione dias extras ao roteamento.", icon="📍")
+            st.warning(f"⚠️ **Fuga Geográfica Total:** {obras_nao_alocadas} tarefas ficaram de fora pois não houve nenhuma equipe com raio geográfico mínimo compatível nem cruzamento base-IBGE. O motor operou em Força Bruta e esgotou as possibilidades lógicas de vínculo.")
+    else:
+        if obras_nao_alocadas == 0:
+            st.success(f"✅ **100% de Aproveitamento Logístico (Modo Padrão):** O sistema operou com capacidade limite de **{capacidade_total_projeto} tarefas**. O roteamento encontrou espaço e englobou com sucesso todas as **{tr_real} tarefas**.")
+        else:
+            if tr_real >= capacidade_total_projeto:
+                st.warning(f"⚠️ **Limite de Capacidade da Agenda Atingido:** O projeto foi configurado para absorver no máximo **{capacidade_total_projeto} tarefas**. O sistema encheu a lotação máxima das equipes, por isso **{obras_nao_alocadas} tarefas ficaram de fora** do roteamento. <br><br>💡 *Ação Recomendada:* Aumente os Dias, insira nova Equipe ou ative o modo 'Contínuo'.", icon="⚠️")
+            else:
+                st.warning(f"⚠️ **Isolamento Geográfico (Tempo de Viagem Esgotado):** A capacidade máxima era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} tarefas não puderam ser encaixadas**. <br><br>📝 *Explicação Técnica:* Como o motor logístico obedece rigorosamente a jornada diária, essas tarefas não foram englobadas por estarem muito isoladas (muito tempo de direção). <br><br>💡 *Ação Recomendada:* Posicione base mais próxima ou ative o 'Modo Contínuo'.", icon="📍")
             
     st.markdown("---")
 
@@ -192,7 +211,7 @@ if is_done and not st.session_state.df_routed_san.empty:
     with t1: st.data_editor(st.session_state.df_routed_san.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore'), use_container_width=True)
     with t2:
         if not st.session_state.get('df_unallocated_san', pd.DataFrame()).empty:
-            st.warning(f"⚠️ {len(st.session_state.df_unallocated_san)} obras não couberam na cota ou ficaram distantes demais.")
+            st.warning(f"⚠️ {len(st.session_state.df_unallocated_san)} obras ficaram sem alocação.")
             st.dataframe(st.session_state.df_unallocated_san, use_container_width=True)
         else: st.success("✅ 100% das obras foram alocadas.")
 
@@ -208,8 +227,6 @@ elif status_exec == "IDLE":
             for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR', 'FISCAL']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
-                
-                # LINHA CORRIGIDA: .str.split() em vez de .strsplit()
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
@@ -242,7 +259,7 @@ elif status_exec == "IDLE":
     
     qtd_eq = df_bases['BASE_NOME'].nunique()
     cm = obras_dia * (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
-    sb_html.markdown(render_sidebar_card(cm, 0, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
+    sb_html.markdown(render_sidebar_card(cm, 0, qtd_eq, cm * qtd_eq, is_continuo), unsafe_allow_html=True)
 
     dfs = []
     for f in task_files:
@@ -348,7 +365,7 @@ elif status_exec == "IDLE":
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
     st.session_state.df_unallocated_san, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
-    sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
+    sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq, is_continuo), unsafe_allow_html=True)
     if df_ta.empty: st.error("Nenhuma obra pôde ser alocada às equipes."); st.stop()
 
     with st.expander("🛠️ Configuração de Saída (Colunas)", expanded=True):
@@ -360,7 +377,8 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_san': tbr, 'colunas_exibir_san': colunas_exibir})
-        st.session_state.vrp_state_san = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        # Note que a variável modo_continuo agora viaja para dentro do motor
+        st.session_state.vrp_state_san = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota, 'modo_continuo': is_continuo}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_san = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -419,22 +437,30 @@ if status_exec == "RUNNING":
             es = gi(da)
 
             for o in ot:
-                if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
-                    st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
+                # SE MODO PADRÃO: Verifica se já estourou o limite de dias para abandonar a tarefa
+                if not cfg.get('modo_continuo', False):
+                    if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
+                        st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
 
                 qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
                 vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
                 vk = vkr * 1.3
+                
                 if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
                 else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
                 
                 cp = es['t'] + pd.Timedelta(minutes=vm)
-                if cp.hour >= 12 and not es['lu']:
-                    ls = max(es['t'], es['d'].replace(hour=12)); le = ls + pd.Timedelta(hours=1)
-                    rf.append({'o': None, 'il': True, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': es['l'], 'Lt': es['L'], 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': ls, 'hf': le, 'vm': 0.0, 'dk': 0.0})
-                    es['t'], es['lu'] = le, True; cp = es['t'] + pd.Timedelta(minutes=vm)
+
+                # SE MODO PADRÃO: Quebra pra horário de almoço
+                if not cfg.get('modo_continuo', False):
+                    if cp.hour >= 12 and not es.get('lu', False):
+                        ls = max(es['t'], es['d'].replace(hour=12)); le = ls + pd.Timedelta(hours=1)
+                        rf.append({'o': None, 'il': True, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': es['l'], 'Lt': es['L'], 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': ls, 'hf': le, 'vm': 0.0, 'dk': 0.0})
+                        es['t'], es['lu'] = le, True; cp = es['t'] + pd.Timedelta(minutes=vm)
+                
                 fp = cp + pd.Timedelta(minutes=em)
                 
+                # Independente do modo, vira a página do dia (cota máxima)
                 if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
@@ -443,8 +469,12 @@ if status_exec == "RUNNING":
                         dds += 1
                         if dds > len(cfg['dias_selecionados']): sa += 1; dds = 1
                     es = gi(da)
-                    if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
-                        st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
+                    
+                    # SE MODO PADRÃO: Verifica se no novo dia as travas não deixam entrar mais nota
+                    if not cfg.get('modo_continuo', False):
+                        if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
+                            st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
+                            
                     vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE']); vk = vkr * 1.3
                     if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
                     else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
@@ -453,9 +483,11 @@ if status_exec == "RUNNING":
                 rf.append({'o': o, 'il': False, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': o['LATITUDE'], 'Lt': o['LONGITUDE'], 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': cp, 'hf': fp, 'vm': vm, 'dk': vk})
                 es['l'], es['L'], es['t'], es['oh'] = o['LATITUDE'], o['LONGITUDE'], fp, es['oh'] + qr
                 
-            if es['oh'] > 0 and not ((cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos'])):
-                dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
-                rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
+            if es['oh'] > 0:
+                # SE MODO PADRÃO: SÓ BOTA RETORNO DA BASE SE NÃO ESTOUROU O LIMITE! NO CONTÍNUO, SEMPRE BOTA.
+                if cfg.get('modo_continuo', False) or not ((cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos'])):
+                    dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
+                    rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
             
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_san = st_v; tentar_rerun(); st.stop()
         else:
