@@ -44,12 +44,12 @@ def gerar_excel_saneamento(df, colunas_originais=None):
         if col_name in df_saida.columns:
             df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             
-    colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
+    colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY', 'LAT_NUM', 'LON_NUM']
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
-        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas')
+        df_saida.to_excel(writer, index=False, sheet_name='Saneamento Roteirizado')
+        formatar_planilha_openpyxl(writer, 'Saneamento Roteirizado')
         
     return output.getvalue()
 
@@ -57,8 +57,8 @@ def gerar_excel_resumo_saneamento(df_resumo):
     output = io.BytesIO()
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_resumo.to_excel(writer, index=False, sheet_name='Resumo Operacional')
-        formatar_planilha_openpyxl(writer, 'Resumo Operacional')
+        df_resumo.to_excel(writer, index=False, sheet_name='Resumo Saneamento')
+        formatar_planilha_openpyxl(writer, 'Resumo Saneamento')
     return output.getvalue()
 
 def limpar_colunas_saneamento(df_alvo, cols_originais):
@@ -72,17 +72,26 @@ def limpar_colunas_saneamento(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
+    # Colunas bases da roteirização
     final_cols = ['FISCAL', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'PERIODO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'HORA_INICIO', 'HORA_FIM']
-    if 'NOTA' in df_alvo.columns: final_cols.insert(1, 'NOTA')
     
+    # As colunas Obrigatórias solicitadas pelo usuário (Mapeamento normalizado)
+    req_cols = ['NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO']
+    
+    # Adicionando os Requisitos
+    for req in req_cols:
+        if req in df_alvo.columns and req not in final_cols:
+            final_cols.append(req)
+            
+    # Adicionando o que sobrou de forma orgânica
     if cols_originais is not None:
         for c in cols_originais:
             if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
                 final_cols.append(c)
                 
-    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
+    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC', 'LAT_NUM', 'LON_NUM']
     for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo:
+        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo and c not in ['LATITUDE', 'LONGITUDE']:
             final_cols.append(c)
             
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
@@ -179,9 +188,7 @@ def injetar_logo():
         ''', unsafe_allow_html=True)
 
 def identificar_icone_folium(row, colunas_disponiveis):
-    if 'TIPO NOTA' in colunas_disponiveis:
-        t = str(row.get('TIPO NOTA', '')).upper()
-        if t in ['UNR', 'ASC']: return 'bolt'
-        elif t in ['MGD', 'MTP']: return 'industry'
-        elif t == 'DIF': return 'exclamation-triangle'
+    if 'TIPO DEMANDA' in colunas_disponiveis:
+        t = str(row.get('TIPO DEMANDA', '')).upper()
+        if 'RELIGA' in t or 'LIGACAO' in t: return 'bolt'
     return 'map-marker'
