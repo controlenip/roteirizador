@@ -169,21 +169,18 @@ def gerar_gpx_simples(df_kml, nome_rota):
 
 def injetar_logo():
     if os.path.exists("LOGO_NIP.png"):
-        st.logo("LOGO_NIP.png", icon_image=None)
-        with open("LOGO_NIP.png", "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        st.markdown(f'''
+        try:
+            st.logo("LOGO_NIP.png", icon_image=None, link="/")
+        except:
+            st.logo("LOGO_NIP.png", icon_image=None)
+            
+        st.markdown('''
             <style>
-                [data-testid="stSidebarHeader"] img {{ display: none; }}
-                [data-testid="stSidebarHeader"] {{
-                    background-image: url('data:image/png;base64,{encoded_string}');
-                    background-repeat: no-repeat;
-                    background-position: left center;
-                    background-size: contain;
-                    padding-top: 80px !important;
-                    width: 100%;
-                    height: auto;
-                }}
+                [data-testid="stLogo"] img, [data-testid="stSidebarHeader"] img {
+                    height: 70px !important;
+                    max-height: 70px !important;
+                    width: auto !important;
+                }
             </style>
         ''', unsafe_allow_html=True)
 
