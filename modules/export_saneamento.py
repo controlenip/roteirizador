@@ -3,7 +3,6 @@ import io
 import html
 import os
 import streamlit as st
-import base64
 from openpyxl.styles import PatternFill, Font, Alignment
 from datetime import datetime
 
@@ -170,19 +169,9 @@ def gerar_gpx_simples(df_kml, nome_rota):
 def injetar_logo():
     if os.path.exists("LOGO_NIP.png"):
         try:
-            st.logo("LOGO_NIP.png", icon_image=None, link="/")
+            st.logo("LOGO_NIP.png", link="/")
         except:
-            st.logo("LOGO_NIP.png", icon_image=None)
-            
-        st.markdown('''
-            <style>
-                [data-testid="stLogo"] img, [data-testid="stSidebarHeader"] img {
-                    height: 70px !important;
-                    max-height: 70px !important;
-                    width: auto !important;
-                }
-            </style>
-        ''', unsafe_allow_html=True)
+            st.logo("LOGO_NIP.png")
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO DEMANDA' in colunas_disponiveis:
