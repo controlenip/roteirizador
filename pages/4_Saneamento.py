@@ -21,6 +21,19 @@ from modules.export_saneamento import injetar_logo, identificar_icone_folium, ge
 st.set_page_config(page_title="Saneamento", page_icon="🧹", layout="wide")
 injetar_logo()
 
+# VACINA CSS: Garante que a logo fique com o tamanho nativo padrão (pequena) APENAS nesta página, sem mexer nas outras!
+st.markdown('''
+    <style>
+        [data-testid="stSidebarHeader"] img, [data-testid="stLogo"] img {
+            max-height: 1.5rem !important;
+            height: auto !important;
+            width: auto !important;
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+    </style>
+''', unsafe_allow_html=True)
+
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
@@ -79,6 +92,8 @@ st.info("💡 Focado em operações de Saneamento Rápido. Exige Latitude/Longit
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
     with st.expander("Capacidade e Prazos", expanded=True):
+        # CORREÇÃO DO ERRO NAMEERROR: A variável trava_global foi adicionada
+        trava_global = st.number_input("Trava Total de Tarefas:", min_value=0, value=0, step=50, disabled=is_locked)
         obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=25, disabled=is_locked)
         tpc = st.radio("Visão de Trabalho:", ["Dia", "Semana"], index=1, disabled=is_locked)
         limite_per = st.number_input(f"Qtd de {tpc}s de Rota:", min_value=1, value=1, disabled=is_locked)
