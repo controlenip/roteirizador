@@ -167,11 +167,7 @@ def gerar_gpx_simples(df_kml, nome_rota):
     return "\n".join(gpx)
 
 def injetar_logo():
-    if os.path.exists("LOGO_NIP.png"):
-        try:
-            st.logo("LOGO_NIP.png", link="/")
-        except:
-            st.logo("LOGO_NIP.png")
+    if os.path.exists("LOGO_NIP.png"): st.logo("LOGO_NIP.png", icon_image=None)
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO DEMANDA' in colunas_disponiveis:
