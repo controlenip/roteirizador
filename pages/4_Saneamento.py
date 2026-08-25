@@ -88,7 +88,7 @@ is_done = st.session_state.roteamento_concluido_san
 is_locked = status_exec != "IDLE" or is_done
 
 st.markdown("<h1 class='brand-title'>🧹 Roteirizador Saneamento</h1>", unsafe_allow_html=True)
-st.info("💡 Focado em operações de Saneamento Rápido. Selecione o modo Contínuo se quiser absorver toda a carga sem travas.")
+st.info("💡 Focado em operações de Saneamento Rápido. Selecione o modo Contínuo se quiser absorver toda a carga vinculada ao município de cada equipe.")
 
 with st.sidebar:
     st.markdown("### ⚙️ Configurações Logísticas")
@@ -101,7 +101,6 @@ with st.sidebar:
         obras_dia = st.number_input("Cota Diária por Equipe:", min_value=1, value=25, disabled=is_locked)
         tpc = st.radio("Visão de Trabalho:", ["Dia", "Semana"], index=1, disabled=is_locked)
         
-        # Desabilita o limite de tempo se estiver no modo contínuo (pois ele criará dias infinitos)
         limite_per = st.number_input(f"Qtd de {tpc}s de Rota:", min_value=1, value=1, disabled=is_locked or is_continuo)
         if is_continuo: st.caption("*(Ignorado no modo Contínuo)*")
             
@@ -162,14 +161,13 @@ if is_done and not st.session_state.df_routed_san.empty:
     capacidade_total_projeto = capacidade_diaria * total_dias_rota
     obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in st.session_state.get('df_unallocated_san', pd.DataFrame()).iterrows())
 
-    # IA Analítica Dinâmica baseada no Modo de Operação
     is_continuo_res = st.session_state.vrp_state_san.get('config', {}).get('modo_continuo', False)
 
     if is_continuo_res:
         if obras_nao_alocadas == 0:
-            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. As travas de limite de tempo, quantidade de dias e barreiras de distância foram desativadas e o algoritmo expandiu a agenda automaticamente para absorver toda a carga.")
+            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. As travas foram desativadas e o algoritmo expandiu a agenda automaticamente englobando todas as notas referentes aos municípios de atuação das equipes.")
         else:
-            st.warning(f"⚠️ **Fuga Geográfica Total:** {obras_nao_alocadas} tarefas ficaram de fora pois não houve nenhuma equipe com raio geográfico mínimo compatível nem cruzamento base-IBGE. O motor operou em Força Bruta e esgotou as possibilidades lógicas de vínculo.")
+            st.warning(f"⚠️ **Fora da Área de Cobertura:** {obras_nao_alocadas} tarefas ficaram de fora pois não houve nenhuma equipe atrelada ao município correspondente. O motor operou em Força Bruta e esgotou as possibilidades lógicas de vínculo (Certifique-se de que a cidade foi atribuída a alguém na planilha).")
     else:
         if obras_nao_alocadas == 0:
             st.success(f"✅ **100% de Aproveitamento Logístico (Modo Padrão):** O sistema operou com capacidade limite de **{capacidade_total_projeto} tarefas**. O roteamento encontrou espaço e englobou com sucesso todas as **{tr_real} tarefas**.")
@@ -227,6 +225,7 @@ elif status_exec == "IDLE":
             for pn in ['NOME', 'EQUIPE', 'TECNICO', 'COLABORADOR', 'LEVANTADOR', 'FISCAL']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
             if 'BASE_NOME' in b_t.columns:
+                
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].astype(str).str.split(r'\s*\|\s*')
                 b_t = b_t.explode('BASE_NOME').reset_index(drop=True)
                 b_t['BASE_NOME'] = b_t['BASE_NOME'].str.strip().str.upper()
@@ -245,11 +244,25 @@ elif status_exec == "IDLE":
                             for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                    
+                    # MAGIA NIP: Cria a coluna limpa para cruzamento exato no "Por Município Rígido"
+                    if 'MUNICIPIO' in df_bases.columns:
+                        df_bases['MUN_LIMPO_BASE'] = normalizar_municipios(df_bases['MUNICIPIO'].astype(str).fillna(''))
+                    elif 'RESIDENCIA' in df_bases.columns:
+                        df_bases['MUN_LIMPO_BASE'] = normalizar_municipios(df_bases['RESIDENCIA'].astype(str).fillna(''))
+                    else:
+                        df_bases['MUN_LIMPO_BASE'] = ""
+                        
             else: st.error("❌ A planilha não possui coluna de nome da Equipe/Levantador.")
 
         st.markdown("##### 📍 Regra de Atribuição")
-        ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município Base"], index=0, label_visibility="collapsed")
-        st.caption("A proximidade empurra as obras para a equipe mais próxima no raio geral. Por Município isola a equipe.")
+        ta_index = 1 if is_continuo else 0
+        ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município da Planilha"], index=ta_index, disabled=is_continuo, label_visibility="collapsed")
+        
+        if is_continuo:
+            st.caption("🔒 **Bloqueado:** No Modo Contínuo, a IA amarra rigidamente as obras aos municípios definidos na planilha da equipe.")
+        else:
+            st.caption("A proximidade empurra as obras para a equipe mais próxima no raio geral. Por Município isola a equipe.")
 
     with c_up2:
         st.markdown("### 📁 2. Demandas (Obras)")
@@ -324,15 +337,22 @@ elif status_exec == "IDLE":
     if mc.sum() > 0: df_rej = pd.concat([df_rej, df_tasks[mc].copy()], ignore_index=True); df_tasks = df_tasks[~mc].copy()
     
     df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']
-    
     st.session_state.df_correcao_san = df_rej
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
     df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
+    
+    # Limpa o município das demandas e cruza com a equipe
+    df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'].astype(str).fillna(''))
 
     tbr = df_bases.to_dict('records')
-    fiscal_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
+    fiscal_anchors = {}
+    for b in tbr:
+        fn = b['BASE_NOME']
+        if fn not in fiscal_anchors or pd.notna(b.get('LATITUDE')):
+            fiscal_anchors[fn] = (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0)))
+
     assigned_tasks, unassigned_tasks = [], []
     
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
@@ -340,33 +360,39 @@ elif status_exec == "IDLE":
 
     for r in df_tasks.to_dict('records'):
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
-        ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
+        ms = r.get('MUN_LIMPO', '')
         
-        if "Município" in ta: vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
-        else: vb = tbr
+        # Filtro rígido do Saneamento por município
+        if "Município" in ta: 
+            vb = [b for b in tbr if b.get('MUN_LIMPO_BASE', '') == ms]
+        else: 
+            vb = tbr
             
         best_f, best_d = None, float('inf')
         
         if pd.notna(la) and pd.notna(lo) and vb:
             for b in vb:
                 f_name = b['BASE_NOME']
-                d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
+                b_lat = float(b.get('LATITUDE', fiscal_anchors.get(f_name, (0,0))[0]))
+                b_lon = float(b.get('LONGITUDE', fiscal_anchors.get(f_name, (0,0))[1]))
+                
+                d = haversine_scalar(la, lo, b_lat, b_lon)
                 if d < best_d:
                     best_d = d; best_f = f_name
                         
         if best_f:
-            r['BASE_ATRIBUIDA'], r['MUN_LIMPO'] = best_f, ms
+            r['BASE_ATRIBUIDA'] = best_f
             assigned_tasks.append(r)
             fiscal_anchors[best_f] = (la, lo)
         else:
-            r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Fora de Área (Sem Fiscal)", "NÃO ALOCADO"
+            r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Sem Equipe p/ este Município", "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
     df_ta, df_u = pd.DataFrame(assigned_tasks), pd.DataFrame(unassigned_tasks)
     st.session_state.df_unallocated_san, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq, is_continuo), unsafe_allow_html=True)
-    if df_ta.empty: st.error("Nenhuma obra pôde ser alocada às equipes."); st.stop()
+    if df_ta.empty: st.error("Nenhuma obra pôde ser alocada às equipes. Verifique os municípios."); st.stop()
 
     with st.expander("🛠️ Configuração de Saída (Colunas)", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
@@ -377,7 +403,6 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_san': tbr, 'colunas_exibir_san': colunas_exibir})
-        # Note que a variável modo_continuo agora viaja para dentro do motor
         st.session_state.vrp_state_san = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota, 'modo_continuo': is_continuo}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_san = "RUNNING"; tentar_rerun()
 
@@ -437,7 +462,6 @@ if status_exec == "RUNNING":
             es = gi(da)
 
             for o in ot:
-                # SE MODO PADRÃO: Verifica se já estourou o limite de dias para abandonar a tarefa
                 if not cfg.get('modo_continuo', False):
                     if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                         st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
@@ -451,7 +475,6 @@ if status_exec == "RUNNING":
                 
                 cp = es['t'] + pd.Timedelta(minutes=vm)
 
-                # SE MODO PADRÃO: Quebra pra horário de almoço
                 if not cfg.get('modo_continuo', False):
                     if cp.hour >= 12 and not es.get('lu', False):
                         ls = max(es['t'], es['d'].replace(hour=12)); le = ls + pd.Timedelta(hours=1)
@@ -460,7 +483,6 @@ if status_exec == "RUNNING":
                 
                 fp = cp + pd.Timedelta(minutes=em)
                 
-                # Independente do modo, vira a página do dia (cota máxima)
                 if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
@@ -470,7 +492,6 @@ if status_exec == "RUNNING":
                         if dds > len(cfg['dias_selecionados']): sa += 1; dds = 1
                     es = gi(da)
                     
-                    # SE MODO PADRÃO: Verifica se no novo dia as travas não deixam entrar mais nota
                     if not cfg.get('modo_continuo', False):
                         if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                             st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
@@ -484,7 +505,6 @@ if status_exec == "RUNNING":
                 es['l'], es['L'], es['t'], es['oh'] = o['LATITUDE'], o['LONGITUDE'], fp, es['oh'] + qr
                 
             if es['oh'] > 0:
-                # SE MODO PADRÃO: SÓ BOTA RETORNO DA BASE SE NÃO ESTOUROU O LIMITE! NO CONTÍNUO, SEMPRE BOTA.
                 if cfg.get('modo_continuo', False) or not ((cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos'])):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
@@ -548,7 +568,6 @@ if status_exec == "PACKAGING":
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
-            # GERAÇÃO INDIVIDUAL PARA CADA EQUIPE NO SANEAMENTO
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -577,7 +596,6 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            # ARQUIVOS TOTAIS
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_saneamento(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir_san, fiscais_reais, tpc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
