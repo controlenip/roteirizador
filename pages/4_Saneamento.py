@@ -113,7 +113,9 @@ with st.sidebar:
 
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked)
+        if is_continuo:
+            st.caption("⚠️ O motor desativará o traçado se o volume de notas for gigantesco.")
 
     sb_html = st.empty()
 
@@ -177,6 +179,18 @@ if is_done and not st.session_state.df_routed_san.empty:
             else:
                 st.warning(f"⚠️ **Isolamento Geográfico (Tempo de Viagem Esgotado):** A capacidade máxima era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} tarefas não puderam ser encaixadas**. <br><br>📝 *Explicação Técnica:* Como o motor logístico obedece rigorosamente a jornada diária, essas tarefas não foram englobadas por estarem muito isoladas (muito tempo de direção). <br><br>💡 *Ação Recomendada:* Posicione base mais próxima ou ative o 'Modo Contínuo'.", icon="📍")
             
+    # ==== QUADRO EXPLICATIVO VISUAL ====
+    st.markdown("""
+    <div style='background-color: #e8f4f8; border-left: 5px solid #17a2b8; padding: 15px; border-radius: 4px; margin-bottom: 20px; margin-top: 10px;'>
+        <h4 style='color: #0c5460; margin-top: 0; margin-bottom: 10px;'>💡 Por que algumas equipes receberam menos obras do que a Cota?</h4>
+        <p style='color: #0c5460; font-size: 14px; margin-bottom: 0;'>
+            O motor da inteligência artificial aloca as notas estritamente baseadas nas demandas disponíveis para o município ou região de cada equipe. 
+            Se a cota do projeto era de 125 obras, mas um fiscal recebeu apenas <b>9</b> ou <b>84</b>, isso significa matematicamente que <b>não havia mais notas para a cidade dele</b> na planilha original. O sistema executou e roteirizou 100% da carga de trabalho que existia para aquele território.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    # ===================================
+    
     st.markdown("---")
 
     st.markdown("### 🗺️ Mapa Operacional")
@@ -245,7 +259,6 @@ elif status_exec == "IDLE":
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
                     
-                    # MAGIA NIP: Cria a coluna limpa para cruzamento exato no "Por Município Rígido"
                     if 'MUNICIPIO' in df_bases.columns:
                         df_bases['MUN_LIMPO_BASE'] = normalizar_municipios(df_bases['MUNICIPIO'].astype(str).fillna(''))
                     elif 'RESIDENCIA' in df_bases.columns:
@@ -343,7 +356,6 @@ elif status_exec == "IDLE":
 
     df_tasks, qc = fundir_super_pontos(df_tasks, raio_metros=raio_sp, agrupar_por_levantador=False)
     
-    # Limpa o município das demandas e cruza com a equipe
     df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'].astype(str).fillna(''))
 
     tbr = df_bases.to_dict('records')
@@ -362,7 +374,6 @@ elif status_exec == "IDLE":
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = r.get('MUN_LIMPO', '')
         
-        # Filtro rígido do Saneamento por município
         if "Município" in ta: 
             vb = [b for b in tbr if b.get('MUN_LIMPO_BASE', '') == ms]
         else: 
