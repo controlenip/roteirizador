@@ -167,7 +167,7 @@ if is_done and not st.session_state.df_routed_san.empty:
 
     if is_continuo_res:
         if obras_nao_alocadas == 0:
-            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. As travas foram desativadas e o algoritmo expandiu a agenda automaticamente englobando todas as notas referentes aos municípios de atuação das equipes.")
+            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. O algoritmo dividiu a carga de forma justa entre equipes do mesmo município e expandiu a agenda automaticamente englobando todas as notas.")
         else:
             st.warning(f"⚠️ **Fora da Área de Cobertura:** {obras_nao_alocadas} tarefas ficaram de fora pois não houve nenhuma equipe atrelada ao município correspondente. O motor operou em Força Bruta e esgotou as possibilidades lógicas de vínculo (Certifique-se de que a cidade foi atribuída a alguém na planilha).")
     else:
@@ -182,10 +182,10 @@ if is_done and not st.session_state.df_routed_san.empty:
     # ==== QUADRO EXPLICATIVO VISUAL ====
     st.markdown("""
     <div style='background-color: #e8f4f8; border-left: 5px solid #17a2b8; padding: 15px; border-radius: 4px; margin-bottom: 20px; margin-top: 10px;'>
-        <h4 style='color: #0c5460; margin-top: 0; margin-bottom: 10px;'>💡 Por que algumas equipes receberam menos obras do que a Cota?</h4>
+        <h4 style='color: #0c5460; margin-top: 0; margin-bottom: 10px;'>⚖️ Regra de Divisão e Cota</h4>
         <p style='color: #0c5460; font-size: 14px; margin-bottom: 0;'>
-            O motor da inteligência artificial aloca as notas estritamente baseadas nas demandas disponíveis para o município ou região de cada equipe. 
-            Se a cota do projeto era de 125 obras, mas um fiscal recebeu apenas <b>9</b> ou <b>84</b>, isso significa matematicamente que <b>não havia mais notas para a cidade dele</b> na planilha original. O sistema executou e roteirizou 100% da carga de trabalho que existia para aquele território.
+            A Inteligência Artificial aloca as notas estritamente baseadas no município. Se um município tiver <b>múltiplas equipes cadastradas</b>, o sistema ativa a <b>Divisão Igualitária</b> para garantir que todas recebam a mesma fatia do bolo. 
+            Se no final da operação algumas equipes tiverem poucas obras (ex: 9 ou 84), isso significa puramente que a planilha esgotou todas as notas disponíveis para aquele território.
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -273,7 +273,7 @@ elif status_exec == "IDLE":
         ta = st.radio("Como amarrar as notas aos técnicos?", ["Por Proximidade Espacial", "Por Município da Planilha"], index=ta_index, disabled=is_continuo, label_visibility="collapsed")
         
         if is_continuo:
-            st.caption("🔒 **Bloqueado:** No Modo Contínuo, a IA amarra rigidamente as obras aos municípios definidos na planilha da equipe.")
+            st.caption("🔒 **Bloqueado:** No Modo Contínuo, a IA amarra rigidamente as obras aos municípios definidos na planilha da equipe e divide igualitariamente caso haja mais de um fiscal na cidade.")
         else:
             st.caption("A proximidade empurra as obras para a equipe mais próxima no raio geral. Por Município isola a equipe.")
 
@@ -365,6 +365,33 @@ elif status_exec == "IDLE":
         if fn not in fiscal_anchors or pd.notna(b.get('LATITUDE')):
             fiscal_anchors[fn] = (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0)))
 
+    # =========================================================================
+    # IA: MOTOR DE DIVISÃO IGUALITÁRIA POR MUNICÍPIO (BALANCEAMENTO DE CARGA)
+    # =========================================================================
+    mun_task_counts = {}
+    for r in df_tasks.to_dict('records'):
+        m = r.get('MUN_LIMPO', '')
+        qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
+        mun_task_counts[m] = mun_task_counts.get(m, 0) + qr
+
+    mun_teams = {}
+    mun_team_targets = {}
+    team_mun_counts = {b['BASE_NOME']: {} for b in tbr}
+
+    if "Município" in ta:
+        for b in tbr:
+            m = b.get('MUN_LIMPO_BASE', '')
+            if m not in mun_teams: mun_teams[m] = []
+            if b['BASE_NOME'] not in mun_teams[m]:
+                mun_teams[m].append(b['BASE_NOME'])
+                
+        for m, t_list in mun_teams.items():
+            if len(t_list) > 0:
+                total_m = mun_task_counts.get(m, 0)
+                # Define a meta matemática exata para cada equipe na cidade (Arredonda pra cima)
+                mun_team_targets[m] = int(np.ceil(total_m / len(t_list)))
+    # =========================================================================
+
     assigned_tasks, unassigned_tasks = [], []
     
     if trava_global > 0: df_tasks = df_tasks.head(trava_global)
@@ -373,9 +400,19 @@ elif status_exec == "IDLE":
     for r in df_tasks.to_dict('records'):
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = r.get('MUN_LIMPO', '')
+        qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
         
         if "Município" in ta: 
-            vb = [b for b in tbr if b.get('MUN_LIMPO_BASE', '') == ms]
+            # Pega todos os fiscais cadastrados para essa cidade
+            vb_all = [b for b in tbr if b.get('MUN_LIMPO_BASE', '') == ms]
+            target = mun_team_targets.get(ms, float('inf'))
+            
+            # Filtra apenas os fiscais que AINDA NÃO bateram a sua fatia da cota
+            vb = [b for b in vb_all if team_mun_counts.get(b['BASE_NOME'], {}).get(ms, 0) < target]
+            
+            # Se por causa de arredondamento todos baterem a cota, libera todos pra dividir a sobra
+            if not vb and vb_all: 
+                vb = vb_all
         else: 
             vb = tbr
             
@@ -395,6 +432,11 @@ elif status_exec == "IDLE":
             r['BASE_ATRIBUIDA'] = best_f
             assigned_tasks.append(r)
             fiscal_anchors[best_f] = (la, lo)
+            
+            # Atualiza o contador de obras daquele fiscal naquela cidade
+            if ms not in team_mun_counts[best_f]:
+                team_mun_counts[best_f][ms] = 0
+            team_mun_counts[best_f][ms] += qr
         else:
             r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Sem Equipe p/ este Município", "NÃO ALOCADO"
             unassigned_tasks.append(r)
