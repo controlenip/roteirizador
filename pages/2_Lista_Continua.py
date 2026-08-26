@@ -139,7 +139,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    # NOVO: Card de sucesso em 100% (Substitui as abas de tabelas de Obras Não Alocadas)
     st.success("✅ 100% das obras foram alocadas com sucesso.")
 
     st.markdown("### 🗺️ Mapa Operacional")
@@ -218,12 +217,20 @@ elif status_exec == "IDLE":
             df_tasks = df_tasks[df_tasks[cs].isin(sel_s)].copy()
             
     with c2_f:
-        if 'TIPO NOTA' in df_tasks.columns:
+        # --- LÓGICA DE PRIORIDADE DINÂMICA PELA COLUNA F (PRIORIDADE) ---
+        if 'PRIORIDADE' in df_tasks.columns:
+            # Qualquer valor não nulo e diferente de '0' vira Sim
+            df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].apply(
+                lambda x: 'Sim' if pd.notna(x) and str(x).strip() not in ['', '0', 'NÃO', 'NAO', 'FALSE'] else 'Não'
+            )
+            st.success("🎯 **Prioridade Ativada:** As obras marcadas na coluna 'PRIORIDADE' serão destacadas no roteiro.")
+        elif 'TIPO NOTA' in df_tasks.columns:
             df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
             opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
             sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
             df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
-        else: df_tasks['PRIORIDADE'] = 'Não'
+        else: 
+            df_tasks['PRIORIDADE'] = 'Não'
 
     st.markdown("#### 🌍 Limpeza Geográfica")
     if st.button("⏹️ Abortar Roteamento", use_container_width=True): limpar_roteirizador(); st.stop()
