@@ -60,7 +60,7 @@ def gerar_excel_resumo_saneamento(df_resumo):
         formatar_planilha_openpyxl(writer, 'Resumo Saneamento')
     return output.getvalue()
 
-def limpar_colunas_saneamento(df_alvo, cols_originais):
+def limpar_colunas_saneamento(df_alvo, cols_originais=None):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
     if 'PROTOCOLO' in df_alvo.columns:
@@ -71,29 +71,22 @@ def limpar_colunas_saneamento(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
-    final_cols = ['FISCAL', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'PERIODO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'HORA_INICIO', 'HORA_FIM']
-    req_cols = ['NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO']
+    # PADRONIZAÇÃO RÍGIDA: Apenas as colunas solicitadas, na ordem exata
+    colunas_exatas = [
+        'FISCAL', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'DISTANCIA_PONTO_ANTERIOR_KM', 
+        'NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 
+        'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 
+        'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO', 'ID', 
+        'CONTA CONTRATO', 'EMPRESA', 'REGIONAL', 'INSTALACAO', 'PRIORIDADE', 'SUPER_PONTO'
+    ]
     
-    for req in req_cols:
-        if req in df_alvo.columns and req not in final_cols:
-            final_cols.append(req)
+    final_cols = [c for c in colunas_exatas if c in df_alvo.columns]
             
-    if cols_originais is not None:
-        for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
-                final_cols.append(c)
-                
-    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC', 'LAT_NUM', 'LON_NUM']
-    for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo and c not in ['LATITUDE', 'LONGITUDE']:
-            final_cols.append(c)
-            
-    return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
+    return df_alvo[final_cols]
 
 def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_periodo, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
-    # KML Exclusivo: Apenas Azul (Normal) e Amarelo (Super Ponto)
     kml.append('<Style id="s_blue"><IconStyle><scale>1.2</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon></IconStyle></Style>')
     kml.append('<Style id="s_yellow"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle></Style>')
     
