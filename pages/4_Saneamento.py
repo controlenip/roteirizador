@@ -44,7 +44,7 @@ def formatar_valor_coluna(c, v):
         return formata_campo_html(str(v))
 
 def render_sidebar_card(limite_por_equipe, total_obras_prontas, qtd_equipes_ativas, total_capacidade, is_continuo):
-    txt_modo = "Contínuo (Força Bruta)" if is_continuo else "Padrão (Com Limites)"
+    txt_modo = "Contínuo (Força Bruta)" if is_continuo else "Padrão (Por Cota)"
     cor_modo = "#FF9800" if is_continuo else "#55B929"
     return f"""
     <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 20px;">
@@ -175,9 +175,9 @@ if is_done and not st.session_state.df_routed_san.empty:
             st.success(f"✅ **100% de Aproveitamento Logístico (Modo Padrão):** O sistema operou com capacidade limite de **{capacidade_total_projeto} tarefas**. O roteamento encontrou espaço e englobou com sucesso todas as **{tr_real} tarefas**.")
         else:
             if tr_real >= capacidade_total_projeto:
-                st.warning(f"⚠️ **Limite de Capacidade da Agenda Atingido:** O projeto foi configurado para absorver no máximo **{capacidade_total_projeto} tarefas**. O sistema encheu a lotação máxima das equipes, por isso **{obras_nao_alocadas} tarefas ficaram de fora** do roteamento. <br><br>💡 *Ação Recomendada:* Aumente os Dias, insira nova Equipe ou ative o modo 'Contínuo'.", icon="⚠️")
+                st.warning(f"⚠️ **Capacidade Matemática Atingida:** A capacidade máxima do projeto era de **{capacidade_total_projeto} tarefas**, mas **{obras_nao_alocadas} tarefas ficaram de fora**. <br><br>📝 *Explicação Técnica:* As travas de horário e almoço estão **desligadas**. O motor bateu exatamente a Cota de Obras de cada equipe, ignorando distâncias. As notas ficaram de fora unicamente porque o volume excede os dias configurados na tela. <br><br>💡 *Ação Recomendada:* Aumente o número de Semanas/Dias ou ative o 'Modo Contínuo'.", icon="⚠️")
             else:
-                st.warning(f"⚠️ **Isolamento Geográfico (Tempo de Viagem Esgotado):** A capacidade máxima era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} tarefas não puderam ser encaixadas**. <br><br>📝 *Explicação Técnica:* Como o motor logístico obedece rigorosamente a jornada diária, essas tarefas não foram englobadas por estarem muito isoladas (muito tempo de direção). <br><br>💡 *Ação Recomendada:* Posicione base mais próxima ou ative o 'Modo Contínuo'.", icon="📍")
+                st.warning(f"⚠️ **Capacidade Matemática Atingida:** A capacidade configurada era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} ficaram de fora**. <br><br>📝 *Explicação Técnica:* As travas de horário e almoço estão **desligadas**. Se as notas sobraram, é porque a quantidade exigiu mais Dias do que a sua tela permitiu gerar. <br><br>💡 *Ação Recomendada:* Aumente os Dias ou ative o 'Modo Contínuo'.", icon="📍")
             
     # ==== QUADRO EXPLICATIVO VISUAL ====
     st.markdown("""
@@ -365,9 +365,7 @@ elif status_exec == "IDLE":
         if fn not in fiscal_anchors or pd.notna(b.get('LATITUDE')):
             fiscal_anchors[fn] = (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0)))
 
-    # =========================================================================
-    # IA: MOTOR DE DIVISÃO IGUALITÁRIA POR MUNICÍPIO (BALANCEAMENTO DE CARGA)
-    # =========================================================================
+    # IA: DIVISÃO IGUALITÁRIA POR MUNICÍPIO
     mun_task_counts = {}
     for r in df_tasks.to_dict('records'):
         m = r.get('MUN_LIMPO', '')
@@ -388,9 +386,7 @@ elif status_exec == "IDLE":
         for m, t_list in mun_teams.items():
             if len(t_list) > 0:
                 total_m = mun_task_counts.get(m, 0)
-                # Define a meta matemática exata para cada equipe na cidade (Arredonda pra cima)
                 mun_team_targets[m] = int(np.ceil(total_m / len(t_list)))
-    # =========================================================================
 
     assigned_tasks, unassigned_tasks = [], []
     
@@ -403,16 +399,10 @@ elif status_exec == "IDLE":
         qr = len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1
         
         if "Município" in ta: 
-            # Pega todos os fiscais cadastrados para essa cidade
             vb_all = [b for b in tbr if b.get('MUN_LIMPO_BASE', '') == ms]
             target = mun_team_targets.get(ms, float('inf'))
-            
-            # Filtra apenas os fiscais que AINDA NÃO bateram a sua fatia da cota
             vb = [b for b in vb_all if team_mun_counts.get(b['BASE_NOME'], {}).get(ms, 0) < target]
-            
-            # Se por causa de arredondamento todos baterem a cota, libera todos pra dividir a sobra
-            if not vb and vb_all: 
-                vb = vb_all
+            if not vb and vb_all: vb = vb_all
         else: 
             vb = tbr
             
@@ -433,9 +423,7 @@ elif status_exec == "IDLE":
             assigned_tasks.append(r)
             fiscal_anchors[best_f] = (la, lo)
             
-            # Atualiza o contador de obras daquele fiscal naquela cidade
-            if ms not in team_mun_counts[best_f]:
-                team_mun_counts[best_f][ms] = 0
+            if ms not in team_mun_counts[best_f]: team_mun_counts[best_f][ms] = 0
             team_mun_counts[best_f][ms] += qr
         else:
             r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Sem Equipe p/ este Município", "NÃO ALOCADO"
@@ -511,31 +499,18 @@ if status_exec == "RUNNING":
                 while ct < da:
                     c += pd.Timedelta(days=1)
                     if c.weekday() in d_ok: ct += 1
-                return {'l': bl, 'L': bL, 't': c, 'd': c, 'oh': 0, 'lu': False}
+                return {'l': bl, 'L': bL, 't': c, 'd': c, 'oh': 0}
             es = gi(da)
 
             for o in ot:
+                # SE MODO PADRÃO: Respeita o limite imposto na tela.
                 if not cfg.get('modo_continuo', False):
                     if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                         st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
 
                 qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
-                vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
-                vk = vkr * 1.3
                 
-                if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
-                else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
-                
-                cp = es['t'] + pd.Timedelta(minutes=vm)
-
-                if not cfg.get('modo_continuo', False):
-                    if cp.hour >= 12 and not es.get('lu', False):
-                        ls = max(es['t'], es['d'].replace(hour=12)); le = ls + pd.Timedelta(hours=1)
-                        rf.append({'o': None, 'il': True, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': es['l'], 'Lt': es['L'], 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': ls, 'hf': le, 'vm': 0.0, 'dk': 0.0})
-                        es['t'], es['lu'] = le, True; cp = es['t'] + pd.Timedelta(minutes=vm)
-                
-                fp = cp + pd.Timedelta(minutes=em)
-                
+                # Se bater a cota, vira o dia
                 if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
@@ -548,11 +523,16 @@ if status_exec == "RUNNING":
                     if not cfg.get('modo_continuo', False):
                         if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                             st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
-                            
-                    vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE']); vk = vkr * 1.3
-                    if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
-                    else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
-                    cp = es['t'] + pd.Timedelta(minutes=vm); fp = cp + pd.Timedelta(minutes=em)
+                
+                # Processa a obra atual
+                vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
+                vk = vkr * 1.3
+                
+                if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
+                else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
+                
+                cp = es['t'] + pd.Timedelta(minutes=vm)
+                fp = cp + pd.Timedelta(minutes=em)
                 
                 rf.append({'o': o, 'il': False, 'ir': False, 'la': es['l'], 'La': es['L'], 'lt': o['LATITUDE'], 'Lt': o['LONGITUDE'], 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': cp, 'hf': fp, 'vm': vm, 'dk': vk})
                 es['l'], es['L'], es['t'], es['oh'] = o['LATITUDE'], o['LONGITUDE'], fp, es['oh'] + qr
@@ -583,8 +563,7 @@ if status_exec == "RUNNING":
             for it, (g, ds) in zip(rf, gd):
                 pv = it['s'] if cfg['tipo_periodo']=="Semana" else it['d']
                 dn = dp[datetime.strptime(it['dm'], '%d/%m/%Y').weekday()] if cfg['tipo_periodo']=="Semana" else f"Dia {it['d']}"
-                if it['il']: rdf.append({'PROTOCOLO': 'PAUSA_ALMOCO', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
-                elif it['ir']: rdf.append({'PROTOCOLO': 'RETORNO_BASE', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(it['dk'], 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
+                if it.get('ir', False): rdf.append({'PROTOCOLO': 'RETORNO_BASE', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(it['dk'], 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
                 else:
                     ob = it['o']; ob['ORDEM'], ob['NOME_DIA'], ob['DIA_MES'], ob['SEMANA'], ob['DIA'], ob['PERIODO'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, dn, it['dm'], it['s'], it['d'], pv, round(it['dk'], 2)
                     ob['ROTA_GEOMETRIA'] = [[it['Lt'], it['lt']], [it['Lt'], it['lt']]] if it['la']==bl and it['La']==bL else g
@@ -606,7 +585,7 @@ if status_exec == "PACKAGING":
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
-                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
+                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
                 res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_saneamento(pd.DataFrame(res)))
@@ -624,7 +603,7 @@ if status_exec == "PACKAGING":
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
-                dk = df_ind[~df_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                dk = df_ind[~df_ind['PROTOCOLO'].isin(['RETORNO_BASE'])]
                 if dk.empty: continue
 
                 ld = []
@@ -649,7 +628,7 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE'])]
             ks = gerar_kml_saneamento(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir_san, fiscais_reais, tpc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
