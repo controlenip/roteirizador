@@ -162,35 +162,63 @@ if is_done and not st.session_state.df_routed_san.empty:
     total_dias_rota = (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     capacidade_total_projeto = capacidade_diaria * total_dias_rota
     obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in st.session_state.get('df_unallocated_san', pd.DataFrame()).iterrows())
-
     is_continuo_res = st.session_state.vrp_state_san.get('config', {}).get('modo_continuo', False)
 
-    if is_continuo_res:
-        if obras_nao_alocadas == 0:
-            st.success(f"🚀 **100% de Aproveitamento Logístico (Modo Força Bruta):** O motor processou com sucesso todas as **{tr_real} tarefas válidas**. O algoritmo dividiu a carga de forma justa entre equipes do mesmo município e expandiu a agenda automaticamente englobando todas as notas.")
-        else:
-            st.warning(f"⚠️ **Fora da Área de Cobertura:** {obras_nao_alocadas} tarefas ficaram de fora pois não houve nenhuma equipe atrelada ao município correspondente. O motor operou em Força Bruta e esgotou as possibilidades lógicas de vínculo (Certifique-se de que a cidade foi atribuída a alguém na planilha).")
-    else:
-        if obras_nao_alocadas == 0:
-            st.success(f"✅ **100% de Aproveitamento Logístico (Modo Padrão):** O sistema operou com capacidade limite de **{capacidade_total_projeto} tarefas**. O roteamento encontrou espaço e englobou com sucesso todas as **{tr_real} tarefas**.")
-        else:
-            if tr_real >= capacidade_total_projeto:
-                st.warning(f"⚠️ **Capacidade Matemática Atingida:** A capacidade máxima do projeto era de **{capacidade_total_projeto} tarefas**, mas **{obras_nao_alocadas} tarefas ficaram de fora**. <br><br>📝 *Explicação Técnica:* As travas de horário e almoço estão **desligadas**. O motor bateu exatamente a Cota de Obras de cada equipe, ignorando distâncias. As notas ficaram de fora unicamente porque o volume excede os dias configurados na tela. <br><br>💡 *Ação Recomendada:* Aumente o número de Semanas/Dias ou ative o 'Modo Contínuo'.", icon="⚠️")
-            else:
-                st.warning(f"⚠️ **Capacidade Matemática Atingida:** A capacidade configurada era de **{capacidade_total_projeto} tarefas**, porém **{obras_nao_alocadas} ficaram de fora**. <br><br>📝 *Explicação Técnica:* As travas de horário e almoço estão **desligadas**. Se as notas sobraram, é porque a quantidade exigiu mais Dias do que a sua tela permitiu gerar. <br><br>💡 *Ação Recomendada:* Aumente os Dias ou ative o 'Modo Contínuo'.", icon="📍")
-            
-    # ==== QUADRO EXPLICATIVO VISUAL ====
-    st.markdown("""
-    <div style='background-color: #e8f4f8; border-left: 5px solid #17a2b8; padding: 15px; border-radius: 4px; margin-bottom: 20px; margin-top: 10px;'>
-        <h4 style='color: #0c5460; margin-top: 0; margin-bottom: 10px;'>⚖️ Regra de Divisão e Cota</h4>
-        <p style='color: #0c5460; font-size: 14px; margin-bottom: 0;'>
-            A Inteligência Artificial aloca as notas estritamente baseadas no município. Se um município tiver <b>múltiplas equipes cadastradas</b>, o sistema ativa a <b>Divisão Igualitária</b> para garantir que todas recebam a mesma fatia do bolo. 
-            Se no final da operação algumas equipes tiverem poucas obras (ex: 9 ou 84), isso significa puramente que a planilha esgotou todas as notas disponíveis para aquele território.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    # ===================================
+    # =========================================================================
+    # NOVO PAINEL EXPLICATIVO ÚNICO, GRANDE E CHAMATIVO (SEM TERMOS TÉCNICOS)
+    # =========================================================================
+    html_msg = ""
     
+    if obras_nao_alocadas == 0:
+        html_msg = f"""
+        <div style='background-color: #d4edda; border-left: 8px solid #28a745; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+            <h2 style='color: #155724; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>🎉 100% DAS OBRAS ROTEIRIZADAS!</h2>
+            <p style='color: #155724; font-size: 16px; margin-bottom: 10px;'>Todas as <b>{tr_real} tarefas válidas</b> foram distribuídas para as equipes com sucesso!</p>
+            <hr style='border-top: 1px solid #c3e6cb; margin: 15px 0;'>
+            <p style='color: #155724; font-size: 14px; margin-bottom: 0;'>
+                <b>⚖️ Regra de Divisão:</b> A carga foi dividida de forma justa por município. Se alguma equipe recebeu poucas obras (ex: 9 ou 20 na planilha de saída), significa puramente que <b>não havia mais notas disponíveis</b> para a cidade dela. O motor processou tudo.
+            </p>
+        </div>
+        """
+    else:
+        if is_continuo_res:
+            html_msg = f"""
+            <div style='background-color: #f8d7da; border-left: 8px solid #dc3545; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+                <h2 style='color: #721c24; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>⚠️ ÁREA DESCOBERTA: {obras_nao_alocadas} OBRAS SOBRARAM!</h2>
+                <p style='color: #721c24; font-size: 16px; margin-bottom: 10px;'>O motor tentou puxar tudo, mas <b>{obras_nao_alocadas} tarefas</b> ficaram sem equipe.</p>
+                <p style='color: #721c24; font-size: 15px; margin-bottom: 15px;'>
+                    <b>O que aconteceu?</b> Essas obras pertencem a municípios que <b>não possuem nenhuma equipe cadastrada</b> para eles. O sistema não tem para quem entregar essas notas.
+                </p>
+                <div style='background-color: #f5c6cb; padding: 12px; border-radius: 5px; margin-bottom: 15px; color: #721c24;'>
+                    <b>💡 COMO RESOLVER:</b> Verifique se todas as cidades presentes na sua planilha de Demandas (Obras) possuem pelo menos um fiscal atribuído a elas na planilha de Equipes.
+                </div>
+                <hr style='border-top: 1px solid #f5c6cb; margin: 15px 0;'>
+                <p style='color: #721c24; font-size: 14px; margin-bottom: 0;'>
+                    <b>⚖️ Regra de Divisão:</b> Nas cidades que possuíam equipe, a carga foi dividida justamente. Se alguém recebeu pouco, é porque sua cidade tinha poucas notas.
+                </p>
+            </div>
+            """
+        else:
+            html_msg = f"""
+            <div style='background-color: #fff3cd; border-left: 8px solid #ffc107; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+                <h2 style='color: #856404; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>⚠️ LIMITE ATINGIDO: {obras_nao_alocadas} OBRAS SOBRARAM!</h2>
+                <p style='color: #856404; font-size: 16px; margin-bottom: 10px;'>O sistema lotou a agenda das equipes, mas <b>{obras_nao_alocadas} tarefas</b> precisaram ficar de fora.</p>
+                <p style='color: #856404; font-size: 15px; margin-bottom: 15px;'>
+                    <b>O que aconteceu?</b> Você configurou a Cota máxima do projeto para suportar apenas <b>{capacidade_total_projeto} tarefas</b> (Cota x Dias x Equipes). A Inteligência Artificial encheu a meta exata de cada equipe e parou.
+                </p>
+                <div style='background-color: #ffeeba; padding: 12px; border-radius: 5px; margin-bottom: 15px; color: #856404;'>
+                    <b>💡 COMO RESOLVER:</b> Para fazer TODAS as obras caberem na agenda, aumente as <i>Semanas/Dias</i> na barra lateral, ou simplesmente ative o modo <b>🚀 Contínuo (Roteirizar 100%)</b>.
+                </div>
+                <hr style='border-top: 1px solid #ffe8a1; margin: 15px 0;'>
+                <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
+                    <b>⚖️ Regra de Divisão:</b> A carga alocada foi dividida de forma justa. Se alguma equipe preencheu apenas uma parte pequena da agenda (ex: 9 ou 80 obras), significa puramente que não havia mais notas para a cidade dela na planilha inteira.
+                </p>
+            </div>
+            """
+            
+    st.markdown(html_msg, unsafe_allow_html=True)
+    # =========================================================================
+
     st.markdown("---")
 
     st.markdown("### 🗺️ Mapa Operacional")
@@ -503,14 +531,12 @@ if status_exec == "RUNNING":
             es = gi(da)
 
             for o in ot:
-                # SE MODO PADRÃO: Respeita o limite de DIAS imposto na tela.
                 if not cfg.get('modo_continuo', False):
                     if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                         st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
 
                 qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
                 
-                # Se bater a COTA DIÁRIA, vira o dia
                 if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
