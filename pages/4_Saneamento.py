@@ -503,14 +503,14 @@ if status_exec == "RUNNING":
             es = gi(da)
 
             for o in ot:
-                # SE MODO PADRÃO: Respeita o limite imposto na tela.
+                # SE MODO PADRÃO: Respeita o limite de DIAS imposto na tela.
                 if not cfg.get('modo_continuo', False):
                     if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                         st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
 
                 qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
                 
-                # Se bater a cota, vira o dia
+                # Se bater a COTA DIÁRIA, vira o dia
                 if es['oh'] > 0 and (es['oh'] + qr > cfg['obras_por_dia']):
                     dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                     rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
@@ -524,7 +524,6 @@ if status_exec == "RUNNING":
                         if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
                             st.session_state.df_unallocated_san = pd.concat([st.session_state.get('df_unallocated_san', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
                 
-                # Processa a obra atual
                 vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
                 vk = vkr * 1.3
                 
@@ -585,7 +584,7 @@ if status_exec == "PACKAGING":
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
             res = []
             for b in df_routed['BASE_ATRIBUIDA'].unique():
-                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE']))]
+                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
                 qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
                 res.append({'Equipe': b, 'Obras Roteirizadas': sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in db.iterrows()), 'Super Pontos': qs, 'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)})
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_saneamento(pd.DataFrame(res)))
@@ -603,22 +602,29 @@ if status_exec == "PACKAGING":
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
-                dk = df_ind[~df_ind['PROTOCOLO'].isin(['RETORNO_BASE'])]
+                dk = df_ind[~df_ind['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 if dk.empty: continue
 
                 ld = []
                 for _, r in dk.iterrows():
-                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
+                    is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1
+                    sp_text = f"SIM ({len(r['_ORIGINAL_ROWS'])} Obras)" if is_sp else "NÃO"
+                    
+                    if is_sp:
                         for orig in r['_ORIGINAL_ROWS']:
                             nr = r.copy()
                             for k, v in orig.items(): 
                                 if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'ROTA_GEOMETRIA', 'PERIODO']: nr[k] = v
+                            nr['SUPER_PONTO'] = sp_text
                             ld.append(nr)
-                    else: ld.append(r)
+                    else: 
+                        r_copy = r.copy()
+                        r_copy['SUPER_PONTO'] = sp_text
+                        ld.append(r_copy)
 
                 if ld:
                     dx = pd.DataFrame(ld)
-                    dx = limpar_colunas_saneamento(dx.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM'], errors='ignore'), st.session_state.colunas_originais_san)
+                    dx = limpar_colunas_saneamento(dx, st.session_state.colunas_originais_san)
                     dx = dx.loc[:, ~dx.columns.duplicated()].copy()
                     for c in dx.columns:
                         if str(dx[c].dtype) == 'object': dx[c] = dx[c].astype(str).replace('nan', '')
@@ -628,7 +634,7 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE'])]
+            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_saneamento(dfk_total, "ROTA_TOTAL", st.session_state.colunas_exibir_san, fiscais_reais, tpc, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
             zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
