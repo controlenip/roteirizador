@@ -67,13 +67,14 @@ def limpar_colunas_saneamento(df_alvo, cols_originais=None):
         if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
         df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
         
+    # Transforma a base roteirizada na coluna exata LEVANTADOR
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
-        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
+        if 'LEVANTADOR' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['LEVANTADOR'])
+        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'LEVANTADOR'})
         
-    # PADRONIZAÇÃO RÍGIDA: Apenas as colunas solicitadas, na ordem exata
+    # PADRONIZAÇÃO RÍGIDA COM NOME LEVANTADOR
     colunas_exatas = [
-        'FISCAL', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'DISTANCIA_PONTO_ANTERIOR_KM', 
+        'LEVANTADOR', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'DISTANCIA_PONTO_ANTERIOR_KM', 
         'NOTA', 'STATUS CLIENTE', 'NOME', 'TIPO DEMANDA', 'MUNICIPIO', 'ENDERECO', 
         'BAIRRO', 'PONTO REFERENCIA', 'COMPLEMENTO', 'LATITUDE PROJETO', 'LONGITUDE PROJETO', 
         'CLASSIFICACAO AREA', 'TEL FIXO', 'TEL MOVEL', 'GRUPO TENSAO', 'ID', 
