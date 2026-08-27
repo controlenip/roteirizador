@@ -24,11 +24,9 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     try:
-        # Tira decimais dos Postes
         if 'POSTE' in c.upper(): return str(int(float(v)))
         
         vf = float(v)
-        # Regra de KM vs Metros
         if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM']: 
             return f"{vf:.2f} KM"
         elif 'DISTANCIA' in c.upper(): 
@@ -139,7 +137,21 @@ if is_done and not st.session_state.df_routed_lista.empty:
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    st.success("✅ 100% das obras foram alocadas com sucesso.")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ==== PAINEL LUMINOSO DE SUCESSO EXCLUSIVO DA LISTA CONTÍNUA ====
+    html_msg = f"""
+    <div style='background-color: #d4edda; border-left: 8px solid #28a745; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+        <h2 style='color: #155724; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>🎉 100% DAS OBRAS ROTEIRIZADAS!</h2>
+        <p style='color: #155724; font-size: 16px; margin-bottom: 10px;'>Todas as <b>{tr} tarefas válidas</b> presentes na sua planilha foram organizadas e processadas com sucesso!</p>
+        <hr style='border-top: 1px solid #c3e6cb; margin: 15px 0;'>
+        <p style='color: #155724; font-size: 14px; margin-bottom: 0;'>
+            <b>💡 Resumo Técnico:</b> O módulo de <b>Lista Contínua</b> opera sem limites de jornada ou cota de dias. A Inteligência Artificial respeitou a atribuição que você já fez na planilha e traçou a melhor rota possível (do ponto A ao Z) para <b>todas</b> as obras de cada levantador, sem deixar absolutamente nada para trás.
+        </p>
+    </div>
+    """
+    st.markdown(html_msg, unsafe_allow_html=True)
+    # ================================================================
 
     st.markdown("### 🗺️ Mapa Operacional")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -164,6 +176,10 @@ if is_done and not st.session_state.df_routed_lista.empty:
             folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
+
+    # REMOVIDA A ABA DE NÃO ALOCADOS
+    st.markdown("### 📊 Dados Tabulares")
+    st.data_editor(st.session_state.df_routed_lista.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore'), use_container_width=True)
 
 elif status_exec == "IDLE":
     st.markdown("### 📁 Demandas (Obras e Equipes)")
@@ -223,7 +239,7 @@ elif status_exec == "IDLE":
             df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].apply(
                 lambda x: 'Sim' if pd.notna(x) and str(x).strip() not in ['', '0', 'NÃO', 'NAO', 'FALSE'] else 'Não'
             )
-            st.success("🎯 **Prioridade Ativada:** As obras marcadas na coluna 'PRIORIDADE' serão destacadas no roteiro.")
+            st.success("🎯 **Prioridade Ativada:** As obras marcadas na coluna 'PRIORIDADE' serão destacadas no roteiro e no KML.")
         elif 'TIPO NOTA' in df_tasks.columns:
             df_tasks['TIPO NOTA'] = df_tasks['TIPO NOTA'].astype(str).str.strip().str.upper()
             opts_n = sorted([str(x) for x in df_tasks['TIPO NOTA'].unique() if str(x) != 'NAN'])
