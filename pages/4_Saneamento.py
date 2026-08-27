@@ -162,13 +162,10 @@ if is_done and not st.session_state.df_routed_san.empty:
     total_dias_rota = (len(dias_sel) if tpc == 'Semana' else 1) * limite_per
     capacidade_total_projeto = capacidade_diaria * total_dias_rota
     obras_nao_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in st.session_state.get('df_unallocated_san', pd.DataFrame()).iterrows())
+
     is_continuo_res = st.session_state.vrp_state_san.get('config', {}).get('modo_continuo', False)
 
-    # =========================================================================
-    # NOVO PAINEL EXPLICATIVO ÚNICO, GRANDE E CHAMATIVO (SEM TERMOS TÉCNICOS)
-    # =========================================================================
     html_msg = ""
-    
     if obras_nao_alocadas == 0:
         html_msg = f"""
         <div style='background-color: #d4edda; border-left: 8px solid #28a745; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
@@ -217,8 +214,6 @@ if is_done and not st.session_state.df_routed_san.empty:
             """
             
     st.markdown(html_msg, unsafe_allow_html=True)
-    # =========================================================================
-
     st.markdown("---")
 
     st.markdown("### 🗺️ Mapa Operacional")
