@@ -153,6 +153,9 @@ def gerar_txt_lista(df):
         info_extra = str(r.get('INFORMACOES EXTRAS', '')).strip()
         if info_extra.lower() in ['nan', 'none']: info_extra = ''
         
+        tipo_nota = str(r.get('TIPO NOTA', '')).strip()
+        if tipo_nota.lower() in ['nan', 'none']: tipo_nota = ''
+
         lat = str(r.get('LATITUDE', '')).strip()
         lon = str(r.get('LONGITUDE', '')).strip()
 
@@ -161,9 +164,8 @@ def gerar_txt_lista(df):
         bloco.append(f"NOME DO CLIENTE: {nome}")
         bloco.append(f"ENDEREÇO: {endereco_completo}")
         bloco.append(f"MUNICIPIO: {municipio}")
-        
-        if info_extra:
-            bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
+        bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
+        bloco.append(f"TIPO NOTA: {tipo_nota}")
         
         if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
             bloco.append(f"https://www.google.com.br/maps/place/{lat},{lon}")
@@ -176,6 +178,7 @@ def gerar_txt_lista(df):
 def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
+    # Injetando Estilos de Ícones Padrões e Contorno
     kml.append('<Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
     kml.append('<Style id="linha-ligacao-rede"><LineStyle><color>8800ffff</color><width>2</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
 
@@ -193,6 +196,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
     cores_kml = ['ff4b19e6', 'ffd4bc00', 'ffb5513f', 'ff889600', 'ff0098ff', 'ffb0279c', 'ff39dccd', 'ff148000', 'ffeb004b', 'ff1f618d', 'ffd35400', 'ff16a085', 'ff8e44ad', 'ff27ae60', 'ffe67e22']
 
+    # Gerando os estilos das linhas dinamicamente para cada levantador ter uma cor diferente
     for idx, b in enumerate(bases_ativas):
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         b_safe = re.sub(r'[^A-Za-z0-9]', '', str(b))
