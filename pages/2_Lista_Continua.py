@@ -16,7 +16,7 @@ from modules.data_processing import ler_planilha_cached, formata_campo_html, for
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
-from modules.export_lista import injetar_logo, identificar_icone_folium, gerar_excel_lista, gerar_excel_resumo_lista, gerar_gpx_simples, gerar_kml_lista, limpar_colunas_lista
+from modules.export_lista import injetar_logo, identificar_icone_folium, gerar_excel_lista, gerar_excel_resumo_lista, gerar_gpx_simples, gerar_kml_lista, limpar_colunas_lista, gerar_txt_lista
 
 st.set_page_config(page_title="Roteirizador - Lista Contínua", page_icon="📜", layout="wide")
 injetar_logo()
@@ -67,7 +67,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -103,6 +103,7 @@ with st.sidebar:
     if is_done and not st.session_state.df_routed_lista.empty:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
         st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas - {d_fmt}.zip", use_container_width=True)
+        st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
         st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
@@ -137,9 +138,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ==== PAINEL LUMINOSO DE SUCESSO EXCLUSIVO DA LISTA CONTÍNUA ====
     html_msg = f"""
     <div style='background-color: #d4edda; border-left: 8px solid #28a745; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
         <h2 style='color: #155724; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>🎉 100% DAS OBRAS ROTEIRIZADAS!</h2>
@@ -151,7 +149,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
     </div>
     """
     st.markdown(html_msg, unsafe_allow_html=True)
-    # ================================================================
 
     st.markdown("### 🗺️ Mapa Operacional")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -177,7 +174,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
-    # REMOVIDA A ABA DE NÃO ALOCADOS
     st.markdown("### 📊 Dados Tabulares")
     st.data_editor(st.session_state.df_routed_lista.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM'], errors='ignore'), use_container_width=True)
 
@@ -233,9 +229,7 @@ elif status_exec == "IDLE":
             df_tasks = df_tasks[df_tasks[cs].isin(sel_s)].copy()
             
     with c2_f:
-        # --- LÓGICA DE PRIORIDADE DINÂMICA PELA COLUNA F (PRIORIDADE) ---
         if 'PRIORIDADE' in df_tasks.columns:
-            # Qualquer valor não nulo e diferente de '0' vira Sim
             df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].apply(
                 lambda x: 'Sim' if pd.notna(x) and str(x).strip() not in ['', '0', 'NÃO', 'NAO', 'FALSE'] else 'Não'
             )
@@ -402,10 +396,13 @@ if status_exec == "PACKAGING":
     df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
 
     d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    bu_xl, bu_kml, bu_gpx, bu_txt = io.BytesIO(), io.BytesIO(), io.BytesIO(), io.BytesIO()
     
     try:
-        with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
+        with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, \
+             zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, \
+             zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg, \
+             zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt:
             
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
             obras_por_dia_est = st.session_state.vrp_state_lista.get('config', {}).get('obras_por_dia_est', 4.0)
@@ -508,6 +505,10 @@ if status_exec == "PACKAGING":
                 if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
             zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, st.session_state.colunas_originais_lista))
             
+            # --- TXT TOTAL ---
+            txt_total = gerar_txt_lista(df_excel_full)
+            zt.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.txt", txt_total.encode('utf-8'))
+            
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
             if not dfk_total.empty:
                 dfk_total['DIA_SEMANA'] = dia_semana_str
@@ -529,6 +530,11 @@ if status_exec == "PACKAGING":
                         if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
                     zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_lista(dfg, st.session_state.colunas_originais_lista))
                     
+                    # --- TXT INDIVIDUAL ---
+                    txt_ind = gerar_txt_lista(df_base_excel)
+                    if txt_ind:
+                        zt.writestr(f"Relatorios_TXT_{d_fmt}/Relatorio_{b_safe}.txt", txt_ind.encode('utf-8'))
+                    
                 dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
                 if not dfk_base.empty:
                     dfk_base['DIA_SEMANA'] = dia_semana_str
@@ -539,6 +545,9 @@ if status_exec == "PACKAGING":
                     zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
                     zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
-        st.session_state.bytes_zip_xl_lista, st.session_state.bytes_zip_kml_lista, st.session_state.bytes_zip_gpx_lista = bu_xl.getvalue(), bu_kml.getvalue(), bu_gpx.getvalue()
+        st.session_state.bytes_zip_xl_lista = bu_xl.getvalue()
+        st.session_state.bytes_zip_kml_lista = bu_kml.getvalue()
+        st.session_state.bytes_zip_gpx_lista = bu_gpx.getvalue()
+        st.session_state.bytes_zip_txt_lista = bu_txt.getvalue()
         st.session_state.roteamento_concluido_lista = True; st.session_state.vrp_status_lista = "IDLE"; tentar_rerun()
     except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status_lista = "IDLE"
