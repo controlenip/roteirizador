@@ -122,10 +122,60 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
                 
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
+def gerar_txt_lista(df):
+    """Gera um arquivo de texto com blocos contendo detalhes de cada obra e link do Google Maps."""
+    linhas_txt = []
+    for _, r in df.iterrows():
+        nota = str(r.get('NOTA', r.get('PROTOCOLO', ''))).strip()
+        if nota.lower() in ['nan', 'none', '']: nota = '-'
+        
+        nome = str(r.get('NOME', '')).strip()
+        if nome.lower() in ['nan', 'none']: nome = ''
+        
+        endereco = str(r.get('ENDERECO', '')).strip()
+        if endereco.lower() in ['nan', 'none']: endereco = ''
+        
+        bairro = str(r.get('BAIRRO', r.get('LOCALIDADE', ''))).strip()
+        if bairro.lower() in ['nan', 'none']: bairro = ''
+        
+        if bairro and endereco:
+            endereco_completo = f"{endereco} / {bairro}"
+        elif endereco:
+            endereco_completo = endereco
+        elif bairro:
+            endereco_completo = bairro
+        else:
+            endereco_completo = '-'
+
+        municipio = str(r.get('MUNICIPIO', '')).strip()
+        if municipio.lower() in ['nan', 'none']: municipio = '-'
+        
+        info_extra = str(r.get('INFORMACOES EXTRAS', '')).strip()
+        if info_extra.lower() in ['nan', 'none']: info_extra = ''
+        
+        lat = str(r.get('LATITUDE', '')).strip()
+        lon = str(r.get('LONGITUDE', '')).strip()
+
+        bloco = []
+        bloco.append(f"NOTA CCS: {nota}")
+        bloco.append(f"NOME DO CLIENTE: {nome}")
+        bloco.append(f"ENDEREÇO: {endereco_completo}")
+        bloco.append(f"MUNICIPIO: {municipio}")
+        
+        if info_extra:
+            bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
+        
+        if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
+            bloco.append(f"https://www.google.com.br/maps/place/{lat},{lon}")
+        
+        linhas_txt.append("\n".join(bloco))
+        linhas_txt.append("\n-------------------------------------------------------------------------------------------------------------------------\n")
+        
+    return "".join(linhas_txt)
+
 def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
-    # Injetando Estilos de Ícones Padrões e Contorno
     kml.append('<Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
     kml.append('<Style id="linha-ligacao-rede"><LineStyle><color>8800ffff</color><width>2</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
 
@@ -143,7 +193,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
     cores_kml = ['ff4b19e6', 'ffd4bc00', 'ffb5513f', 'ff889600', 'ff0098ff', 'ffb0279c', 'ff39dccd', 'ff148000', 'ffeb004b', 'ff1f618d', 'ffd35400', 'ff16a085', 'ff8e44ad', 'ff27ae60', 'ffe67e22']
 
-    # Gerando os estilos das linhas dinamicamente para cada levantador ter uma cor diferente
     for idx, b in enumerate(bases_ativas):
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         b_safe = re.sub(r'[^A-Za-z0-9]', '', str(b))
