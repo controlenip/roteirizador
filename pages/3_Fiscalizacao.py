@@ -19,11 +19,25 @@ from modules.data_processing import ler_planilha_cached, formatar_moeda, formata
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
 from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 
-# IMPORTAÇÃO CORRIGIDA: AGORA PUXA DO EXPORT_FISC
+# IMPORTAÇÃO DA EXPORTAÇÃO
 from modules.export_fisc import injetar_logo, gerar_excel_fisc, gerar_excel_resumo_fisc, gerar_gpx_simples, gerar_kml_fisc, identificar_icone_folium, limpar_colunas_fisc
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 injetar_logo()
+
+# ==========================================
+# NOVA FUNÇÃO DE CORREÇÃO GEOGRÁFICA
+# ==========================================
+def corrigir_coord(val, limite):
+    """Garante que coordenadas sem ponto decimal sejam reduzidas ao limite geográfico do globo"""
+    if pd.isna(val): return np.nan
+    v = float(val)
+    iters = 0
+    # Enquanto o valor absoluto for maior que o limite (Ex: > 90 para Lat), dividimos por 10
+    while abs(v) > limite and iters < 10:
+        v /= 10.0
+        iters += 1
+    return v
 
 # ==========================================
 # FUNÇÕES VISUAIS E AUXILIARES
@@ -338,7 +352,6 @@ elif status_exec == "IDLE":
                 if sel:
                     df_bases = b_t[b_t['LEVANTADOR'].isin(sel)].copy()
                     
-                    # CORREÇÃO: Cria a coluna Normalizada para Bater com as Obras
                     cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
                     if cr in df_bases.columns:
                         df_bases['MUN_LIMPO_BASE'] = normalizar_municipios(df_bases[cr])
@@ -346,6 +359,11 @@ elif status_exec == "IDLE":
                     if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
                         df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
                         df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+                        
+                        # APLICA A CORREÇÃO DE ESCALA PARA LIMITES DO GLOBO (BASES)
+                        df_bases['LATITUDE'] = df_bases['LATITUDE'].apply(lambda x: corrigir_coord(x, 90))
+                        df_bases['LONGITUDE'] = df_bases['LONGITUDE'].apply(lambda x: corrigir_coord(x, 180))
+                        
                     elif cr in df_bases.columns:
                         mc = {}
                         with st.spinner("🌍 Mapeando bases..."):
@@ -410,6 +428,11 @@ elif status_exec == "IDLE":
 
     df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
     df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+    
+    # APLICA A CORREÇÃO DE ESCALA PARA LIMITES DO GLOBO (OBRAS)
+    df_tasks['LAT_NUM'] = df_tasks['LAT_NUM'].apply(lambda x: corrigir_coord(x, 90))
+    df_tasks['LON_NUM'] = df_tasks['LON_NUM'].apply(lambda x: corrigir_coord(x, 180))
+
     m_na, m_0 = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna(), (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
     df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Inválida'
     df_tasks.loc[m_0 & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada'
@@ -461,7 +484,6 @@ elif status_exec == "IDLE":
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
         ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
         
-        # CORREÇÃO: Match Exato do Município Limpo
         if "Município" in ta: 
             vb = [b for b in tbr if str(b.get('MUN_LIMPO_BASE', '')) == ms]
         else: 
@@ -636,7 +658,6 @@ if status_exec == "PACKAGING":
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
                 out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
             
-            # Desagrupamento Cauteloso para Preservar Colunas Base
             linhas_gerais = []
             for _, r in df_routed.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -658,7 +679,6 @@ if status_exec == "PACKAGING":
             
             fiscais_reais = [f for f in df_routed['BASE_ATRIBUIDA'].unique() if f != "NÃO ALOCADO"]
             
-            # Exports Individuais
             for b_name in fiscais_reais:
                 ns = re.sub(r'[^A-Za-z0-9_ ]', '', str(b_name)).replace(" ", "_").upper()
                 df_fisc_ind = df_routed[df_routed['BASE_ATRIBUIDA'] == b_name]
@@ -687,7 +707,6 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_{ns} - {d_fmt}.kml", kl.encode('utf-8'))
                 zg.writestr(f"GPS_{ns} - {d_fmt}.gpx", gerar_gpx_simples(dk, f"ROTA_{ns}").encode('utf-8'))
 
-            # Exports Totais
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
             ks = gerar_kml_fisc(dfk_total, f"ROTA_TOTAL", st.session_state.colunas_exibir_fisc, fiscais_reais, formatar_valor_coluna)
             zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
