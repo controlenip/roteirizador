@@ -149,7 +149,10 @@ if is_done and not st.session_state.df_routed.empty:
     for bn in dfr['BASE_ATRIBUIDA'].unique().tolist():
         cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
         db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
-        fg = folium.FeatureGroup(name=f"Rota: {bn}", show=False)
+        
+        # Limpando caracteres nocivos do nome da base para o FeatureGroup
+        bn_safe = str(bn).replace("{", "[").replace("}", "]")
+        fg = folium.FeatureGroup(name=f"Rota: {bn_safe}", show=False)
         
         for pe in db['PERIODO'].unique():
             dp = db[db['PERIODO'] == pe]
@@ -162,7 +165,13 @@ if is_done and not st.session_state.df_routed.empty:
                 c_i = 'red' if str(r.get('PRIORIDADE')) == 'Sim' else 'blue'
                 ic = identificar_icone_folium(r, dfr.columns)
                 er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
+                
                 pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
+                
+                # --- PREVENÇÃO CONTRA ERRO DO JINJA2 ---
+                # Isso converte qualquer chave {} existente nos dados em código HTML seguro
+                pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
+                
                 folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
