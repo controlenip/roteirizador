@@ -132,7 +132,8 @@ def gerar_txt_lista(df):
         nome = str(r.get('NOME', '')).strip()
         if nome.lower() in ['nan', 'none']: nome = ''
         
-        endereco = str(r.get('ENDERECO', '')).strip()
+        # Ajuste para capturar Endereço com ou sem acento
+        endereco = str(r.get('ENDEREÇO', r.get('ENDERECO', ''))).strip()
         if endereco.lower() in ['nan', 'none']: endereco = ''
         
         bairro = str(r.get('BAIRRO', r.get('LOCALIDADE', ''))).strip()
@@ -150,8 +151,9 @@ def gerar_txt_lista(df):
         municipio = str(r.get('MUNICIPIO', '')).strip()
         if municipio.lower() in ['nan', 'none']: municipio = '-'
         
-        info_extra = str(r.get('INFORMACOES EXTRAS', '')).strip()
-        if info_extra.lower() in ['nan', 'none']: info_extra = ''
+        # --- AJUSTE PRINCIPAL: Capturando da coluna INFORMAÇÕES ---
+        info_extra = str(r.get('INFORMAÇÕES', r.get('INFORMACOES', ''))).strip()
+        if info_extra.lower() in ['nan', 'none', '']: info_extra = ''
         
         tipo_nota = str(r.get('TIPO NOTA', '')).strip()
         if tipo_nota.lower() in ['nan', 'none']: tipo_nota = ''
