@@ -150,7 +150,6 @@ if is_done and not st.session_state.df_routed.empty:
         cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
         db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
         
-        # Limpando caracteres nocivos do nome da base para o FeatureGroup
         bn_safe = str(bn).replace("{", "[").replace("}", "]")
         fg = folium.FeatureGroup(name=f"Rota: {bn_safe}", show=False)
         
@@ -167,9 +166,6 @@ if is_done and not st.session_state.df_routed.empty:
                 er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
                 
                 pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
-                
-                # --- PREVENÇÃO CONTRA ERRO DO JINJA2 ---
-                # Isso converte qualquer chave {} existente nos dados em código HTML seguro
                 pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
                 
                 folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
@@ -526,15 +522,32 @@ if status_exec == "RUNNING":
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
             ei = min(oi + (30 if cfg['tracado_real'] else len(rf)), len(rf))
+            
             for i in range(oi, ei):
                 it = rf[i]
-                if not cfg['tracado_real']: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                if not cfg['tracado_real']: 
+                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
                 else:
-                    if i%5==0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
+                    if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
-                    time.sleep(0.15)
-                    try: gd.append(obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh']))
-                    except: gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                    
+                    # --- BLOCO DE RECUPERAÇÃO E ESPERA SEGURA (RETRY DO OSRM) ---
+                    sucesso_rota = False
+                    for tentativa in range(3): # Tenta até 3 vezes puxar a rota real
+                        try:
+                            time.sleep(0.4) # Aumentado de 0.15 para 0.4 para evitar bloqueio pelo servidor
+                            rota = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                            if rota and len(rota) > 0 and len(rota[0]) > 0:
+                                gd.append(rota)
+                                sucesso_rota = True
+                                break
+                        except Exception:
+                            time.sleep(1.5) # Se o servidor derrubar, aguarda 1.5s para esfriar a conexão e tenta de novo
+                            
+                    # Se falhar nas 3 tentativas, aciona o fallback com linha reta para o App não travar
+                    if not sucesso_rota:
+                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+            
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
             
