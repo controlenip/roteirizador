@@ -132,7 +132,6 @@ def gerar_txt_lista(df):
         nome = str(r.get('NOME', '')).strip()
         if nome.lower() in ['nan', 'none']: nome = ''
         
-        # Ajuste para capturar Endereço com ou sem acento
         endereco = str(r.get('ENDEREÇO', r.get('ENDERECO', ''))).strip()
         if endereco.lower() in ['nan', 'none']: endereco = ''
         
@@ -151,9 +150,15 @@ def gerar_txt_lista(df):
         municipio = str(r.get('MUNICIPIO', '')).strip()
         if municipio.lower() in ['nan', 'none']: municipio = '-'
         
-        # --- AJUSTE PRINCIPAL: Capturando da coluna INFORMAÇÕES ---
-        info_extra = str(r.get('INFORMAÇÕES', r.get('INFORMACOES', ''))).strip()
-        if info_extra.lower() in ['nan', 'none', '']: info_extra = ''
+        # --- BUSCA ESTRITA E EXCLUSIVA DA COLUNA "INFORMAÇÕES" (COLUNA AA) ---
+        info_extra = r.get('INFORMAÇÕES')
+        if pd.isna(info_extra): 
+            info_extra = r.get('INFORMACOES') # Tenta sem acento caso o pandas tenha normalizado
+            
+        if pd.isna(info_extra) or str(info_extra).strip().lower() in ['nan', 'none', '']:
+            info_extra = ''
+        else:
+            info_extra = str(info_extra).strip()
         
         tipo_nota = str(r.get('TIPO NOTA', '')).strip()
         if tipo_nota.lower() in ['nan', 'none']: tipo_nota = ''
