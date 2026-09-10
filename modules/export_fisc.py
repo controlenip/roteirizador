@@ -54,12 +54,12 @@ def limpar_colunas_fisc(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
-    final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'FISCAL']:
+            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
                 final_cols.append(c)
                 
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
@@ -86,41 +86,41 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
-        
-        # Como é modo contínuo, ignora periodos no KML
-        pasta.append(f'<Folder><name>Rota Principal</name>')
-        coords_linha = []
-        for _, r in df_b.iterrows():
-            geom = r.get('ROTA_GEOMETRIA')
-            if isinstance(geom, list) and len(geom) > 0:
-                for pt in geom:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2: coords_linha.append(f"{pt[0]},{pt[1]},0")
-            else:
+        for p in df_b['PERIODO'].unique():
+            df_p = df_b[df_b['PERIODO'] == p]
+            pasta.append(f'<Folder><name>Período {p}</name>')
+            coords_linha = []
+            for _, r in df_p.iterrows():
+                geom = r.get('ROTA_GEOMETRIA')
+                if isinstance(geom, list) and len(geom) > 0:
+                    for pt in geom:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2: coords_linha.append(f"{pt[0]},{pt[1]},0")
+                else:
+                    lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+                    if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
+            if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+
+            for _, r in df_p.iterrows():
+                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
-        if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+                if pd.isna(lat) or pd.isna(lon): continue
+                qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
+                cor = r.get('COR_ICONE', 'gray')
+                nome = str(r.get('PROTOCOLO', 'Ponto'))
+                
+                bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
+                txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
+                p_bg = bg_colors.get(cor, '#9E9E9E'); p_c = txt_colors.get(cor, '#ffffff')
+                p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
 
-        for _, r in df_b.iterrows():
-            if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-            lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-            if pd.isna(lat) or pd.isna(lon): continue
-            qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
-            cor = r.get('COR_ICONE', 'gray')
-            nome = str(r.get('PROTOCOLO', 'Ponto'))
-            
-            bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
-            txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
-            p_bg = bg_colors.get(cor, '#9E9E9E'); p_c = txt_colors.get(cor, '#ffffff')
-            p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
+                
+                # Prevenção Jinja2
+                desc = desc.replace("{", "&#123;").replace("}", "&#125;")
 
-            er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}:</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
-            desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
-
-            # Prevenção Jinja2
-            desc = desc.replace("{", "&#123;").replace("}", "&#125;")
-
-            pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
-        pasta.append('</Folder>')
+                pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+            pasta.append('</Folder>')
         pasta.append('</Folder>')
         kml.extend(pasta)
     kml.extend(['</Document>', '</kml>'])
@@ -146,6 +146,11 @@ def injetar_logo():
     if os.path.exists("LOGO_NIP.png"): st.logo("LOGO_NIP.png", icon_image=None)
 
 def identificar_icone_folium(row, colunas_disponiveis):
+    if 'TIPO NOTA' in colunas_disponiveis:
+        t = str(row.get('TIPO NOTA', '')).upper()
+        if t in ['UNR', 'ASC']: return 'bolt'
+        elif t in ['MGD', 'MTP']: return 'industry'
+        elif t == 'DIF': return 'exclamation-triangle'
     return 'map-marker'
 
 def gerar_txt_fisc(df, colunas_originais=None):
