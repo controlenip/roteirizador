@@ -132,6 +132,24 @@ def gerar_txt_lista(df):
         nome = str(r.get('NOME', '')).strip()
         if nome.lower() in ['nan', 'none']: nome = ''
         
+        # --- NOVOS CAMPOS: CONTA CONTRATO, INSTALAÇÃO E FASE ---
+        conta_contrato = str(r.get('CONTA CONTRATO', '')).strip()
+        # Remove '.0' se o pandas transformar em float
+        if conta_contrato.endswith('.0'): conta_contrato = conta_contrato[:-2]
+        if conta_contrato.lower() in ['nan', 'none', '']: conta_contrato = '-'
+            
+        instalacao = str(r.get('INSTALAÇÃO', r.get('INSTALACAO', ''))).strip()
+        if instalacao.endswith('.0'): instalacao = instalacao[:-2]
+        if instalacao.lower() in ['nan', 'none', '']: instalacao = '-'
+            
+        fase_raw = str(r.get('FASE', '')).strip().upper()
+        if fase_raw == 'MO': fase_txt = '(MO) MONOFÁSICA'
+        elif fase_raw == 'B': fase_txt = '(B) BIFÁSICA'
+        elif fase_raw == 'TR': fase_txt = '(TR) TRIFÁSICA'
+        elif fase_raw in ['NAN', 'NONE', '']: fase_txt = '-'
+        else: fase_txt = fase_raw
+        
+        # --- ENDEREÇO E BAIRRO ---
         endereco = str(r.get('ENDEREÇO', r.get('ENDERECO', ''))).strip()
         if endereco.lower() in ['nan', 'none']: endereco = ''
         
@@ -150,10 +168,10 @@ def gerar_txt_lista(df):
         municipio = str(r.get('MUNICIPIO', '')).strip()
         if municipio.lower() in ['nan', 'none']: municipio = '-'
         
-        # --- BUSCA ESTRITA E EXCLUSIVA DA COLUNA "INFORMAÇÕES" (COLUNA AA) ---
+        # --- INFORMAÇÕES EXTRAS DA COLUNA AA ---
         info_extra = r.get('INFORMAÇÕES')
         if pd.isna(info_extra): 
-            info_extra = r.get('INFORMACOES') # Tenta sem acento caso o pandas tenha normalizado
+            info_extra = r.get('INFORMACOES')
             
         if pd.isna(info_extra) or str(info_extra).strip().lower() in ['nan', 'none', '']:
             info_extra = ''
@@ -166,9 +184,13 @@ def gerar_txt_lista(df):
         lat = str(r.get('LATITUDE', '')).strip()
         lon = str(r.get('LONGITUDE', '')).strip()
 
+        # --- MONTAGEM DO BLOCO NO FORMATO EXIGIDO ---
         bloco = []
         bloco.append(f"NOTA CCS: {nota}")
         bloco.append(f"NOME DO CLIENTE: {nome}")
+        bloco.append(f"CONTA CONTRATO: {conta_contrato}")
+        bloco.append(f"INSTALAÇÃO: {instalacao}")
+        bloco.append(f"FASE: {fase_txt}")
         bloco.append(f"ENDEREÇO: {endereco_completo}")
         bloco.append(f"MUNICIPIO: {municipio}")
         bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
