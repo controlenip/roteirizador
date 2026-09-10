@@ -24,27 +24,28 @@ df_equipes = pd.DataFrame(columns=["EQUIPE", "MUNICIPIO", "LATITUDE", "LONGITUDE
 buf_eq = io.BytesIO()
 df_equipes.to_excel(buf_eq, index=False)
 
-# Modelo Obras Táticas
-df_obras = pd.DataFrame(columns=["PROTOCOLO", "MUNICIPIO", "LATITUDE", "LONGITUDE", "STATUS DA FISCALIZACAO", "TIPO NOTA", "VALOR DA OBRA", "PRIORIDADE"])
+# Modelo Obras Táticas e Lista Contínua Convencional
+df_obras = pd.DataFrame(columns=["PROTOCOLO", "MUNICIPIO", "LATITUDE", "LONGITUDE", "STATUS DA FISCALIZACAO", "TIPO NOTA", "VALOR DA OBRA", "PRIORIDADE", "LEVANTADOR"])
 buf_obras = io.BytesIO()
 df_obras.to_excel(buf_obras, index=False)
 
 with c1:
-    st.markdown("#### 👥 Equipes e Fiscais")
-    st.download_button("📥 Baixar Modelo: Equipes / Fiscais", data=buf_eq.getvalue(), file_name="Modelo_Equipes.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-    st.caption("A coluna pode se chamar **EQUIPE**, **FISCAL** ou **LEVANTADOR**. Opcionalmente, adicione **LATITUDE** e **LONGITUDE** da residência do fiscal para rotas exatas, ou apenas preencha o **MUNICIPIO** para usar o centro da cidade como partida.")
+    st.markdown("#### 👥 Equipes e Levantadores")
+    st.download_button("📥 Baixar Modelo: Equipes / Bases", data=buf_eq.getvalue(), file_name="Modelo_Equipes.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+    st.caption("A coluna pode se chamar **EQUIPE**, **FISCAL** ou **LEVANTADOR**. Opcionalmente, adicione **LATITUDE** e **LONGITUDE** da residência do técnico para rotas exatas, ou apenas preencha o **MUNICIPIO** para usar o centro da cidade como partida.")
 
 with c2:
     st.markdown("#### 🗺️ Planejamento Tático e Lista Contínua")
-    st.download_button("📥 Baixar Modelo: Obras Táticas", data=buf_obras.getvalue(), file_name="Modelo_Obras.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-    st.caption("Colunas vitais: **PROTOCOLO**, **LATITUDE** e **LONGITUDE**. A coluna de status ajuda o sistema a ignorar obras canceladas. Para a *Lista Contínua*, adicione a coluna do Fiscal já atribuído.")
+    st.download_button("📥 Baixar Modelo: Obras Padrão", data=buf_obras.getvalue(), file_name="Modelo_Obras.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+    st.caption("Colunas vitais: **PROTOCOLO**, **LATITUDE** e **LONGITUDE**. A coluna de status ajuda o sistema a ignorar obras canceladas. Para a *Lista Contínua*, adicione a coluna do Levantador/Fiscal já atribuído.")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 c3, c4 = st.columns(2)
 
-# Modelo Fisc
-df_fisc = pd.DataFrame(columns=["PROTOCOLO", "MUNICIPIO", "LATITUDE", "LONGITUDE", "QTD PREVISTA DE POSTES", "STATUS DA FISCALIZACAO", "TIPO DE PROJETO"])
+# Modelo Fiscalização (Serve tanto para Tático quanto Contínua)
+cols_fisc = ['NOTA', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'FISCAL', 'OBSERVACAO']
+df_fisc = pd.DataFrame(columns=cols_fisc)
 buf_fisc = io.BytesIO()
 df_fisc.to_excel(buf_fisc, index=False)
 
@@ -55,9 +56,9 @@ buf_san = io.BytesIO()
 df_san.to_excel(buf_san, index=False)
 
 with c3:
-    st.markdown("#### 📋 Fiscalização")
+    st.markdown("#### 📋 Fiscalização (Tático e Contínua)")
     st.download_button("📥 Baixar Modelo: Fiscalização", data=buf_fisc.getvalue(), file_name="Modelo_Fiscalizacao.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-    st.caption("Além das coordenadas, **exige obrigatoriamente** a coluna 'QTD PREVISTA DE POSTES'. É através desse número que a IA encontra os 'bolsões' e baliza a carga de trabalho.")
+    st.caption("Formato unificado. Exige as colunas **'QTD PREVISTA DE POSTES'** (usado para caçar os maiores bolsões de auditoria). Se quiser rodar a **Lista Contínua de Fiscalização**, preencha a coluna **'FISCAL'** na própria obra.")
 
 with c4:
     st.markdown("#### 🧹 Saneamento")
@@ -116,13 +117,13 @@ with st.expander("⚙️ 4. Quais são as diferenças matemáticas entre os 4 Mo
     st.markdown("""
     O sistema possui 4 cérebros diferentes, cada um treinado para uma especialidade:
     
-    1. **🗺️ Planejamento Tático:** Especialista em **distribuição de cotas**. Você diz que a equipe tem que fazer "6 obras por dia", e a IA agrupa as notas criando dias exatos (Segunda, Terça, Quarta...) com 6 obras cada, garantindo que elas fiquem grudadas umas nas outras. Se passarem das cotas diárias estipuladas, as notas extras ficam de fora.
+    1. **🗺️ Planejamento Tático:** Especialista em **distribuição de cotas**. Você diz que a equipe tem que fazer "6 obras por dia", e a IA agrupa as notas criando dias exatos (Segunda, Terça, Quarta...) com 6 obras cada, cruzando geograficamente sua "Planilha de Equipes" com sua "Planilha de Obras".
     
-    2. **📜 Lista Contínua:** Especialista em **velocidade e absorção massiva**. Ignora limites de "obras por dia". Ele pega um volume gigantesco (ex: 500 notas atreladas a um levantador) e traça a linha perfeita que liga todas essas notas. Ótimo para enviar listas gigantescas de uma vez e deixar a equipe matar ao longo do mês.
+    2. **📜 Lista Contínua:** Especialista em **velocidade e absorção massiva**. Ignora limites de "obras por dia". Ele pega um volume gigantesco (ex: 500 notas já atreladas a um levantador na própria planilha) e traça a linha perfeita que liga todas essas notas sem interrupção. Ótimo para enviar listas gigantescas de uma vez e deixar a equipe matar ao longo do mês.
     
-    3. **📋 Fiscalização:** O motor de **"Bolsões de Postes"**. Em vez de olhar apenas para distância, a IA da fiscalização olha para a coluna `QTD PREVISTA DE POSTES`. Ela caça no mapa onde está a obra mais "gorda" (ex: 200 postes) e manda o fiscal direto pra lá primeiro, pois é lá que está a maior receita/importância. Depois de ancorar no bolsão, ela puxa as obras miúdas em volta.
+    3. **📋 Fiscalização (Bolsão de Postes):** Esse motor roda em duas marchas (Tático Cruzado ou Lista Contínua Direta), mas o coração matemático dele é a **Regra do Bolsão**. Em vez de olhar apenas para distância, a IA da fiscalização olha para a coluna `QTD PREVISTA DE POSTES`. Ela caça no mapa onde está a obra mais "gorda" (ex: 200 postes) e manda o fiscal direto pra lá primeiro, pois é lá que está a maior urgência e receita. Depois de ancorar no bolsão, ela puxa as obras miúdas em volta.
     
-    4. **🧹 Saneamento:** O motor de **Tiro Rápido**. Configurado para ignorar bloqueios complexos e rodar em segundos. Projetado para cotas altas (ex: 25 a 40 notas por dia). Ele absorve planilhas com formato duro (exigindo colunas específicas como 'LATITUDE PROJETO') e monta o mapa logístico focado puramente em proximidade geométrica.
+    4. **🧹 Saneamento:** O motor de **Tiro Rápido**. Configurado para ignorar bloqueios complexos e rodar em segundos. Projetado para cotas altas (ex: 25 a 40 notas por dia). Ele absorve planilhas com formato duro (exigindo colunas específicas como 'LATITUDE PROJETO') e monta o mapa logístico focado puramente em proximidade geométrica massiva.
     """)
 
 with st.expander("🏢 5. O que significa o 'Raio Super Ponto'?"):
@@ -131,7 +132,7 @@ with st.expander("🏢 5. O que significa o 'Raio Super Ponto'?"):
     
     Imagine que existem 5 notas separadas na planilha, mas todas caem no mesmo quarteirão ou no mesmo prédio (um condomínio com vários medidores, por exemplo). Se o sistema tratasse elas individualmente, ia calcular tempo de deslocamento entre elas e ocupar a grade da equipe com "viagens fantasmas".
     
-    O Raio Super Ponto (que pode ser regulado de 10 a 500 metros) junta essas notas sobrepostas, transforma elas em uma "entidade única" (um Super Ponto), atribui a mesma equipe para todas elas, e zera a distância de deslocamento entre elas. Isso economiza cotas diárias e deixa a rota realística.
+    O Raio Super Ponto (que pode ser regulado de 10 a 1000 metros) junta essas notas sobrepostas, transforma elas em uma "entidade única" (um Super Ponto), atribui a mesma equipe para todas elas, e zera a distância de deslocamento entre elas. Isso economiza cotas diárias e deixa a rota realista.
     """)
 
 with st.expander("🛣️ 6. Como as distâncias são calculadas? (Linha Reta vs Traçado de Ruas)"):
@@ -140,10 +141,7 @@ with st.expander("🛣️ 6. Como as distâncias são calculadas? (Linha Reta vs
     
     1. **Fórmula de Haversine (Linha Reta):** É o cálculo base e ultrarrápido do sistema. Ele mede a distância esférica do planeta Terra entre dois pontos, multiplicada por uma constante de desvio padrão (1.3x) para simular esquinas.
     
-    2. **Integração OSRM (Traçado de Ruas Real):** Se a caixinha "Traçado de Ruas Real" estiver marcada na barra lateral, a IA vai acessar servidores de tráfego open-source para desenhar a geometria exata da rua (respeitando mão dupla, rotatórias e avenidas). 
-    *Atenção:* Ligar essa opção aumenta a precisão e deixa o mapa com a linha desenhada por cima da rodovia (parecido com Waze ou Google Maps), mas **demora muito mais tempo** para carregar a rota.
-    
-    Por padrão, o motor assume uma **velocidade média de deslocamento de 30 km/h** em áreas urbanas/rurais para calcular a hora que o fiscal entra e sai da nota.
+    2. **Integração OSRM (Traçado de Ruas Real):** Se a caixinha "Traçado de Ruas Real" estiver marcada na barra lateral, a IA vai acessar servidores de tráfego open-source para desenhar a geometria exata da rua (respeitando mão dupla, rotatórias e avenidas). O sistema possui uma trava de segurança anti-queda: se o servidor público OSRM cair ou recusar a conexão, o Roteirizador faz 3 tentativas em velocidade reduzida e, caso não tenha sucesso, desenha em linha reta para que o aplicativo não trave.
     """)
 
 st.markdown("<br><center><p style='color: #888;'>Manual de Operações Logísticas e Georreferenciamento | Desenvolvido para Roteirizador NIP v3.0</p></center>", unsafe_allow_html=True)
