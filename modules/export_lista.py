@@ -134,7 +134,6 @@ def gerar_txt_lista(df):
         
         # --- NOVOS CAMPOS: CONTA CONTRATO, INSTALAÇÃO E FASE ---
         conta_contrato = str(r.get('CONTA CONTRATO', '')).strip()
-        # Remove '.0' se o pandas transformar em float
         if conta_contrato.endswith('.0'): conta_contrato = conta_contrato[:-2]
         if conta_contrato.lower() in ['nan', 'none', '']: conta_contrato = '-'
             
