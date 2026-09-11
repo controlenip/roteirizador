@@ -7,6 +7,7 @@ import zipfile
 import html
 import re
 import time
+import unicodedata
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -39,6 +40,10 @@ def corrigir_coord(val, limite):
         v /= 10.0
         iters += 1
     return v
+
+def remover_acentos_str(texto):
+    if not isinstance(texto, str): return str(texto)
+    return "".join(c for c in unicodedata.normalize('NFKD', texto) if not unicodedata.combining(c))
 
 st.markdown("<h1 class='brand-title'>🔍 Análise Cruzada e Auditoria</h1>", unsafe_allow_html=True)
 st.info("💡 Cruza bases de Saneamento e Levantamento, isola notas bloqueadas (SAP FINL/CANC) e define os colaboradores mais próximos independente da origem.")
@@ -73,7 +78,6 @@ with st.sidebar:
         st.markdown("---")
         d_fmt = datetime.now().strftime("%d.%m.%Y_%H%M")
         
-        # EXCEL COM 3 ABAS
         bu_xl = io.BytesIO()
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx:
             dict_dfs = {
@@ -86,7 +90,6 @@ with st.sidebar:
             
         st.download_button("🌐 Baixar Planilha Excel (ZIP)", data=bu_xl.getvalue(), file_name=f"Analise_Planilhas_{d_fmt}.zip", use_container_width=True)
         
-        # KML
         kml_str = gerar_kml_analise(df_view)
         bu_kml = io.BytesIO()
         with zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk:
@@ -129,12 +132,18 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
             mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
+            s_sisco = html.escape(str(r.get('STATUS SISCO', '-')))
+            s_list = html.escape(str(r.get('STATUS LIST', '-')))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
             aviso_gps = ""
             if dup == 'SIM' and len(grp) == 1:
                 aviso_gps = f"<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
+                
+            extra_status = ""
+            if o == 'LEVANTAMENTO':
+                extra_status = f"<tr><td style='padding:2px;'><b>SISCO / LIST:</b></td><td style='padding:2px;'>{s_sisco} / {s_list}</td></tr>"
             
             pop_html += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
@@ -142,6 +151,7 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
                 <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
+                {extra_status}
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                 <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
             </table>
@@ -200,7 +210,6 @@ else:
 
         render_t(0.1, "Lendo planilhas de Saneamento e Levantamento...")
         
-        # BLINDAGEM DO PANDAS (Usando io.BytesIO para evitar TypeError)
         file_san_buffer = io.BytesIO(file_san.getvalue())
         file_lev_buffer = io.BytesIO(file_lev.getvalue())
         file_loc_buffer = io.BytesIO(file_loc.getvalue())
@@ -211,13 +220,11 @@ else:
         df_san.columns = normalize_cols(df_san.columns)
         df_lev.columns = normalize_cols(df_lev.columns)
         
-        # UNIFICAÇÃO DE "MUNICÍPIO" E "MUNICIPIO"
         for c in df_san.columns:
             if 'MUNI' in c: df_san.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
         for c in df_lev.columns:
             if 'MUNI' in c: df_lev.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
         
-        # IDENTIFICAÇÃO ABSOLUTA DA LATITUDE SANEAMENTO
         for c in df_san.columns:
             if 'PROJETO' in c.upper() and 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
         for c in df_san.columns:
@@ -230,13 +237,11 @@ else:
             for c in df_san.columns:
                 if 'LON' in c.upper(): df_san.rename(columns={c: 'LONGITUDE'}, inplace=True); break
                 
-        # IDENTIFICAÇÃO LEVANTAMENTO
         for c in df_lev.columns:
             if 'LAT' in c.upper() and 'LATITUDE' not in df_lev.columns: df_lev.rename(columns={c: 'LATITUDE'}, inplace=True)
         for c in df_lev.columns:
             if 'LON' in c.upper() and 'LONGITUDE' not in df_lev.columns: df_lev.rename(columns={c: 'LONGITUDE'}, inplace=True)
         
-        # IDENTIFICAÇÃO DE NOTA
         for pref in ['NOTA', 'PROTOCOLO', 'OS', 'ID_SISCO']:
             if pref in df_san.columns: df_san.rename(columns={pref: 'NOTA'}, inplace=True); break
         for pref in ['NOTA', 'PROTOCOLO', 'OS', 'ID_SISCO']:
@@ -250,7 +255,6 @@ else:
         
         render_t(0.3, "Lendo Localidades...")
         
-        # SOLUÇÃO BLINDADA PARA CSV OU EXCEL MULTI-ABAS
         dfs_loc = []
         if file_loc.name.lower().endswith('.csv'):
             df_temp = pd.read_csv(file_loc_buffer)
@@ -378,14 +382,16 @@ else:
                 is_black = True
                 
             if orig == 'LEVANTAMENTO':
-                st_list = str(linha.get('STATUS_LIST', linha.get('STATUS LIST', '0'))).strip().upper().replace('.0', '')
-                if st_list in ['NAN', 'NONE', '']: st_list = '0'
+                st_list_raw = str(linha.get('STATUS_LIST', linha.get('STATUS LIST', '0'))).strip().upper().replace('.0', '')
+                if st_list_raw in ['NAN', 'NONE', '']: st_list_raw = '0'
+                st_list = remover_acentos_str(st_list_raw)
                 
-                st_sisco = str(linha.get('STATUS_SISCO', linha.get('STATUS SISCO', '0'))).strip().upper().replace('.0', '')
-                if st_sisco in ['NAN', 'NONE', '']: st_sisco = '0'
+                st_sisco_raw = str(linha.get('STATUS_SISCO', linha.get('STATUS SISCO', '0'))).strip().upper().replace('.0', '')
+                if st_sisco_raw in ['NAN', 'NONE', '']: st_sisco_raw = '0'
+                st_sisco = remover_acentos_str(st_sisco_raw)
                 
-                v_list = ['0', 'EM LEVANTAMENTO', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO']
-                v_sisco = ['0', 'PRÉ ANALISE', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P/ LEVANTAMENTO']
+                v_list = ['0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO']
+                v_sisco = ['0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P/ LEVANTAMENTO']
                 
                 if st_list not in v_list or st_sisco not in v_sisco:
                     is_black = True
