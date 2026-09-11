@@ -59,7 +59,6 @@ with st.sidebar:
     if st.session_state.is_done_analise and not st.session_state.df_final_analise.empty:
         df_fin = st.session_state.df_final_analise.copy()
         
-        # TRAVA DE SEGURANÇA PARA CACHE ANTIGO
         if 'COR_NOME' not in df_fin.columns:
             st.session_state.is_done_analise = False
             st.session_state.df_final_analise = pd.DataFrame()
@@ -73,7 +72,7 @@ with st.sidebar:
             st.warning("Selecione pelo menos uma cor para gerar o mapa e os relatórios.")
             st.stop()
             
-        # O DataFrame exibido e exportado será guiado pelas cores que você escolheu!
+        # Filtra a visualização baseada nas cores selecionadas
         df_view = df_fin[df_fin['COR_NOME'].isin(cores_selecionadas)].copy()
         
         st.markdown("---")
@@ -92,7 +91,7 @@ with st.sidebar:
             
         st.download_button("🌐 Baixar Planilha Excel (ZIP)", data=bu_xl.getvalue(), file_name=f"Analise_Planilha_{d_fmt}.zip", use_container_width=True)
         
-        # GERAR KML E GPX
+        # GERAR KML
         kml_str = gerar_kml_analise(df_view)
         bu_kml = io.BytesIO()
         with zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk:
@@ -106,7 +105,7 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# EXIBIÇÃO DE RESULTADOS (COM FILTRO APLICADO)
+# EXIBIÇÃO DE RESULTADOS (MAPA AGRUPADO)
 # ==========================================
 if st.session_state.is_done_analise and not st.session_state.df_final_analise.empty:
     
@@ -115,37 +114,54 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     
     m_clust = MarkerCluster(name="📍 Obras Filtradas").add_to(mapa)
     
-    for _, r in df_view.iterrows():
-        lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
+    # Agrupa por CLUSTER_ID para renderizar 1 único pino por terreno com os dados das N notas nele
+    for cid, grp in df_view.groupby('CLUSTER_ID'):
+        lat = grp['LATITUDE'].iloc[0]
+        lon = grp['LONGITUDE'].iloc[0]
         
-        c_i = r.get('COR_MAPA', 'blue')
-        ic = 'info-sign'
+        c_names = grp['COR_NOME'].tolist()
         
-        nota = str(r.get('NOTA', ''))
-        origem = str(r.get('ORIGEM_BASE', ''))
-        status_sap = str(r.get('SITUACAO SAP', ''))
-        colab = str(r.get('COLABORADOR MAIS PROXIMO', ''))
-        duplicada = str(r.get('DUPLICADA', ''))
-        proxima = str(r.get('PROXIMA', ''))
+        # Decide a cor do pino agrupado
+        if any('Preto' in c for c in c_names): c_i = 'black'
+        elif any('Vermelho' in c for c in c_names): c_i = 'red'
+        elif len(grp) > 1: c_i = 'orange'
+        else: c_i = grp['COR_MAPA'].iloc[0]
         
-        pop_html = f'''<![CDATA[
-        <div style="width:250px; font-size:12px;">
-            <b>Nota:</b> {html.escape(nota)}<br>
-            <b>Origem:</b> {html.escape(origem)}<br>
-            <b>Status SAP:</b> {html.escape(status_sap)}<br>
-            <b>Colab Perto:</b> {html.escape(colab)}<br>
-            <b>Duplicada:</b> {html.escape(duplicada)} | <b>Próxima:</b> {html.escape(proxima)}
-        </div>
-        ]]>'''
-        pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
+        titulo_card = f"📍 Obras no Local ({len(grp)})"
         
-        folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
+        pop_html = f'''
+        <div style="font-family:sans-serif; width:280px; max-height:280px; overflow-y:auto; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
+            <div style="background:#0D256C; color:#ffffff; padding:8px; font-size:13px; font-weight:bold; text-align:center; position:sticky; top:0;">{titulo_card}</div>
+            <div style="padding:10px; background:#fafafa; font-size:12px;">
+        '''
+        
+        for _, r in grp.iterrows():
+            n = html.escape(str(r.get('NOTA', '')))
+            o = html.escape(str(r.get('ORIGEM_BASE', '')))
+            s = html.escape(str(r.get('SITUACAO SAP', '')))
+            col = html.escape(str(r.get('COLABORADOR MAIS PROXIMO', '')))
+            dup = html.escape(str(r.get('DUPLICADA', '')))
+            
+            pop_html += f'''
+            <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
+                <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
+                <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
+                <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
+                <tr><td style="padding:2px;"><b>Colab:</b></td><td style="padding:2px;">{col}</td></tr>
+                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
+            </table>
+            <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
+            '''
+        
+        pop_html += '</div></div>'
+        
+        folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon='info-sign'), popup=folium.Popup(pop_html, max_width=320)).add_to(m_clust)
         
     folium.LayerControl().add_to(mapa)
     st_folium(mapa, use_container_width=True, height=550)
 
     st.markdown(f"### 📊 Tabela Consolidada ({len(df_view)} Obras Filtradas)")
-    st.data_editor(df_view.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME'], errors='ignore'), use_container_width=True)
+    st.data_editor(df_view.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME', 'CLUSTER_ID'], errors='ignore'), use_container_width=True)
 
 # ==========================================
 # PAINEL DE UPLOAD E CRUZAMENTO
@@ -192,8 +208,16 @@ else:
         df_lev.columns = normalize_cols(df_lev.columns)
         df_loc.columns = normalize_cols(df_loc.columns)
         
-        if 'LATITUDE_PROJETO' in df_san.columns: df_san.rename(columns={'LATITUDE_PROJETO': 'LATITUDE'}, inplace=True)
-        if 'LONGITUDE_PROJETO' in df_san.columns: df_san.rename(columns={'LONGITUDE_PROJETO': 'LONGITUDE'}, inplace=True)
+        # RADAR MAIS EFICIENTE PARA ACHAR COORDENADAS DE SANEAMENTO
+        for c in df_san.columns:
+            if 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
+        for c in df_san.columns:
+            if 'LON' in c.upper(): df_san.rename(columns={c: 'LONGITUDE'}, inplace=True); break
+            
+        for c in df_lev.columns:
+            if 'LAT' in c.upper(): df_lev.rename(columns={c: 'LATITUDE'}, inplace=True); break
+        for c in df_lev.columns:
+            if 'LON' in c.upper(): df_lev.rename(columns={c: 'LONGITUDE'}, inplace=True); break
         
         for pref in ['NOTA', 'PROTOCOLO', 'OS', 'ID SISCO']:
             if pref in df_san.columns:
@@ -248,7 +272,7 @@ else:
             dists = haversine_vectorized(lat, lon, lat_locs, lon_locs)
             if len(dists) == 0: return "DESCONHECIDO"
             min_idx = np.argmin(dists)
-            return f"{nomes_locs[min_idx]} - EQUIPE LEVANTAMENTO"
+            return f"{nomes_locs[min_idx]}"
 
         df_master = pd.concat([df_san, df_lev], ignore_index=True)
         df_master['LAT_NUM'] = pd.to_numeric(df_master['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
@@ -264,22 +288,25 @@ else:
         df_clustered, _ = fundir_super_pontos(df_valid, raio_metros=st.session_state.get('raio_prox', 50), agrupar_por_levantador=False)
         
         expanded = []
+        c_id = 0
         for _, r in df_clustered.iterrows():
             is_prox = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r['_ORIGINAL_ROWS']) > 1
             if is_prox:
                 for orig in r['_ORIGINAL_ROWS']:
                     nr = dict(orig)
                     nr['PROXIMA'] = 'SIM'
+                    nr['CLUSTER_ID'] = c_id
                     expanded.append(nr)
             else:
                 nr = r.to_dict()
                 nr['PROXIMA'] = 'NÃO'
+                nr['CLUSTER_ID'] = c_id
                 expanded.append(nr)
+            c_id += 1
                 
         df_final = pd.DataFrame(expanded)
         df_final['COLABORADOR MAIS PROXIMO'] = df_final.apply(lambda x: get_closest(x['LATITUDE'], x['LONGITUDE']), axis=1)
 
-        # LÓGICA RÍGIDA DE CORES PARA FILTRO DA BARRA LATERAL E MAPA
         def determinar_cor(linha):
             dupl = str(linha.get('DUPLICADA', ''))
             prox = str(linha.get('PROXIMA', ''))
@@ -298,9 +325,10 @@ else:
                 if st_list not in v_list or st_sisco not in v_sisco:
                     is_black = True
             
-            if is_black: return 'black', '⚫ Preto (Levant. Inválido)'
+            # ORDEM DE PRECEDÊNCIA CORRIGIDA!
             if dupl == 'SIM': return 'red', '🔴 Vermelho (Duplicadas)'
             if prox == 'SIM': return 'orange', '🟠 Laranja (Próximas)'
+            if is_black: return 'black', '⚫ Preto (Levant. Inválido)'
             if orig == 'LEVANTAMENTO': return 'green', '🟢 Verde (Levant. Solitário)'
             if orig == 'SANEAMENTO': return 'purple', '🟣 Magenta (Saneamento Solitário)'
             return 'blue', '🔵 Azul (Outros)'
@@ -309,7 +337,7 @@ else:
         df_final['COR_MAPA'] = [c[0] for c in cores_calculadas]
         df_final['COR_NOME'] = [c[1] for c in cores_calculadas]
 
-        front_cols = ['NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'DUPLICADA', 'PROXIMA', 'COLABORADOR MAIS PROXIMO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE']
+        front_cols = ['NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'DUPLICADA', 'PROXIMA', 'COLABORADOR MAIS PROXIMO', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'CLUSTER_ID', 'COR_MAPA', 'COR_NOME']
         rest_cols = [c for c in df_final.columns if c not in front_cols and not c.startswith('_')]
         df_final = df_final[front_cols + rest_cols]
         
