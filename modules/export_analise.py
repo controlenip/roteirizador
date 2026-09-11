@@ -55,10 +55,10 @@ def gerar_kml_analise(df):
     for color, url in styles.items():
         kml.append(f'<Style id="style_{color}"><IconStyle><Icon><href>{url}</href></Icon></IconStyle></Style>')
 
-    # Estilo Preto Customizado (Google não tem paddle preto por padrão)
+    # Estilo Preto Customizado
     kml.append('''<Style id="style_black"><IconStyle><color>ff000000</color><Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-blank.png</href></Icon></IconStyle></Style>''')
 
-    # Agrupa por CLUSTER_ID para montar os agrupamentos
+    # Agrupa por CLUSTER_ID para montar os agrupamentos geográficos (pastas)
     clusters = []
     if 'CLUSTER_ID' not in df.columns:
         df['CLUSTER_ID'] = range(len(df))
@@ -70,18 +70,17 @@ def gerar_kml_analise(df):
         
         c_names = grp['COR_NOME'].tolist()
         
-        # Define a cor dominante do cluster (Preto > Vermelho > Laranja > Solitárias)
-        if any('Preto' in c for c in c_names): c_nome = next(c for c in c_names if 'Preto' in c)
-        elif any('Vermelho' in c for c in c_names): c_nome = next(c for c in c_names if 'Vermelho' in c)
-        elif len(grp) > 1: c_nome = '🟠 Laranja (Próximas)'
+        # Define a pasta dominante do terreno
+        if any('Preto' in c for c in c_names) or any('Inválidas' in c for c in c_names): c_nome = next(c for c in c_names if 'Inválidas' in c or 'Preto' in c)
+        elif any('Vermelho' in c for c in c_names) or any('Duplicadas' in c for c in c_names): c_nome = next(c for c in c_names if 'Duplicadas' in c or 'Vermelho' in c)
+        elif len(grp) > 1: c_nome = '🟠 Notas Próximas'
         else: c_nome = c_names[0]
 
-        if 'Preto' in c_nome: c_mapa = 'black'
-        elif 'Vermelho' in c_nome: c_mapa = 'red'
-        elif 'Laranja' in c_nome: c_mapa = 'orange'
+        if 'Inválidas' in c_nome or 'Preto' in c_nome: c_mapa = 'black'
+        elif 'Duplicadas' in c_nome or 'Vermelho' in c_nome: c_mapa = 'red'
+        elif 'Próximas' in c_nome or 'Laranja' in c_nome: c_mapa = 'orange'
         else: c_mapa = grp['COR_MAPA'].iloc[0]
 
-        # Montagem do Card do KML
         titulo_card = f"📍 Obras no Local ({len(grp)})"
         
         desc = f'''<![CDATA[
@@ -96,7 +95,7 @@ def gerar_kml_analise(df):
             nomes_notas.append(n)
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
-            col = html.escape(str(r.get('COLABORADOR MAIS PROXIMO', '')))
+            col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
             desc += f'''
@@ -104,7 +103,7 @@ def gerar_kml_analise(df):
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>Status SAP:</b></td><td style="padding:2px;">{s}</td></tr>
-                <tr><td style="padding:2px;"><b>Colab Perto:</b></td><td style="padding:2px;">{col}</td></tr>
+                <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                 <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
             </table>
             <hr style="margin:4px 0; border:0; border-top:1px solid #ddd;">
