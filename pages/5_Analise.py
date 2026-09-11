@@ -11,7 +11,8 @@ from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
 
-from modules.data_processing import normalize_cols
+# Importações dos Motores Matemáticos
+from modules.data_processing import ler_planilha_cached, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, fundir_super_pontos
 from modules.export_analise import gerar_excel_analise, gerar_kml_analise
 
@@ -125,23 +126,20 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
         
         for _, r in grp.iterrows():
             n = html.escape(str(r.get('NOTA', '')))
+            mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
-            # Se for duplicada e estiver sozinha no cluster, significa erro de GPS entre bases
-            aviso_gps = ""
-            if dup == 'SIM' and len(grp) == 1:
-                aviso_gps = f"<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
-            
             pop_html += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
+                <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
-                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
+                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
             </table>
             <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
             '''
@@ -203,6 +201,12 @@ else:
         df_san.columns = normalize_cols(df_san.columns)
         df_lev.columns = normalize_cols(df_lev.columns)
         
+        # UNIFICAÇÃO DE "MUNICÍPIO" E "MUNICIPIO"
+        for c in df_san.columns:
+            if 'MUNI' in c: df_san.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
+        for c in df_lev.columns:
+            if 'MUNI' in c: df_lev.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
+        
         # IDENTIFICAÇÃO ABSOLUTA DA LATITUDE SANEAMENTO
         for c in df_san.columns:
             if 'PROJETO' in c.upper() and 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
@@ -236,18 +240,22 @@ else:
         
         render_t(0.3, "Lendo Localidades...")
         
-        # LER ABAS OU CSV
-        if file_loc.name.endswith('.csv'):
-            df_loc = pd.read_csv(file_loc)
-            df_loc.columns = normalize_cols(df_loc.columns)
-            df_loc['TIPO_EQUIPE'] = 'EQUIPE'
+        # SOLUÇÃO BLINDADA PARA CSV OU EXCEL MULTI-ABAS
+        dfs_loc = []
+        if file_loc.name.lower().endswith('.csv'):
+            df_temp = pd.read_csv(file_loc)
+            df_temp.columns = normalize_cols(df_temp.columns)
+            for c in df_temp.columns:
+                if 'NOME' in c: df_temp.rename(columns={c: 'NOME_COLAB'}, inplace=True)
+                if 'LAT' in c: df_temp.rename(columns={c: 'LAT_LOC'}, inplace=True)
+                if 'LON' in c: df_temp.rename(columns={c: 'LON_LOC'}, inplace=True)
+            df_temp['TIPO_EQUIPE'] = 'Equipe (CSV)'
+            dfs_loc.append(df_temp)
         else:
             xls_loc = pd.ExcelFile(file_loc.getvalue())
-            dfs_loc = []
             for sheet in xls_loc.sheet_names:
                 df_temp = pd.read_excel(xls_loc, sheet_name=sheet)
                 df_temp.columns = normalize_cols(df_temp.columns)
-                
                 for c in df_temp.columns:
                     if 'NOME' in c: df_temp.rename(columns={c: 'NOME_COLAB'}, inplace=True)
                     if 'LAT' in c: df_temp.rename(columns={c: 'LAT_LOC'}, inplace=True)
@@ -256,7 +264,8 @@ else:
                 tipo = "Saneamento" if "SAN" in sheet.upper() else "Levantamento"
                 df_temp['TIPO_EQUIPE'] = tipo
                 dfs_loc.append(df_temp)
-            df_loc = pd.concat(dfs_loc, ignore_index=True)
+                
+        df_loc = pd.concat(dfs_loc, ignore_index=True)
             
         for c in df_loc.columns:
             if 'NOME' in c and 'NOME_COLAB' not in df_loc.columns: df_loc.rename(columns={c: 'NOME_COLAB'}, inplace=True)
