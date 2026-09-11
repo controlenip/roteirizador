@@ -59,6 +59,12 @@ with st.sidebar:
     if st.session_state.is_done_analise and not st.session_state.df_final_analise.empty:
         df_fin = st.session_state.df_final_analise.copy()
         
+        # TRAVA DE SEGURANÇA PARA CACHE ANTIGO
+        if 'COR_NOME' not in df_fin.columns:
+            st.session_state.is_done_analise = False
+            st.session_state.df_final_analise = pd.DataFrame()
+            st.rerun()
+        
         st.markdown("### 🎨 Filtro de Cores (Mapa e Export)")
         opcoes_cores = sorted(df_fin['COR_NOME'].unique().tolist())
         cores_selecionadas = st.multiselect("Selecione os dados para visualizar:", opcoes_cores, default=opcoes_cores)
@@ -273,7 +279,7 @@ else:
         df_final = pd.DataFrame(expanded)
         df_final['COLABORADOR MAIS PROXIMO'] = df_final.apply(lambda x: get_closest(x['LATITUDE'], x['LONGITUDE']), axis=1)
 
-        # LÓGICA RÍGIDA DE CORES PARA FILTRO DA BARRA LATERAL
+        # LÓGICA RÍGIDA DE CORES PARA FILTRO DA BARRA LATERAL E MAPA
         def determinar_cor(linha):
             dupl = str(linha.get('DUPLICADA', ''))
             prox = str(linha.get('PROXIMA', ''))
