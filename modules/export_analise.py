@@ -58,41 +58,57 @@ def gerar_kml_analise(df):
     # Estilo Preto Customizado (pois o Google não tem paddle preto por padrão)
     kml.append('''<Style id="style_black"><IconStyle><color>ff000000</color><Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-blank.png</href></Icon></IconStyle></Style>''')
 
-    for _, r in df.iterrows():
-        lat = str(r.get('LATITUDE', '')).strip()
-        lon = str(r.get('LONGITUDE', '')).strip()
-        if not lat or not lon or lat.lower() == 'nan': continue
-        
-        nota = str(r.get('NOTA', ''))
-        origem = str(r.get('ORIGEM_BASE', ''))
-        duplicada = str(r.get('DUPLICADA', ''))
-        proxima = str(r.get('PROXIMA', ''))
-        status_sap = str(r.get('SITUACAO SAP', ''))
-        colab = str(r.get('COLABORADOR MAIS PROXIMO', ''))
-        mun = str(r.get('MUNICIPIO', ''))
-        
-        # Puxa a cor exata gerada no filtro do Streamlit
-        color = str(r.get('COR_MAPA', 'blue'))
+    # AGRUPAMENTO POR PASTAS (FOLDERS DO KML)
+    if 'COR_NOME' in df.columns:
+        grupos = df.groupby('COR_NOME')
+    else:
+        # Fallback de segurança se não houver a coluna de cores
+        df_temp = df.copy()
+        df_temp['COR_NOME'] = 'Obras Analisadas'
+        grupos = df_temp.groupby('COR_NOME')
 
-        desc = f'''<![CDATA[
-        <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
-            <div style="background:#0D256C; color:#ffffff; padding:8px 10px; font-size:13px; font-weight:bold;">📍 Análise de Ponto</div>
-            <div style="padding:10px; background:#fafafa; font-size:12px;">
-                <table style="width:100%; border-collapse:collapse;">
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Nota/Protocolo:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(nota)}</td></tr>
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Município:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(mun)}</td></tr>
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Origem:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(origem)}</td></tr>
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Status SAP:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(status_sap)}</td></tr>
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Duplicada (Bases):</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(duplicada)}</td></tr>
-                    <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Próxima a outra:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(proxima)}</td></tr>
-                    <tr><td style="padding:3px;"><b>Colab Mais Perto:</b></td><td style="padding:3px;">{html.escape(colab)}</td></tr>
-                </table>
-            </div>
-        </div>
-        ]]>'''
+    # Cria uma pasta para cada Cor/Categoria
+    for nome_grupo, df_grupo in grupos:
+        kml.append(f'<Folder><name>{html.escape(str(nome_grupo))}</name>')
         
-        desc = desc.replace("{", "&#123;").replace("}", "&#125;")
-        kml.append(f'<Placemark><name>{html.escape(nota)}</name><styleUrl>#style_{color}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+        for _, r in df_grupo.iterrows():
+            lat = str(r.get('LATITUDE', '')).strip()
+            lon = str(r.get('LONGITUDE', '')).strip()
+            if not lat or not lon or lat.lower() == 'nan': continue
+            
+            nota = str(r.get('NOTA', ''))
+            origem = str(r.get('ORIGEM_BASE', ''))
+            duplicada = str(r.get('DUPLICADA', ''))
+            proxima = str(r.get('PROXIMA', ''))
+            status_sap = str(r.get('SITUACAO SAP', ''))
+            colab = str(r.get('COLABORADOR MAIS PROXIMO', ''))
+            mun = str(r.get('MUNICIPIO', ''))
+            
+            # Puxa a cor exata que já foi calculada para esta linha
+            color = str(r.get('COR_MAPA', 'blue'))
+
+            desc = f'''<![CDATA[
+            <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
+                <div style="background:#0D256C; color:#ffffff; padding:8px 10px; font-size:13px; font-weight:bold;">📍 Análise de Ponto</div>
+                <div style="padding:10px; background:#fafafa; font-size:12px;">
+                    <table style="width:100%; border-collapse:collapse;">
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Nota/Protocolo:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(nota)}</td></tr>
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Município:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(mun)}</td></tr>
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Origem:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(origem)}</td></tr>
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Status SAP:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(status_sap)}</td></tr>
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Duplicada (Bases):</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(duplicada)}</td></tr>
+                        <tr><td style="padding:3px; border-bottom:1px solid #ddd;"><b>Próxima a outra:</b></td><td style="padding:3px; border-bottom:1px solid #ddd;">{html.escape(proxima)}</td></tr>
+                        <tr><td style="padding:3px;"><b>Colab Mais Perto:</b></td><td style="padding:3px;">{html.escape(colab)}</td></tr>
+                    </table>
+                </div>
+            </div>
+            ]]>'''
+            
+            desc = desc.replace("{", "&#123;").replace("}", "&#125;")
+            kml.append(f'<Placemark><name>{html.escape(nota)}</name><styleUrl>#style_{color}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+
+        # Fecha a pasta desta cor
+        kml.append('</Folder>')
 
     kml.append('</Document></kml>')
     return "\n".join(kml)
