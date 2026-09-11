@@ -6,16 +6,12 @@ import streamlit as st
 from openpyxl.styles import PatternFill, Font, Alignment
 
 def gerar_excel_analise(dict_dfs):
-    """Gera um arquivo Excel com múltiplas abas baseadas no dicionário enviado"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for sheet_name, df in dict_dfs.items():
             if df.empty: continue
             
-            # Remove colunas auxiliares do sistema
             df_saida = df.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME', 'CLUSTER_ID'], errors='ignore')
-            
-            # Limita o nome da aba a 31 caracteres (Regra do Excel)
             safe_sheet_name = sheet_name[:31]
             df_saida.to_excel(writer, index=False, sheet_name=safe_sheet_name)
             
@@ -55,10 +51,8 @@ def gerar_kml_analise(df):
     for color, url in styles.items():
         kml.append(f'<Style id="style_{color}"><IconStyle><Icon><href>{url}</href></Icon></IconStyle></Style>')
 
-    # Estilo Preto Customizado
     kml.append('''<Style id="style_black"><IconStyle><color>ff000000</color><Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-blank.png</href></Icon></IconStyle></Style>''')
 
-    # Agrupa por CLUSTER_ID para montar os agrupamentos geográficos (pastas)
     clusters = []
     if 'CLUSTER_ID' not in df.columns:
         df['CLUSTER_ID'] = range(len(df))
@@ -70,7 +64,6 @@ def gerar_kml_analise(df):
         
         c_names = grp['COR_NOME'].tolist()
         
-        # Define a pasta dominante do terreno
         if any('Preto' in c for c in c_names) or any('Inválidas' in c for c in c_names): c_nome = next(c for c in c_names if 'Inválidas' in c or 'Preto' in c)
         elif any('Vermelho' in c for c in c_names) or any('Duplicadas' in c for c in c_names): c_nome = next(c for c in c_names if 'Duplicadas' in c or 'Vermelho' in c)
         elif len(grp) > 1: c_nome = '🟠 Notas Próximas'
@@ -96,8 +89,14 @@ def gerar_kml_analise(df):
             mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
+            s_sisco = html.escape(str(r.get('STATUS SISCO', '-')))
+            s_list = html.escape(str(r.get('STATUS LIST', '-')))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
+            
+            extra_status = ""
+            if o == 'LEVANTAMENTO':
+                extra_status = f"<tr><td style='padding:2px;'><b>SISCO / LIST:</b></td><td style='padding:2px;'>{s_sisco} / {s_list}</td></tr>"
             
             desc += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
@@ -105,6 +104,7 @@ def gerar_kml_analise(df):
                 <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>Status SAP:</b></td><td style="padding:2px;">{s}</td></tr>
+                {extra_status}
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                 <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
             </table>
