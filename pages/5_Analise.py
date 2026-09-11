@@ -132,18 +132,18 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
             mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
+            
             s_sisco = html.escape(str(r.get('STATUS SISCO', '-')))
+            if s_sisco in ['nan', 'None', '']: s_sisco = '-'
             s_list = html.escape(str(r.get('STATUS LIST', '-')))
+            if s_list in ['nan', 'None', '']: s_list = '-'
+            
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
             aviso_gps = ""
             if dup == 'SIM' and len(grp) == 1:
                 aviso_gps = f"<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
-                
-            extra_status = ""
-            if o == 'LEVANTAMENTO':
-                extra_status = f"<tr><td style='padding:2px;'><b>SISCO / LIST:</b></td><td style='padding:2px;'>{s_sisco} / {s_list}</td></tr>"
             
             pop_html += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
@@ -151,7 +151,7 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
                 <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
-                {extra_status}
+                <tr><td style="padding:2px;"><b>SISCO / LIST:</b></td><td style="padding:2px;">{s_sisco} / {s_list}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                 <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
             </table>
