@@ -93,6 +93,7 @@ def gerar_kml_analise(df):
         for _, r in grp.iterrows():
             n = html.escape(str(r.get('NOTA', '')))
             nomes_notas.append(n)
+            mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
@@ -101,6 +102,7 @@ def gerar_kml_analise(df):
             desc += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
+                <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>Status SAP:</b></td><td style="padding:2px;">{s}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
@@ -123,7 +125,6 @@ def gerar_kml_analise(df):
     df_clusters = pd.DataFrame(clusters)
     
     if not df_clusters.empty:
-        # Monta as pastas do KML divididas pelas cores dominantes
         for nome_grupo, df_grupo in df_clusters.groupby('COR_NOME'):
             kml.append(f'<Folder><name>{html.escape(str(nome_grupo))}</name>')
             for _, r in df_grupo.iterrows():
