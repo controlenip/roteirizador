@@ -23,6 +23,21 @@ from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 from modules.export_fisc import injetar_logo, gerar_excel_fisc, gerar_excel_resumo_fisc, gerar_gpx_simples, gerar_kml_fisc, identificar_icone_folium, limpar_colunas_fisc, gerar_txt_fisc
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
+
+# CSS PARA CORRIGIR A EXIBIÇÃO DA BARRA DE SELEÇÃO (MULTIPLE SELECT)
+st.markdown("""
+<style>
+    span[data-baseweb="tag"] {
+        max-width: none !important;
+    }
+    div[data-baseweb="select"] > div {
+        flex-wrap: wrap !important;
+        height: auto !important;
+        min-height: 40px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 injetar_logo()
 
 # ==========================================
@@ -574,10 +589,35 @@ elif status_exec == "IDLE":
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'COR_ICONE' and c != 'MUN_LIMPO']
-        cd = ['PROTOCOLO', 'VALOR DA OBRA', 'QTD PREVISTA DE POSTES', 'PREVISAO DE ENTREGA', 'PARCEIRO', 'TIPO DE FISCALIZACAO', 'TIPO DE PROJETO', 'REGIONAL', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'ZONA', 'STATUS DA FISCALIZACAO', 'BASE_ATRIBUIDA', 'BACKOFFICE DA FISCALIZACAO', 'OBSERVACAO']
-        cp = [c for c in cd if c in tc]
+        
+        # --- NOVO PADRÃO DE COLUNAS VISÍVEIS ---
+        cd_padrao = [
+            'PROTOCOLO', 
+            'VALOR DA OBRA', 
+            'QTD PREVISTA DE POSTES', 
+            'PREVISAO DE ENTREGA', 
+            'PARCEIRO', 
+            'TIPO DE FISCALIZACAO', 
+            'TIPO DE PROJETO', 
+            'REGIONAL', 
+            'MUNICIPIO', 
+            'LATITUDE', 
+            'LONGITUDE', 
+            'ZONA', 
+            'BASE_ATRIBUIDA' # Este é o FISCAL que foi mapeado no código
+        ]
+        
+        # Encontra na planilha carregada (tc) todas as colunas que estão na lista cd_padrao
+        cp = [c for c in cd_padrao if c in tc]
+        
+        # Se a coluna 'NOTA' estiver na planilha ao invés de PROTOCOLO, a gente pega ela
+        if 'NOTA' in tc and 'PROTOCOLO' not in cp:
+            cp.insert(0, 'NOTA')
+            
         colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
-        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+        
+        # Ordena a seleção de acordo com a ordem do cd_padrao, e joga o resto pro final
+        colunas_exibir.sort(key=lambda x: cd_padrao.index(x) if x in cd_padrao else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
