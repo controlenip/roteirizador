@@ -2,6 +2,7 @@ import pandas as pd
 import io
 import html
 import os
+import re
 import streamlit as st
 from openpyxl.styles import PatternFill, Font, Alignment
 
@@ -27,8 +28,8 @@ def formatar_planilha_fisc(writer, sheet_name):
 def gerar_excel_fisc(df, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
-    for col_name in ['PROTOCOLO', 'NOTA']:
-        if col_name in df_saida.columns: df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+    if 'NOTA' in df_saida.columns: 
+        df_saida = df_saida[~df_saida['NOTA'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
     colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
     
@@ -47,19 +48,13 @@ def gerar_excel_resumo_fisc(df_resumo):
 
 def limpar_colunas_fisc(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    if 'PROTOCOLO' in df_alvo.columns:
-        if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
-        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
-    if 'BASE_ATRIBUIDA' in df_alvo.columns:
-        if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
-        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols and c not in ['LEVANTADOR', 'NOME DO LEVANTADOR']:
+            if c in df_alvo.columns and c not in final_cols:
                 final_cols.append(c)
                 
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
@@ -85,7 +80,7 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
     for b in bases_ativas:
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
-        df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
+        df_b = df_kml[df_kml['FISCAL'] == b]
         for p in df_b['PERIODO'].unique():
             df_p = df_b[df_b['PERIODO'] == p]
             pasta.append(f'<Folder><name>Período {p}</name>')
@@ -101,22 +96,21 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
             if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
 
             for _, r in df_p.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                if r.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                 if pd.isna(lat) or pd.isna(lon): continue
                 qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
                 cor = r.get('COR_ICONE', 'gray')
-                nome = str(r.get('PROTOCOLO', 'Ponto'))
+                nome = str(r.get('NOTA', 'Ponto'))
                 
                 bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
                 txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
                 p_bg = bg_colors.get(cor, '#9E9E9E'); p_c = txt_colors.get(cor, '#ffffff')
                 p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
 
-                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','FISCAL','COR_ICONE']])
                 desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
                 
-                # Prevenção Jinja2
                 desc = desc.replace("{", "&#123;").replace("}", "&#125;")
 
                 pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
@@ -129,9 +123,9 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
 def gerar_gpx_simples(df_kml, nome_rota):
     gpx = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">', f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>']
     for _, row in df_kml.iterrows():
-        if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        if row.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-        if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get("PROTOCOLO", "Ponto")))}</name></wpt>')
+        if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get("NOTA", "Ponto")))}</name></wpt>')
     if 'ROTA_GEOMETRIA' in df_kml.columns:
         gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name><trkseg>')
         for _, row in df_kml.iterrows():
@@ -158,7 +152,7 @@ def gerar_txt_fisc(df, colunas_originais=None):
     linhas_txt = []
     
     for _, r in df.iterrows():
-        nota = str(r.get('NOTA', r.get('PROTOCOLO', ''))).strip()
+        nota = str(r.get('NOTA', '')).strip()
         if nota.lower() in ['nan', 'none', '']: nota = '-'
         
         municipio = str(r.get('MUNICIPIO', '')).strip()
@@ -170,7 +164,6 @@ def gerar_txt_fisc(df, colunas_originais=None):
         qtd_postes = str(r.get('QTD PREVISTA DE POSTES', '')).strip()
         if qtd_postes.lower() in ['nan', 'none']: qtd_postes = '-'
         
-        # BUSCA DA COLUNA "OBSERVAÇÃO" (que normalmente abriga os detalhes extras na Fiscalização)
         info_extra = str(r.get('OBSERVACAO', r.get('OBSERVAÇÃO', r.get('INFORMACOES EXTRAS', '')))).strip()
         if info_extra.lower() in ['nan', 'none', '']: info_extra = ''
             
