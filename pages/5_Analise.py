@@ -11,8 +11,7 @@ from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
 
-# Importações dos Motores Matemáticos
-from modules.data_processing import ler_planilha_cached, formata_campo_html, normalize_cols, normalizar_municipios
+from modules.data_processing import normalize_cols
 from modules.geospatial import haversine_vectorized, fundir_super_pontos
 from modules.export_analise import gerar_excel_analise, gerar_kml_analise
 
@@ -126,20 +125,23 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
         
         for _, r in grp.iterrows():
             n = html.escape(str(r.get('NOTA', '')))
-            mun = html.escape(str(r.get('MUNICIPIO', '')))
             o = html.escape(str(r.get('ORIGEM_BASE', '')))
             s = html.escape(str(r.get('SITUACAO SAP', '')))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
+            # Se for duplicada e estiver sozinha no cluster, significa erro de GPS entre bases
+            aviso_gps = ""
+            if dup == 'SIM' and len(grp) == 1:
+                aviso_gps = f"<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
+            
             pop_html += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
-                <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
-                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
+                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
             </table>
             <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
             '''
@@ -194,18 +196,12 @@ else:
             if msg: sgt.info(msg)
             pb.progress(pct)
 
-        render_t(0.1, "Lendo planilhas e limpando colunas...")
+        render_t(0.1, "Lendo planilhas de Saneamento e Levantamento...")
         df_san = pd.read_excel(file_san) if not file_san.name.endswith('.csv') else pd.read_csv(file_san)
         df_lev = pd.read_excel(file_lev) if not file_lev.name.endswith('.csv') else pd.read_csv(file_lev)
         
         df_san.columns = normalize_cols(df_san.columns)
         df_lev.columns = normalize_cols(df_lev.columns)
-        
-        # UNIFICAÇÃO DE "MUNICÍPIO" E "MUNICIPIO"
-        for c in df_san.columns:
-            if 'MUNI' in c: df_san.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
-        for c in df_lev.columns:
-            if 'MUNI' in c: df_lev.rename(columns={c: 'MUNICIPIO'}, inplace=True); break
         
         # IDENTIFICAÇÃO ABSOLUTA DA LATITUDE SANEAMENTO
         for c in df_san.columns:
@@ -238,24 +234,35 @@ else:
         if 'NOTA' in df_san.columns: df_san['NOTA'] = df_san['NOTA'].astype(str).str.replace('.0', '', regex=False).str.strip()
         if 'NOTA' in df_lev.columns: df_lev['NOTA'] = df_lev['NOTA'].astype(str).str.replace('.0', '', regex=False).str.strip()
         
-        render_t(0.3, "Lendo Localidades de Múltiplas Abas...")
+        render_t(0.3, "Lendo Localidades...")
         
-        xls_loc = pd.ExcelFile(file_loc.getvalue())
-        dfs_loc = []
-        for sheet in xls_loc.sheet_names:
-            df_temp = pd.read_excel(xls_loc, sheet_name=sheet)
-            df_temp.columns = normalize_cols(df_temp.columns)
+        # LER ABAS OU CSV
+        if file_loc.name.endswith('.csv'):
+            df_loc = pd.read_csv(file_loc)
+            df_loc.columns = normalize_cols(df_loc.columns)
+            df_loc['TIPO_EQUIPE'] = 'EQUIPE'
+        else:
+            xls_loc = pd.ExcelFile(file_loc.getvalue())
+            dfs_loc = []
+            for sheet in xls_loc.sheet_names:
+                df_temp = pd.read_excel(xls_loc, sheet_name=sheet)
+                df_temp.columns = normalize_cols(df_temp.columns)
+                
+                for c in df_temp.columns:
+                    if 'NOME' in c: df_temp.rename(columns={c: 'NOME_COLAB'}, inplace=True)
+                    if 'LAT' in c: df_temp.rename(columns={c: 'LAT_LOC'}, inplace=True)
+                    if 'LON' in c: df_temp.rename(columns={c: 'LON_LOC'}, inplace=True)
+                
+                tipo = "Saneamento" if "SAN" in sheet.upper() else "Levantamento"
+                df_temp['TIPO_EQUIPE'] = tipo
+                dfs_loc.append(df_temp)
+            df_loc = pd.concat(dfs_loc, ignore_index=True)
             
-            for c in df_temp.columns:
-                if 'NOME' in c: df_temp.rename(columns={c: 'NOME_COLAB'}, inplace=True)
-                if 'LAT' in c: df_temp.rename(columns={c: 'LAT_LOC'}, inplace=True)
-                if 'LON' in c: df_temp.rename(columns={c: 'LON_LOC'}, inplace=True)
+        for c in df_loc.columns:
+            if 'NOME' in c and 'NOME_COLAB' not in df_loc.columns: df_loc.rename(columns={c: 'NOME_COLAB'}, inplace=True)
+            if 'LAT' in c and 'LAT_LOC' not in df_loc.columns: df_loc.rename(columns={c: 'LAT_LOC'}, inplace=True)
+            if 'LON' in c and 'LON_LOC' not in df_loc.columns: df_loc.rename(columns={c: 'LON_LOC'}, inplace=True)
             
-            tipo = "Saneamento" if "SAN" in sheet.upper() else "Levantamento"
-            df_temp['TIPO_EQUIPE'] = tipo
-            dfs_loc.append(df_temp)
-            
-        df_loc = pd.concat(dfs_loc, ignore_index=True)
         df_loc['LAT_LOC'] = pd.to_numeric(df_loc['LAT_LOC'].astype(str).replace(',', '.', regex=True), errors='coerce')
         df_loc['LON_LOC'] = pd.to_numeric(df_loc['LON_LOC'].astype(str).replace(',', '.', regex=True), errors='coerce')
         df_loc = df_loc.dropna(subset=['LAT_LOC', 'LON_LOC'])
