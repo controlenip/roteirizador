@@ -99,7 +99,8 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     
     mapa = folium.Map(location=[df_final['LATITUDE'].mean(), df_final['LONGITUDE'].mean()], zoom_start=8) if not df_final.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     
-    fg = folium.FeatureGroup(name="Obras Analisadas").add_to(mapa)
+    # === CLUSTER ADICIONADO AQUI ===
+    m_clust = MarkerCluster(name="📍 Obras Analisadas").add_to(mapa)
     
     for _, r in df_final.iterrows():
         lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
@@ -130,7 +131,8 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
         ]]>'''
         pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
         
-        folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(fg)
+        # Adiciona o marcador dentro do Cluster em vez de solto no mapa
+        folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
         
     folium.LayerControl().add_to(mapa)
     st_folium(mapa, use_container_width=True, height=550)
@@ -162,7 +164,6 @@ else:
         tmp = st.empty()
         sgt = st.empty()
         
-        # Função interna do cronômetro da Análise
         def render_t(pct, msg):
             e = time.time() - st_run
             f = pct
@@ -176,7 +177,6 @@ else:
                 sgt.info(msg)
             pb.progress(pct)
 
-        # ETAPA 1
         render_t(0.1, "Lendo planilhas e limpando colunas...")
         df_san = ler_planilha_cached(file_san.getvalue()) if not file_san.name.endswith('.csv') else pd.read_csv(file_san)
         df_lev = ler_planilha_cached(file_lev.getvalue()) if not file_lev.name.endswith('.csv') else pd.read_csv(file_lev)
@@ -200,7 +200,6 @@ else:
         df_san['NOTA'] = df_san['NOTA'].astype(str).str.replace('.0', '', regex=False).str.strip()
         df_lev['NOTA'] = df_lev['NOTA'].astype(str).str.replace('.0', '', regex=False).str.strip()
         
-        # ETAPA 2
         render_t(0.3, "Validando Status SAP (Bloqueios)...")
         status_col = 'STATUS_SAP' if 'STATUS_SAP' in df_lev.columns else ('STATUS SAP' if 'STATUS SAP' in df_lev.columns else ('STATUS' if 'STATUS' in df_lev.columns else None))
         status_dict = df_lev.set_index('NOTA')[status_col].to_dict() if status_col else {}
@@ -213,7 +212,6 @@ else:
         df_san['SITUACAO SAP'] = df_san['NOTA'].apply(get_situacao)
         df_lev['SITUACAO SAP'] = df_lev['NOTA'].apply(get_situacao)
         
-        # ETAPA 3
         render_t(0.5, "Verificando Duplicidades...")
         notas_san = set(df_san['NOTA'].dropna())
         notas_lev = set(df_lev['NOTA'].dropna())
@@ -235,7 +233,6 @@ else:
         lon_locs = df_loc['LONGITUDE'].values
         nomes_locs = df_loc[nome_col_loc].values
         
-        # ETAPA 4
         render_t(0.7, "Analisando Colaborador mais próximo...")
         def get_closest(lat, lon):
             if pd.isna(lat) or pd.isna(lon): return "DESCONHECIDO"
@@ -254,7 +251,6 @@ else:
         
         df_valid = df_master.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
         
-        # ETAPA 5
         render_t(0.9, "Agrupando Obras Vizinhas (Super Pontos)...")
         df_clustered, _ = fundir_super_pontos(df_valid, raio_metros=st.session_state.get('raio_prox', 50), agrupar_por_levantador=False)
         
@@ -263,11 +259,11 @@ else:
             is_prox = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r['_ORIGINAL_ROWS']) > 1
             if is_prox:
                 for orig in r['_ORIGINAL_ROWS']:
-                    nr = dict(orig) # <-- CORREÇÃO: Força o objeto a ser Dicionário
+                    nr = dict(orig) # Conversão segura (dict)
                     nr['PROXIMA'] = 'SIM'
                     expanded.append(nr)
             else:
-                nr = r.to_dict() # <-- CORREÇÃO: Converte a Serie do Pandas para Dicionário
+                nr = r.to_dict() # Conversão segura (dict)
                 nr['PROXIMA'] = 'NÃO'
                 expanded.append(nr)
                 
