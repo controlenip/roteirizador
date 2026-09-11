@@ -10,6 +10,7 @@ import time
 import gc
 import altair as alt
 import plotly.express as px
+import unicodedata
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -24,28 +25,37 @@ from modules.export_fisc import injetar_logo, gerar_excel_fisc, gerar_excel_resu
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 
-# CSS AGRESSIVO PARA QUEBRAR AS LINHAS DA BARRA DE SELEÇÃO E NÃO ESCONDER OS NOMES
+# ==========================================
+# CSS AGRESSIVO PARA CONSERTAR O MULTISELECT
+# ==========================================
 st.markdown("""
 <style>
-    /* Força o contêiner do multiselect a embrulhar (wrap) os itens para baixo */
-    div[data-baseweb="select"] > div:first-child {
+    /* Expande a caixa do multiselect verticalmente */
+    .stMultiSelect [data-baseweb="select"] {
+        min-height: 42px !important;
+    }
+    /* Força os itens a quebrarem de linha e remove a trava de altura */
+    .stMultiSelect [data-baseweb="select"] > div:first-child {
+        display: flex !important;
         flex-wrap: wrap !important;
         height: auto !important;
-        min-height: 40px !important;
-        max-height: 100% !important;
+        max-height: none !important;
         overflow-y: visible !important;
+        padding-bottom: 5px !important;
     }
-    
-    /* Remove a máscara de esmaecimento (fade) do canto direito */
-    div[data-baseweb="select"] > div:first-child > div:last-child {
-        background: transparent !important;
-        background-image: none !important;
+    /* Remove o gradiente transparente que corta os nomes à direita */
+    .stMultiSelect [data-baseweb="select"] > div:first-child > div:last-child {
+        display: none !important;
     }
-    
-    /* Permite que as 'tags' azuis cresçam sem truncar agressivamente */
-    span[data-baseweb="tag"] {
-        max-width: none !important;
-        margin-bottom: 5px !important;
+    /* Permite que os chips azuis usem todo o espaço necessário */
+    .stMultiSelect [data-baseweb="tag"] {
+        max-width: 100% !important;
+        margin-bottom: 4px !important;
+        margin-top: 4px !important;
+    }
+    .stMultiSelect [data-baseweb="tag"] span {
+        white-space: normal !important;
+        text-overflow: clip !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -53,22 +63,21 @@ st.markdown("""
 injetar_logo()
 
 # ==========================================
-# NOVA FUNÇÃO DE CORREÇÃO GEOGRÁFICA
+# FUNÇÕES DE CORREÇÃO E APOIO
 # ==========================================
 def corrigir_coord(val, limite):
-    """Garante que coordenadas sem ponto decimal sejam reduzidas ao limite geográfico do globo"""
     if pd.isna(val): return np.nan
     v = float(val)
     iters = 0
-    # Enquanto o valor absoluto for maior que o limite (Ex: > 90 para Lat), dividimos por 10
     while abs(v) > limite and iters < 10:
         v /= 10.0
         iters += 1
     return v
 
-# ==========================================
-# FUNÇÕES VISUAIS E AUXILIARES
-# ==========================================
+def remover_acentos(text):
+    if not isinstance(text, str): return text
+    return "".join(c for c in unicodedata.normalize('NFKD', text) if not unicodedata.combining(c))
+
 def render_metric_card(title, value, icon, border_color, bg_color):
     return f"""
     <div style="background-color: #ffffff; border-left: 5px solid {border_color}; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; margin-bottom: 10px;">
@@ -140,7 +149,7 @@ def limpar_roteirizador():
     ler_planilha_cached.clear(); tentar_rerun()
 
 # ==========================================
-# INÍCIO DA PÁGINA
+# CONTROLE DE SESSÃO
 # ==========================================
 if "roteamento_concluido_fisc" not in st.session_state: st.session_state.roteamento_concluido_fisc = False
 if "vrp_status_fisc" not in st.session_state: st.session_state.vrp_status_fisc = "IDLE"
@@ -279,44 +288,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                 legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.0)
             )
             st.plotly_chart(fig_pie, use_container_width=True)
-            
-        try:
-            from reportlab.lib.pagesizes import letter
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib import colors
-
-            def gerar_pdf_bytes(df_res):
-                pdf_buf = io.BytesIO()
-                doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-                elements = []
-                styles = getSampleStyleSheet()
-                
-                title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#0D256C'), spaceAfter=15)
-                elements.append(Paragraph("<b>Relatório Executivo de Fiscalização - NIP v3.0</b>", title_style))
-                elements.append(Spacer(1, 10))
-                
-                table_data = [["Fiscal", "Total Obras", "Postes Auditados", "Fat. Postes"]]
-                for _, row in df_res.iterrows():
-                    table_data.append([str(row['Fiscal']), str(row['Obras']), str(row['Postes']), f"{row.get('Perc_Text', '')}"])
-                    
-                t = Table(table_data, colWidths=[200, 90, 100, 110])
-                t.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0D256C')),
-                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                    ('BOTTOMPADDING', (0,0), (-1,0), 8),
-                    ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8f9fa')),
-                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
-                ]))
-                elements.append(t)
-                doc.build(elements)
-                return pdf_buf.getvalue()
-
-            st.download_button("📥 Baixar Relatório Executivo (PDF)", data=gerar_pdf_bytes(df_chart), file_name=f"Relatorio_Fiscalizacao - {datetime.now().strftime('%d.%m.%Y')}.pdf", mime="application/pdf", use_container_width=True)
-        except Exception:
-            st.info("💡 Dica: Você pode salvar os gráficos em alta resolução clicando no ícone de câmera no canto superior direito do gráfico.")
 
     st.markdown("### 🗺️ Mapa Geográfico")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -353,7 +324,13 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     p_bg, p_c = bg_colors.get(c_i, '#9E9E9E'), txt_colors.get(c_i, '#ffffff')
                     p_txt = f"📋 FISCALIZAÇÃO - {qtd_p} POSTES"
                 
-                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
+                # Renderiza o nome correto na popup ('NOTA' e 'FISCAL')
+                def formatar_popup(coluna):
+                    if coluna == 'PROTOCOLO': return 'NOTA'
+                    if coluna == 'BASE_ATRIBUIDA': return 'FISCAL'
+                    return coluna
+
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(formatar_popup(c))}</b></td><td style='padding:3px;'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir_fisc if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA','COR_ICONE']])
                 pop_html = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
                 pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
                 
@@ -602,10 +579,9 @@ elif status_exec == "IDLE":
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'COR_ICONE' and c != 'MUN_LIMPO']
         
-        # --- NOVO PADRÃO DE COLUNAS EXATAS ---
-        # Substituímos PROTOCOLO por NOTA, e BASE_ATRIBUIDA por FISCAL, pois são os nomes visuais desejados.
-        cd_exato = [
-            'NOTA', 
+        # --- NOVO PADRÃO DE COLUNAS EXATAS (Visuais) ---
+        cd_padrao = [
+            'PROTOCOLO', 
             'VALOR DA OBRA', 
             'QTD PREVISTA DE POSTES', 
             'PREVISAO DE ENTREGA', 
@@ -617,25 +593,34 @@ elif status_exec == "IDLE":
             'LATITUDE', 
             'LONGITUDE', 
             'ZONA', 
-            'FISCAL'
+            'BASE_ATRIBUIDA'
         ]
         
-        # Faz um mapeamento para encontrar os nomes na planilha carregada, independentemente de como foram nomeadas (ex: PROTOCOLO vs NOTA)
-        mapa_colunas = {}
-        for c in tc:
-            c_upper = c.upper()
-            if c_upper == 'PROTOCOLO' or c_upper == 'NOTA': mapa_colunas['NOTA'] = c
-            elif c_upper == 'BASE_ATRIBUIDA' or c_upper == 'FISCAL': mapa_colunas['FISCAL'] = c
-            elif c_upper in cd_exato: mapa_colunas[c_upper] = c
-            
-        # Puxa apenas as colunas que estão na nossa lista exata, na ordem estrita solicitada
+        # Mapeamento blindado ignorando acentos e a palavra "DE" no qtd postes
+        tc_limpo = {remover_acentos(c).upper().replace("QTD DE PREVISTA", "QTD PREVISTA"): c for c in tc}
+        
         cp_default = []
-        for nome_ideal in cd_exato:
-            if nome_ideal in mapa_colunas:
-                cp_default.append(mapa_colunas[nome_ideal])
-                
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp_default)
-        colunas_exibir.sort(key=lambda x: cd_exato.index('NOTA' if x.upper()=='PROTOCOLO' else ('FISCAL' if x.upper()=='BASE_ATRIBUIDA' else x.upper())) if ('NOTA' if x.upper()=='PROTOCOLO' else ('FISCAL' if x.upper()=='BASE_ATRIBUIDA' else x.upper())) in cd_exato else 999)
+        for ideal in cd_padrao:
+            if ideal in tc_limpo:
+                cp_default.append(tc_limpo[ideal])
+        
+        # Função para alterar visualmente o nome das duas colunas-chave na hora de selecionar
+        def formatar_display(col):
+            if col == 'PROTOCOLO' or col == 'NOTA': return 'NOTA'
+            if col == 'BASE_ATRIBUIDA' or col == 'FISCAL': return 'FISCAL'
+            return col
+            
+        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp_default, format_func=formatar_display)
+        
+        # Trava a ordem rigorosamente na sequência padrão solicitada
+        def get_sort_index(col):
+            c_upper = remover_acentos(col).upper().replace("QTD DE PREVISTA", "QTD PREVISTA")
+            if c_upper in cd_padrao: return cd_padrao.index(c_upper)
+            if c_upper == 'NOTA': return cd_padrao.index('PROTOCOLO')
+            if c_upper == 'FISCAL': return cd_padrao.index('BASE_ATRIBUIDA')
+            return 999
+            
+        colunas_exibir.sort(key=get_sort_index)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
