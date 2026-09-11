@@ -24,16 +24,28 @@ from modules.export_fisc import injetar_logo, gerar_excel_fisc, gerar_excel_resu
 
 st.set_page_config(page_title="Fiscalização", page_icon="📋", layout="wide")
 
-# CSS PARA CORRIGIR A EXIBIÇÃO DA BARRA DE SELEÇÃO (MULTIPLE SELECT)
+# CSS AGRESSIVO PARA QUEBRAR AS LINHAS DA BARRA DE SELEÇÃO E NÃO ESCONDER OS NOMES
 st.markdown("""
 <style>
-    span[data-baseweb="tag"] {
-        max-width: none !important;
-    }
-    div[data-baseweb="select"] > div {
+    /* Força o contêiner do multiselect a embrulhar (wrap) os itens para baixo */
+    div[data-baseweb="select"] > div:first-child {
         flex-wrap: wrap !important;
         height: auto !important;
         min-height: 40px !important;
+        max-height: 100% !important;
+        overflow-y: visible !important;
+    }
+    
+    /* Remove a máscara de esmaecimento (fade) do canto direito */
+    div[data-baseweb="select"] > div:first-child > div:last-child {
+        background: transparent !important;
+        background-image: none !important;
+    }
+    
+    /* Permite que as 'tags' azuis cresçam sem truncar agressivamente */
+    span[data-baseweb="tag"] {
+        max-width: none !important;
+        margin-bottom: 5px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -488,7 +500,7 @@ elif status_exec == "IDLE":
     
     if not df_rej.empty: 
         st.markdown(f"""
-        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-bottom: 20px;'>
+        <div style='background-color: #fff3cd; border-left: 5px solid #ffeeba; padding: 15px; border-radius: 4px; margin-top: 10px; margin-bottom: 20px;'>
             <h4 style='color: #856404; margin-top: 0; margin-bottom: 10px;'>⚠️ {len(df_rej)} Obras Retidas para Correção (Verifique o ZIP)</h4>
             <p style='color: #856404; font-size: 14px; margin-bottom: 0;'>
                 <b>Justificativa Técnica Oficial:</b> As obras listadas no arquivo <b>"Obras_Correcao"</b> foram bloqueadas porque apresentaram <b>coordenadas geográficas em branco, zeradas ou invertidas</b>.
@@ -590,9 +602,10 @@ elif status_exec == "IDLE":
     with st.expander("🛠️ Configuração de Saída", expanded=True):
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'COR_ICONE' and c != 'MUN_LIMPO']
         
-        # --- NOVO PADRÃO DE COLUNAS VISÍVEIS ---
-        cd_padrao = [
-            'PROTOCOLO', 
+        # --- NOVO PADRÃO DE COLUNAS EXATAS ---
+        # Substituímos PROTOCOLO por NOTA, e BASE_ATRIBUIDA por FISCAL, pois são os nomes visuais desejados.
+        cd_exato = [
+            'NOTA', 
             'VALOR DA OBRA', 
             'QTD PREVISTA DE POSTES', 
             'PREVISAO DE ENTREGA', 
@@ -604,20 +617,25 @@ elif status_exec == "IDLE":
             'LATITUDE', 
             'LONGITUDE', 
             'ZONA', 
-            'BASE_ATRIBUIDA' # Este é o FISCAL que foi mapeado no código
+            'FISCAL'
         ]
         
-        # Encontra na planilha carregada (tc) todas as colunas que estão na lista cd_padrao
-        cp = [c for c in cd_padrao if c in tc]
-        
-        # Se a coluna 'NOTA' estiver na planilha ao invés de PROTOCOLO, a gente pega ela
-        if 'NOTA' in tc and 'PROTOCOLO' not in cp:
-            cp.insert(0, 'NOTA')
+        # Faz um mapeamento para encontrar os nomes na planilha carregada, independentemente de como foram nomeadas (ex: PROTOCOLO vs NOTA)
+        mapa_colunas = {}
+        for c in tc:
+            c_upper = c.upper()
+            if c_upper == 'PROTOCOLO' or c_upper == 'NOTA': mapa_colunas['NOTA'] = c
+            elif c_upper == 'BASE_ATRIBUIDA' or c_upper == 'FISCAL': mapa_colunas['FISCAL'] = c
+            elif c_upper in cd_exato: mapa_colunas[c_upper] = c
             
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
-        
-        # Ordena a seleção de acordo com a ordem do cd_padrao, e joga o resto pro final
-        colunas_exibir.sort(key=lambda x: cd_padrao.index(x) if x in cd_padrao else 999)
+        # Puxa apenas as colunas que estão na nossa lista exata, na ordem estrita solicitada
+        cp_default = []
+        for nome_ideal in cd_exato:
+            if nome_ideal in mapa_colunas:
+                cp_default.append(mapa_colunas[nome_ideal])
+                
+        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp_default)
+        colunas_exibir.sort(key=lambda x: cd_exato.index('NOTA' if x.upper()=='PROTOCOLO' else ('FISCAL' if x.upper()=='BASE_ATRIBUIDA' else x.upper())) if ('NOTA' if x.upper()=='PROTOCOLO' else ('FISCAL' if x.upper()=='BASE_ATRIBUIDA' else x.upper())) in cd_exato else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records_fisc': tbr, 'colunas_exibir_fisc': colunas_exibir})
