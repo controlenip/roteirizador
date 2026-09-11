@@ -132,6 +132,10 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             
+            aviso_gps = ""
+            if dup == 'SIM' and len(grp) == 1:
+                aviso_gps = f"<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
+            
             pop_html += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
@@ -139,7 +143,7 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
-                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}</td></tr>
+                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
             </table>
             <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
             '''
@@ -195,8 +199,14 @@ else:
             pb.progress(pct)
 
         render_t(0.1, "Lendo planilhas de Saneamento e Levantamento...")
-        df_san = pd.read_excel(file_san) if not file_san.name.endswith('.csv') else pd.read_csv(file_san)
-        df_lev = pd.read_excel(file_lev) if not file_lev.name.endswith('.csv') else pd.read_csv(file_lev)
+        
+        # BLINDAGEM DO PANDAS (Usando io.BytesIO para evitar TypeError)
+        file_san_buffer = io.BytesIO(file_san.getvalue())
+        file_lev_buffer = io.BytesIO(file_lev.getvalue())
+        file_loc_buffer = io.BytesIO(file_loc.getvalue())
+        
+        df_san = pd.read_excel(file_san_buffer) if not file_san.name.lower().endswith('.csv') else pd.read_csv(file_san_buffer)
+        df_lev = pd.read_excel(file_lev_buffer) if not file_lev.name.lower().endswith('.csv') else pd.read_csv(file_lev_buffer)
         
         df_san.columns = normalize_cols(df_san.columns)
         df_lev.columns = normalize_cols(df_lev.columns)
@@ -243,7 +253,7 @@ else:
         # SOLUÇÃO BLINDADA PARA CSV OU EXCEL MULTI-ABAS
         dfs_loc = []
         if file_loc.name.lower().endswith('.csv'):
-            df_temp = pd.read_csv(file_loc)
+            df_temp = pd.read_csv(file_loc_buffer)
             df_temp.columns = normalize_cols(df_temp.columns)
             for c in df_temp.columns:
                 if 'NOME' in c: df_temp.rename(columns={c: 'NOME_COLAB'}, inplace=True)
@@ -252,7 +262,7 @@ else:
             df_temp['TIPO_EQUIPE'] = 'Equipe (CSV)'
             dfs_loc.append(df_temp)
         else:
-            xls_loc = pd.ExcelFile(file_loc.getvalue())
+            xls_loc = pd.ExcelFile(file_loc_buffer)
             for sheet in xls_loc.sheet_names:
                 df_temp = pd.read_excel(xls_loc, sheet_name=sheet)
                 df_temp.columns = normalize_cols(df_temp.columns)
@@ -314,9 +324,9 @@ else:
             
             sorted_idx = np.argsort(dists)
             res = []
-            for i in sorted_idx[:2]: # Pega Top 2
+            for i in sorted_idx[:2]:
                 d_km = dists[i]
-                if len(res) == 1 and d_km > 100: break # Se o segundo for longe demais, ignora
+                if len(res) == 1 and d_km > 100: break
                 nome = nomes_locs[i].title()
                 tipo = tipos_locs[i]
                 res.append(f"{nome} ({tipo}) - {d_km:.1f}km")
