@@ -18,7 +18,7 @@ from modules.export_analise import gerar_excel_analise, gerar_kml_analise
 
 st.set_page_config(page_title="Análise Cruzada", page_icon="🔍", layout="wide")
 
-# CSS para o multiselect
+# CSS para o multiselect e visualização
 st.markdown("""
 <style>
     .stMultiSelect [data-baseweb="select"] > div:first-child { flex-wrap: wrap !important; }
@@ -59,6 +59,7 @@ with st.sidebar:
     if st.session_state.is_done_analise and not st.session_state.df_final_analise.empty:
         df_fin = st.session_state.df_final_analise.copy()
         
+        # Trava de Segurança do Cache
         if 'COR_NOME' not in df_fin.columns:
             st.session_state.is_done_analise = False
             st.session_state.df_final_analise = pd.DataFrame()
@@ -72,7 +73,6 @@ with st.sidebar:
             st.warning("Selecione pelo menos uma cor para gerar o mapa e os relatórios.")
             st.stop()
             
-        # Filtra a visualização baseada nas cores selecionadas
         df_view = df_fin[df_fin['COR_NOME'].isin(cores_selecionadas)].copy()
         
         st.markdown("---")
@@ -160,7 +160,18 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     folium.LayerControl().add_to(mapa)
     st_folium(mapa, use_container_width=True, height=550)
 
-    st.markdown(f"### 📊 Tabela Consolidada ({len(df_view)} Obras Filtradas)")
+    # --- PAINEL DE CONTABILIDADE (Obras por Base) ---
+    st.markdown("### 📈 Resumo da Volumetria")
+    total_san = len(df_view[df_view['ORIGEM_BASE'] == 'SANEAMENTO'])
+    total_lev = len(df_view[df_view['ORIGEM_BASE'] == 'LEVANTAMENTO'])
+    total_geral = len(df_view)
+    
+    col_a, col_b, col_c = st.columns(3)
+    col_a.info(f"**🟣 Total Saneamento:** {total_san} obras")
+    col_b.success(f"**🟢 Total Levantamento:** {total_lev} obras")
+    col_c.warning(f"**🎯 Total Geral:** {total_geral} obras")
+
+    st.markdown(f"### 📊 Tabela Consolidada Detalhada")
     st.data_editor(df_view.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME', 'CLUSTER_ID'], errors='ignore'), use_container_width=True)
 
 # ==========================================
@@ -208,17 +219,28 @@ else:
         df_lev.columns = normalize_cols(df_lev.columns)
         df_loc.columns = normalize_cols(df_loc.columns)
         
-        # RADAR MAIS EFICIENTE PARA ACHAR COORDENADAS DE SANEAMENTO
+        # --- RADAR DE COORDENADAS BLINDADO ---
+        # Saneamento (Prioridade para LATITUDE PROJETO)
         for c in df_san.columns:
-            if 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
+            if 'PROJETO' in c.upper() and 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
         for c in df_san.columns:
-            if 'LON' in c.upper(): df_san.rename(columns={c: 'LONGITUDE'}, inplace=True); break
+            if 'PROJETO' in c.upper() and 'LON' in c.upper(): df_san.rename(columns={c: 'LONGITUDE'}, inplace=True); break
             
+        # Se falhar o Projeto, procura genérico
+        if 'LATITUDE' not in df_san.columns:
+            for c in df_san.columns:
+                if 'LAT' in c.upper(): df_san.rename(columns={c: 'LATITUDE'}, inplace=True); break
+        if 'LONGITUDE' not in df_san.columns:
+            for c in df_san.columns:
+                if 'LON' in c.upper(): df_san.rename(columns={c: 'LONGITUDE'}, inplace=True); break
+                
+        # Levantamento
         for c in df_lev.columns:
-            if 'LAT' in c.upper(): df_lev.rename(columns={c: 'LATITUDE'}, inplace=True); break
+            if 'LAT' in c.upper() and 'LATITUDE' not in df_lev.columns: df_lev.rename(columns={c: 'LATITUDE'}, inplace=True)
         for c in df_lev.columns:
-            if 'LON' in c.upper(): df_lev.rename(columns={c: 'LONGITUDE'}, inplace=True); break
+            if 'LON' in c.upper() and 'LONGITUDE' not in df_lev.columns: df_lev.rename(columns={c: 'LONGITUDE'}, inplace=True)
         
+        # --- IDENTIFICAÇÃO DE NOTA ---
         for pref in ['NOTA', 'PROTOCOLO', 'OS', 'ID SISCO']:
             if pref in df_san.columns:
                 df_san.rename(columns={pref: 'NOTA'}, inplace=True); break
@@ -325,7 +347,6 @@ else:
                 if st_list not in v_list or st_sisco not in v_sisco:
                     is_black = True
             
-            # ORDEM DE PRECEDÊNCIA CORRIGIDA!
             if dupl == 'SIM': return 'red', '🔴 Vermelho (Duplicadas)'
             if prox == 'SIM': return 'orange', '🟠 Laranja (Próximas)'
             if is_black: return 'black', '⚫ Preto (Levant. Inválido)'
