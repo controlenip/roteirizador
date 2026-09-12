@@ -155,9 +155,22 @@ if is_done and not st.session_state.df_routed.empty:
         
         for pe in db['PERIODO'].unique():
             dp = db[db['PERIODO'] == pe]
-            pts = [p for _, r in dp.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
-            folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
-            folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
+
+            # Desenha cada trecho de rota separadamente.
+            # Isso evita que o Folium ligue com uma reta o final de um trecho
+            # ao inicio de outro quando o OSRM falhar em algum segmento.
+            for _, r_seg in dp.iterrows():
+                geom = r_seg.get('ROTA_GEOMETRIA')
+                if not isinstance(geom, list) or len(geom) < 2:
+                    continue
+                pts_seg = []
+                for pt in geom:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        lon, lat = pt[0], pt[1]
+                        pts_seg.append([lat, lon])
+                if len(pts_seg) >= 2:
+                    folium.PolyLine(pts_seg, color='black', weight=7, opacity=0.9).add_to(fg)
+                    folium.PolyLine(pts_seg, color=cr, weight=3, opacity=1.0).add_to(fg)
             
             for r in dp.to_dict('records'):
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -521,32 +534,42 @@ if status_exec == "RUNNING":
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            ei = min(oi + (30 if cfg['tracado_real'] else len(rf)), len(rf))
+            # Com arruamento real, processa menos trechos por ciclo para reduzir
+            # a chance de bloqueio/timeout no servidor publico do OSRM.
+            ei = min(oi + (10 if cfg['tracado_real'] else len(rf)), len(rf))
             
             for i in range(oi, ei):
                 it = rf[i]
-                if not cfg['tracado_real']: 
+                if not cfg['tracado_real']:
+                    # Linha reta somente quando o usuario DESATIVOU o arruamento real.
                     gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
                 else:
                     if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
-                    
-                    # --- BLOCO DE RECUPERAÇÃO E ESPERA SEGURA (RETRY DO OSRM) ---
+
+                    # Tenta obter a geometria real pelo OSRM.
+                    # Se o servidor falhar, NAO inventa uma linha reta.
                     sucesso_rota = False
-                    for tentativa in range(3): # Tenta até 3 vezes puxar a rota real
+                    for tentativa in range(5):
                         try:
-                            time.sleep(0.4) # Aumentado de 0.15 para 0.4 para evitar bloqueio pelo servidor
-                            rota = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-                            if rota and len(rota) > 0 and len(rota[0]) > 0:
-                                gd.append(rota)
-                                sucesso_rota = True
-                                break
+                            time.sleep(0.8 if tentativa == 0 else 1.2)
+                            rota = obter_rota_ruas(
+                                it['la'], it['La'], it['lt'], it['Lt'],
+                                cfg['url_osrm_base'], cfg['velocidade_media_kmh']
+                            )
+                            if rota and len(rota) > 0:
+                                geom_rota = rota[0]
+                                if isinstance(geom_rota, list) and len(geom_rota) >= 2:
+                                    gd.append(rota)
+                                    sucesso_rota = True
+                                    break
                         except Exception:
-                            time.sleep(1.5) # Se o servidor derrubar, aguarda 1.5s para esfriar a conexão e tenta de novo
-                            
-                    # Se falhar nas 3 tentativas, aciona o fallback com linha reta para o App não travar
+                            time.sleep(2.0 + tentativa)
+
                     if not sucesso_rota:
-                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                        # Mantem um item vazio para preservar o pareamento rf <-> gd,
+                        # mas nenhum segmento sera desenhado no mapa/KML.
+                        gd.append(([], 0.0))
             
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
@@ -560,7 +583,8 @@ if status_exec == "RUNNING":
                 elif it['ir']: rdf.append({'PROTOCOLO': 'RETORNO_BASE', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(it['dk'], 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
                 else:
                     ob = it['o']; ob['ORDEM'], ob['NOME_DIA'], ob['DIA_MES'], ob['SEMANA'], ob['DIA'], ob['PERIODO'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, dn, it['dm'], it['s'], it['d'], pv, round(it['dk'], 2)
-                    ob['ROTA_GEOMETRIA'] = [[it['Lt'], it['lt']], [it['Lt'], it['lt']]] if it['la']==bl and it['La']==bL else g
+                    # Preserva a geometria real inclusive no primeiro deslocamento saindo da base.
+                    ob['ROTA_GEOMETRIA'] = g
                     ob['HORA_INICIO'], ob['HORA_FIM'], ob['_HORA_INICIO_DT'], ob['_HORA_FIM_DT'] = it['hi'].strftime('%H:%M'), it['hf'].strftime('%H:%M'), it['hi'], it['hf']
                     rdf.append(ob)
                 og += 1
