@@ -93,7 +93,7 @@ def limpar_colunas_tatica(df_alvo, cols_originais):
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
-    final_cols = ['FISCAL', 'NOME_DIA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    final_cols = ['FISCAL', 'NOME_DIA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_RODOVIARIA_KM', 'DISTANCIA_ESTIMADA_KM', 'TEMPO_ROTA_REAL_MIN', 'STATUS_ROTA', 'COORD_CORRIGIDA']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
@@ -148,26 +148,24 @@ def gerar_kml_tatica(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_pe
             nome_pasta_periodo = f"Semana {p}" if tipo_periodo == "Semana" else f"Dia {p}"
             pasta.append(f'<Folder><name>{nome_pasta_periodo}</name>')
             
-            # Cada geometria vira um LineString independente dentro de MultiGeometry.
-            # Assim, se um trecho do OSRM falhar e vier vazio, o Google Earth nao
-            # liga dois trechos distantes com uma reta artificial.
-            segmentos_kml = []
+            segmentos = []
             for _, r in df_p.iterrows():
                 geom = r.get('ROTA_GEOMETRIA')
-                if not isinstance(geom, list) or len(geom) < 2:
-                    continue
-                coords_segmento = []
-                for pt in geom:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        coords_segmento.append(f"{pt[0]},{pt[1]},0")
-                if len(coords_segmento) >= 2:
-                    str_coords = '\n'.join(coords_segmento)
-                    segmentos_kml.append('<LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString>')
+                if isinstance(geom, list) and len(geom) >= 2:
+                    coords_seg = []
+                    for pt in geom:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                            coords_seg.append(f"{pt[0]},{pt[1]},0")
+                    if len(coords_seg) >= 2:
+                        segmentos.append(coords_seg)
 
-            if segmentos_kml:
-                multi = '<MultiGeometry>' + ''.join(segmentos_kml) + '</MultiGeometry>'
-                pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl>' + multi + '</Placemark>')
-                pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl>' + multi + '</Placemark>')
+            if segmentos:
+                multi = ''.join([
+                    '<LineString><tessellate>1</tessellate><coordinates>\n' + '\n'.join(seg) + '\n</coordinates></LineString>'
+                    for seg in segmentos
+                ])
+                pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><MultiGeometry>' + multi + '</MultiGeometry></Placemark>')
+                pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl><MultiGeometry>' + multi + '</MultiGeometry></Placemark>')
 
             for _, r in df_p.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -208,6 +206,12 @@ def gerar_kml_tatica(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_pe
 
                 dist_ant = f"{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0.0)} KM"
                 dist_prox = f"{r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)} KM"
+                _dr = r.get('DISTANCIA_RODOVIARIA_KM', None)
+                if _dr is None or pd.isna(_dr):
+                    dist_real = '- (estimado no planejamento)'
+                else:
+                    dist_real = f"{_dr} KM"
+                status_rota = html.escape(str(r.get('STATUS_ROTA', '-')))
 
                 if is_sp:
                     prot_list = [orig.get('PROTOCOLO', orig.get('NOTA', '')) for orig in r['_ORIGINAL_ROWS']]
@@ -219,6 +223,8 @@ def gerar_kml_tatica(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_pe
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Nota/Protocolo:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{html.escape(str(ordem_txt))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{dist_ant}</td></tr>
+                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Real:</td><td style="padding:3px 6px; color:#333;">{dist_real}</td></tr>
+                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Status Rota:</td><td style="padding:3px 6px; color:#333;">{status_rota}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
                 '''
 
@@ -257,15 +263,11 @@ def gerar_gpx_simples(df_kml, nome_rota):
         gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name>')
         for _, row in df_kml.iterrows():
             geom = row.get('ROTA_GEOMETRIA')
-            if not isinstance(geom, list) or len(geom) < 2:
-                continue
-            pts_validos = [pt for pt in geom if isinstance(pt, (list, tuple)) and len(pt) >= 2]
-            if len(pts_validos) < 2:
-                continue
-            gpx.append('    <trkseg>')
-            for lon, lat in pts_validos:
-                gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
-            gpx.append('    </trkseg>')
+            if isinstance(geom, list) and len(geom) >= 2:
+                gpx.append('    <trkseg>')
+                for lon, lat in geom:
+                    gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
+                gpx.append('    </trkseg>')
         gpx.append('  </trk>')
     gpx.append('</gpx>')
     return "\n".join(gpx)
