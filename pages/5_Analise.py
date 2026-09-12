@@ -89,6 +89,8 @@ def renomear_seguro(df, origem, destino):
 
 
 def valor_alias(row, aliases, default='-'):
+    # Primeiro tenta os nomes exatos; depois compara nomes normalizados para tolerar
+    # espaços duplicados, acentos e pequenas variações vindas das planilhas.
     for col in aliases:
         try:
             val = row.get(col)
@@ -96,6 +98,16 @@ def valor_alias(row, aliases, default='-'):
             val = None
         if pd.notna(val) and str(val).strip().lower() not in ['', 'nan', 'none']:
             return str(val).strip()
+    try:
+        mapa = {_norm_col(c): c for c in row.index}
+        for alias in aliases:
+            real = mapa.get(_norm_col(alias))
+            if real is not None:
+                val = row.get(real)
+                if pd.notna(val) and str(val).strip().lower() not in ['', 'nan', 'none']:
+                    return str(val).strip()
+    except Exception:
+        pass
     return default
 
 
@@ -105,14 +117,95 @@ def nota_valida(v):
 
 
 def limpar_nota_serie(s):
-    return s.astype(str).str.replace('.0', '', regex=False).str.strip()
+    # Remove apenas o sufixo decimal criado pelo Excel (ex.: 12345.0 -> 12345).
+    # Não altera identificadores legítimos como 123.01.
+    return s.astype(str).str.strip().str.replace(r'\.0+$', '', regex=True)
+
+
+def normalizar_status_fluxo(valor, default='0'):
+    """Normaliza status de SAP/SISCO/LIST sem depender de acentos, pontuação ou espaços duplicados."""
+    if pd.isna(valor):
+        return default
+    s = remover_acentos_str(str(valor)).upper().strip()
+    if s in ['', 'NAN', 'NONE', 'NULL', '-']:
+        return default
+    # Remove apenas sufixo decimal artificial de valores numéricos (0.0 -> 0).
+    s = re.sub(r'(?<=\d)\.0+$', '', s)
+    # Torna equivalentes formas como PRÉ-ANÁLISE, PRE_ANALISE, PRE  ANALISE e P/.
+    s = re.sub(r'[^A-Z0-9]+', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s or default
+
+
+STATUS_LIST_VALIDOS = {'0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'}
+STATUS_SISCO_VALIDOS = {
+    '0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P LEVANTAMENTO'
+}
+
+
+def avaliar_validade_fluxo(linha):
+    """Retorna validade e motivo; uma nota APTO só vira inválida quando há regra objetiva descumprida."""
+    motivos = []
+    situacao_sap = str(linha.get('SITUACAO SAP', '')).strip().upper()
+    if 'BLOQUEADO' in situacao_sap or 'FINL' in situacao_sap or 'CANC' in situacao_sap:
+        motivos.append(f"Status SAP bloqueado: {situacao_sap or '-'}")
+
+    origem = str(linha.get('ORIGEM_BASE', '')).strip().upper()
+    st_list = normalizar_status_fluxo(valor_alias(linha, ['STATUS_LIST', 'STATUS LIST'], '0'), '0')
+    st_sisco = normalizar_status_fluxo(valor_alias(linha, ['STATUS_SISCO', 'STATUS SISCO'], '0'), '0')
+
+    if origem == 'LEVANTAMENTO':
+        if st_list not in STATUS_LIST_VALIDOS:
+            motivos.append(f"Status LIST não permitido: {st_list}")
+        if st_sisco not in STATUS_SISCO_VALIDOS:
+            motivos.append(f"Status SISCO não permitido: {st_sisco}")
+
+    return {
+        'valida': not motivos,
+        'motivo': ' | '.join(motivos) if motivos else '-',
+        'status_list_normalizado': st_list,
+        'status_sisco_normalizado': st_sisco,
+    }
+
+
+def determinar_classificacao_analise(linha):
+    """Classificação única da análise, usando a validade já auditada como fonte de verdade."""
+    if str(linha.get('NOTA_VALIDA_FLUXO', 'SIM')).strip().upper() == 'NÃO':
+        return 'black', '⚫ Notas Inválidas'
+    if str(linha.get('DUPLICADA', '')).strip().upper() == 'SIM':
+        return 'red', '🔴 Notas Duplicadas'
+    if str(linha.get('PROXIMA', '')).strip().upper() == 'SIM':
+        return 'orange', '🟠 Notas Próximas'
+    origem = str(linha.get('ORIGEM_BASE', '')).strip().upper()
+    if origem == 'LEVANTAMENTO':
+        return 'green', '🟢 Notas Levantamento Solitárias'
+    if origem == 'SANEAMENTO':
+        return 'purple', '🟣 Notas Saneamento Solitárias'
+    return 'blue', '🔵 Outras'
+
+
+def ler_csv_resiliente(file_bytes):
+    """Lê CSVs corporativos com separador/encoding variáveis sem mudar o conteúdo."""
+    ultimo_erro = None
+    for encoding in ['utf-8-sig', 'utf-8', 'latin-1']:
+        try:
+            return pd.read_csv(io.BytesIO(file_bytes), sep=None, engine='python', encoding=encoding)
+        except Exception as exc:
+            ultimo_erro = exc
+    # Fallback explícito para exportações que usam ponto e vírgula.
+    for encoding in ['utf-8-sig', 'latin-1']:
+        try:
+            return pd.read_csv(io.BytesIO(file_bytes), sep=';', encoding=encoding)
+        except Exception as exc:
+            ultimo_erro = exc
+    raise ultimo_erro if ultimo_erro else ValueError('Não foi possível ler o CSV.')
 
 
 def criar_id_analise():
     return f"ANL-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
 
-def montar_config_txt(config, cores=None):
+def montar_config_txt(config, cores=None, filtros=None):
     linhas = [
         "CONFIGURAÇÃO DA ANÁLISE CRUZADA",
         f"ID da análise: {config.get('id_analise', '-')}",
@@ -123,14 +216,30 @@ def montar_config_txt(config, cores=None):
         f"Raio de agrupamento: {config.get('raio_proximidade_m', '-')} m",
         f"Quantidade de equipes próximas: {config.get('qtd_equipes_proximas', '-')}",
         f"Distância máxima para equipes adicionais: {config.get('distancia_max_equipe_km', '-')} km",
+        f"Alerta de equipe distante: {config.get('distancia_alerta_equipe_km', '-')} km",
         f"Linhas Saneamento recebidas: {config.get('linhas_saneamento', '-')}",
         f"Linhas Levantamento recebidas: {config.get('linhas_levantamento', '-')}",
         f"Linhas válidas espacialmente: {config.get('linhas_validas', '-')}",
-        f"Coordenadas rejeitadas: {config.get('coordenadas_rejeitadas', '-')}",
-        f"Coordenadas corrigidas: {config.get('coordenadas_corrigidas', '-')}",
+        f"Coordenadas de obras rejeitadas: {config.get('coordenadas_rejeitadas', '-')}",
+        f"Coordenadas de obras corrigidas: {config.get('coordenadas_corrigidas', '-')}",
+        f"Localidades rejeitadas: {config.get('localidades_rejeitadas', '-')}",
+        f"Localidades corrigidas: {config.get('localidades_corrigidas', '-')}",
+        f"Localidades com alertas: {config.get('localidades_alertas', '-')}",
+        f"Status SAP localizado: {'SIM' if config.get('status_sap_localizado', False) else 'NÃO'}",
+        f"Duplicadas entre bases: {config.get('duplicadas_interbase', '-')}",
+        f"Tempo total de processamento: {config.get('tempo_processamento_s', '-')} s",
     ]
+    tempos = config.get('tempos_etapas', {}) or {}
+    if tempos:
+        linhas.append("TEMPOS POR ETAPA:")
+        for etapa, segundos in tempos.items():
+            linhas.append(f"- {etapa}: {segundos} s")
     if cores is not None:
         linhas.append(f"Filtros de cores exportados: {', '.join(cores)}")
+    if filtros:
+        linhas.append("FILTROS DE EXPORTAÇÃO:")
+        for k, v in filtros.items():
+            linhas.append(f"- {k}: {v}")
     return "\n".join(linhas) + "\n"
 
 
@@ -196,7 +305,7 @@ def preparar_localidades(file_loc):
         return df_temp
 
     if file_loc.name.lower().endswith('.csv'):
-        df_temp = pd.read_csv(io.BytesIO(file_loc.getvalue()))
+        df_temp = ler_csv_resiliente(file_loc.getvalue())
         dfs_loc.append(tratar_aba(df_temp, 'Equipe (CSV)'))
     else:
         file_loc_buffer = io.BytesIO(file_loc.getvalue())
@@ -217,51 +326,263 @@ def validar_colunas(df, obrigatorias, nome_base):
     return True
 
 
-def colaboradores_proximos_em_lote(df, lat_locs, lon_locs, nomes_locs, tipos_locs, qtd_equipes, distancia_max_km):
-    """Mantém a mesma regra de distância, reduzindo overhead de DataFrame.apply()."""
-    resultados = []
+def colaboradores_proximos_em_lote(df, lat_locs, lon_locs, nomes_locs, tipos_locs, qtd_equipes, distancia_max_km, distancia_alerta_km=100.0):
+    """Calcula uma vez por coordenada única e devolve texto + colunas estruturadas."""
     qtd_equipes = max(1, int(qtd_equipes))
-    n_locs = len(lat_locs)
-    if n_locs == 0:
-        return ['DESCONHECIDO'] * len(df)
+    max_cols = max(5, qtd_equipes)
+    if len(lat_locs) == 0:
+        base = pd.DataFrame(index=df.index)
+        base['COLABORADORES MAIS PROXIMOS'] = 'DESCONHECIDO'
+        base['DISTANCIA_EQUIPE_MAIS_PROXIMA_KM'] = np.nan
+        base['ALERTA_EQUIPE_DISTANTE'] = 'NÃO'
+        return base
 
-    coords = df[['LATITUDE', 'LONGITUDE']].to_numpy(dtype=float)
-    for inicio in range(0, len(coords), 500):
-        bloco = coords[inicio:inicio + 500]
-        for lat, lon in bloco:
-            if pd.isna(lat) or pd.isna(lon):
-                resultados.append('DESCONHECIDO')
+    coords_unicas = df[['LATITUDE', 'LONGITUDE']].drop_duplicates().copy()
+    cache = {}
+    for _, rr in coords_unicas.iterrows():
+        lat, lon = float(rr['LATITUDE']), float(rr['LONGITUDE'])
+        chave = (lat, lon)
+        dists = haversine_vectorized(lat, lon, lat_locs, lon_locs)
+        if len(dists) == 0:
+            cache[chave] = {'COLABORADORES MAIS PROXIMOS': 'DESCONHECIDO', 'DISTANCIA_EQUIPE_MAIS_PROXIMA_KM': np.nan, 'ALERTA_EQUIPE_DISTANTE': 'NÃO'}
+            continue
+
+        k = min(qtd_equipes, len(dists))
+        if k == len(dists):
+            idxs = np.argsort(dists)
+        else:
+            idxs = np.argpartition(dists, k - 1)[:k]
+            idxs = idxs[np.argsort(dists[idxs])]
+
+        item = {}
+        partes = []
+        for pos in range(max_cols):
+            item[f'EQUIPE_{pos+1}'] = ''
+            item[f'TIPO_EQUIPE_{pos+1}'] = ''
+            item[f'DISTANCIA_EQUIPE_{pos+1}_KM'] = np.nan
+
+        adicionados = 0
+        for pos, i in enumerate(idxs):
+            d_km = float(dists[i])
+            # A primeira equipe continua sempre sendo exibida. O limite vale só para adicionais.
+            if pos >= 1 and d_km > float(distancia_max_km):
+                break
+            nome = str(nomes_locs[i]).strip()
+            tipo = str(tipos_locs[i]).strip()
+            item[f'EQUIPE_{pos+1}'] = nome.title()
+            item[f'TIPO_EQUIPE_{pos+1}'] = tipo
+            item[f'DISTANCIA_EQUIPE_{pos+1}_KM'] = round(d_km, 3)
+            partes.append(f"{nome.title()} ({tipo}) - {d_km:.1f}km")
+            adicionados += 1
+
+        d1 = float(dists[idxs[0]]) if len(idxs) else np.nan
+        item['COLABORADORES MAIS PROXIMOS'] = " | ".join(partes) if partes else 'DESCONHECIDO'
+        item['DISTANCIA_EQUIPE_MAIS_PROXIMA_KM'] = round(d1, 3) if pd.notna(d1) else np.nan
+        item['ALERTA_EQUIPE_DISTANTE'] = 'SIM' if pd.notna(d1) and d1 > float(distancia_alerta_km) else 'NÃO'
+        cache[chave] = item
+
+    registros = []
+    for _, rr in df[['LATITUDE', 'LONGITUDE']].iterrows():
+        registros.append(cache.get((float(rr['LATITUDE']), float(rr['LONGITUDE'])), {'COLABORADORES MAIS PROXIMOS': 'DESCONHECIDO'}))
+    return pd.DataFrame(registros, index=df.index)
+
+
+def auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_metros):
+    """Audita cada ocorrência duplicada e aponta a ocorrência correspondente mais próxima na outra base."""
+    df_valid = df_valid.copy()
+    colunas = {
+        'DISTANCIA_ENTRE_DUPLICATAS_KM': np.nan,
+        'DUPLICATA_MESMO_LOCAL': '',
+        'COORDENADA_DIVERGENTE': '',
+        'MUNICIPIO_DIVERGENTE': '',
+        'CLASSIFICACAO_DUPLICIDADE_GEO': '',
+        'DUPLICATA_NOTA_DESTINO': '',
+        'DUPLICATA_ORIGEM_DESTINO': '',
+        'DUPLICATA_MUNICIPIO_DESTINO': '',
+        'DUPLICATA_LAT_DESTINO': np.nan,
+        'DUPLICATA_LON_DESTINO': np.nan,
+        'LINK_DUPLICATA_MAPS': '',
+    }
+    for c, default in colunas.items():
+        df_valid[c] = default
+
+    raio_km = float(raio_metros) / 1000.0
+
+    for nota in duplicadas_inter:
+        idxs = df_valid.index[df_valid['NOTA'] == nota].tolist()
+        if not idxs:
+            continue
+
+        for idx in idxs:
+            atual = df_valid.loc[idx]
+            origem_atual = str(atual.get('ORIGEM_BASE', '')).strip().upper()
+            candidatos = df_valid[(df_valid['NOTA'] == nota) & (df_valid['ORIGEM_BASE'].astype(str).str.upper() != origem_atual)]
+            if candidatos.empty:
                 continue
 
-            dists = haversine_vectorized(lat, lon, lat_locs, lon_locs)
+            lat = float(atual['LATITUDE'])
+            lon = float(atual['LONGITUDE'])
+            dists = haversine_vectorized(
+                lat, lon,
+                candidatos['LATITUDE'].to_numpy(dtype=float),
+                candidatos['LONGITUDE'].to_numpy(dtype=float)
+            )
             if len(dists) == 0:
-                resultados.append('DESCONHECIDO')
                 continue
 
-            k = min(qtd_equipes, len(dists))
-            if k == len(dists):
-                idxs = np.argsort(dists)
-            else:
-                idxs = np.argpartition(dists, k - 1)[:k]
-                idxs = idxs[np.argsort(dists[idxs])]
+            pos = int(np.argmin(dists))
+            destino = candidatos.iloc[pos]
+            dist_km = float(dists[pos])
+            mesmo = 'SIM' if dist_km <= raio_km else 'NÃO'
+            coord_div = 'NÃO' if mesmo == 'SIM' else 'SIM'
+            classe = 'MESMO LOCAL' if mesmo == 'SIM' else 'LOCAIS DIFERENTES'
 
-            res = []
-            for pos, i in enumerate(idxs):
-                d_km = float(dists[i])
-                # Preserva a regra anterior: a equipe mais próxima sempre aparece;
-                # somente equipes adicionais obedecem ao limite de distância.
-                if pos >= 1 and d_km > float(distancia_max_km):
-                    break
-                res.append(f"{str(nomes_locs[i]).title()} ({tipos_locs[i]}) - {d_km:.1f}km")
-            resultados.append(" | ".join(res) if res else 'DESCONHECIDO')
-    return resultados
+            mun_atual = normalizar_municipios(pd.Series([str(atual.get('MUNICIPIO', ''))])).iloc[0]
+            mun_dest = normalizar_municipios(pd.Series([str(destino.get('MUNICIPIO', ''))])).iloc[0]
+            mun_div = 'SIM' if mun_atual and mun_dest and mun_atual != mun_dest else 'NÃO'
+
+            lat_dest = float(destino['LATITUDE'])
+            lon_dest = float(destino['LONGITUDE'])
+            link = f"https://www.google.com/maps?q={lat_dest:.8f},{lon_dest:.8f}"
+
+            df_valid.at[idx, 'DISTANCIA_ENTRE_DUPLICATAS_KM'] = round(dist_km, 3)
+            df_valid.at[idx, 'DUPLICATA_MESMO_LOCAL'] = mesmo
+            df_valid.at[idx, 'COORDENADA_DIVERGENTE'] = coord_div
+            df_valid.at[idx, 'MUNICIPIO_DIVERGENTE'] = mun_div
+            df_valid.at[idx, 'CLASSIFICACAO_DUPLICIDADE_GEO'] = classe
+            df_valid.at[idx, 'DUPLICATA_NOTA_DESTINO'] = str(destino.get('NOTA', nota))
+            df_valid.at[idx, 'DUPLICATA_ORIGEM_DESTINO'] = str(destino.get('ORIGEM_BASE', ''))
+            df_valid.at[idx, 'DUPLICATA_MUNICIPIO_DESTINO'] = str(destino.get('MUNICIPIO', ''))
+            df_valid.at[idx, 'DUPLICATA_LAT_DESTINO'] = lat_dest
+            df_valid.at[idx, 'DUPLICATA_LON_DESTINO'] = lon_dest
+            df_valid.at[idx, 'LINK_DUPLICATA_MAPS'] = link
+
+    return df_valid
+
+
+def adicionar_metricas_clusters(df):
+    """Acrescenta métricas do cluster sem alterar coordenadas originais das obras."""
+    df = df.copy()
+    if df.empty or 'CLUSTER_ID' not in df.columns:
+        return df
+    metricas = {}
+    for cid, grp in df.groupby('CLUSTER_ID'):
+        lats = grp['LATITUDE'].astype(float).to_numpy()
+        lons = grp['LONGITUDE'].astype(float).to_numpy()
+        max_km = 0.0
+        if len(grp) > 1:
+            for i in range(len(grp)):
+                ds = haversine_vectorized(lats[i], lons[i], lats, lons)
+                if len(ds):
+                    max_km = max(max_km, float(np.max(ds)))
+        origens = sorted(grp['ORIGEM_BASE'].dropna().astype(str).unique().tolist()) if 'ORIGEM_BASE' in grp.columns else []
+        metricas[cid] = {
+            'QTD_OBRAS_CLUSTER': int(len(grp)),
+            'QTD_SANEAMENTO_CLUSTER': int((grp['ORIGEM_BASE'] == 'SANEAMENTO').sum()) if 'ORIGEM_BASE' in grp.columns else 0,
+            'QTD_LEVANTAMENTO_CLUSTER': int((grp['ORIGEM_BASE'] == 'LEVANTAMENTO').sum()) if 'ORIGEM_BASE' in grp.columns else 0,
+            'DISTANCIA_MAX_CLUSTER_M': round(max_km * 1000.0, 1),
+            'ORIGENS_CLUSTER': ' | '.join(origens),
+            'LAT_CENTRO_CLUSTER': float(np.mean(lats)),
+            'LONG_CENTRO_CLUSTER': float(np.mean(lons)),
+        }
+    for col in ['QTD_OBRAS_CLUSTER','QTD_SANEAMENTO_CLUSTER','QTD_LEVANTAMENTO_CLUSTER','DISTANCIA_MAX_CLUSTER_M','ORIGENS_CLUSTER','LAT_CENTRO_CLUSTER','LONG_CENTRO_CLUSTER']:
+        df[col] = df['CLUSTER_ID'].map({k: v[col] for k, v in metricas.items()})
+    return df
+
+
+def montar_resumo_executivo(df_view, config, rejeitadas_obras=0, rejeitadas_localidades=0):
+    itens = [
+        ('ID da análise', config.get('id_analise', '-')),
+        ('Total filtrado', len(df_view)),
+        ('Saneamento', int((df_view.get('ORIGEM_BASE', pd.Series(dtype='object')) == 'SANEAMENTO').sum())),
+        ('Levantamento', int((df_view.get('ORIGEM_BASE', pd.Series(dtype='object')) == 'LEVANTAMENTO').sum())),
+        ('Notas inválidas', int(df_view.get('COR_NOME', pd.Series(dtype='object')).astype(str).str.contains('Inválidas', na=False).sum())),
+        ('Notas duplicadas', int(df_view.get('DUPLICADA', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
+        ('Notas próximas', int(df_view.get('PROXIMA', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
+        ('Clusters', int(df_view['CLUSTER_ID'].nunique()) if 'CLUSTER_ID' in df_view.columns else len(df_view)),
+        ('Municípios', int(df_view['MUNICIPIO'].dropna().nunique()) if 'MUNICIPIO' in df_view.columns else 0),
+        ('Alertas equipe distante', int(df_view.get('ALERTA_EQUIPE_DISTANTE', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
+        ('Coordenadas de obras rejeitadas', int(rejeitadas_obras)),
+        ('Localidades rejeitadas', int(rejeitadas_localidades)),
+        ('Tempo total (s)', config.get('tempo_processamento_s', '-')),
+    ]
+    if 'EQUIPE_1' in df_view.columns:
+        top = df_view['EQUIPE_1'].replace('', np.nan).dropna().value_counts().head(5)
+        for pos, (nome, qtd) in enumerate(top.items(), start=1):
+            itens.append((f'Top equipe próxima {pos}', f'{nome} ({int(qtd)} obras)'))
+    return pd.DataFrame(itens, columns=['INDICADOR', 'VALOR'])
+
+
+def executar_autoteste_core_analise():
+    erros = []
+    try:
+        vals = limpar_nota_serie(pd.Series(['123.0', '123.01', '456']))
+        if vals.tolist() != ['123', '123.01', '456']:
+            erros.append('normalização de NOTA')
+    except Exception:
+        erros.append('normalização de NOTA')
+
+    try:
+        # Caso real esperado: SAP APTO + SISCO Pré Análise + LIST 0 é válido.
+        linha_ok = pd.Series({
+            'ORIGEM_BASE': 'LEVANTAMENTO', 'SITUACAO SAP': 'APTO',
+            'STATUS SISCO': 'Pré Análise', 'STATUS LIST': 0
+        })
+        v = avaliar_validade_fluxo(linha_ok)
+        if not v['valida'] or v['status_sisco_normalizado'] != 'PRE ANALISE' or v['status_list_normalizado'] != '0':
+            erros.append('validação APTO/Pré Análise/0')
+        cor_t, nome_t = determinar_classificacao_analise(pd.Series({
+            'NOTA_VALIDA_FLUXO': 'SIM', 'DUPLICADA': 'SIM', 'PROXIMA': 'NÃO', 'ORIGEM_BASE': 'LEVANTAMENTO'
+        }))
+        if cor_t != 'red' or 'Duplicadas' not in nome_t:
+            erros.append('prioridade válida + duplicada = vermelho')
+        linha_variacao = pd.Series({
+            'ORIGEM_BASE': 'LEVANTAMENTO', 'SITUACAO SAP': 'APTO',
+            'STATUS_SISCO': 'PRÉ--ANÁLISE', 'STATUS_LIST': '0.0'
+        })
+        if not avaliar_validade_fluxo(linha_variacao)['valida']:
+            erros.append('normalização robusta SISCO/LIST')
+    except Exception:
+        erros.append('validação de fluxo')
+
+    try:
+        df_t = pd.DataFrame({'LATITUDE': [-2.5, -2.5], 'LONGITUDE': [-44.2, -44.2]})
+        det = colaboradores_proximos_em_lote(df_t, np.array([-2.5, -3.0]), np.array([-44.2, -44.0]), np.array(['Equipe A','Equipe B']), np.array(['Saneamento','Levantamento']), 2, 100, 100)
+        if det.iloc[0]['EQUIPE_1'] != 'Equipe A' or det.iloc[1]['EQUIPE_1'] != 'Equipe A':
+            erros.append('equipes próximas/cache por coordenada')
+    except Exception:
+        erros.append('equipes próximas/cache por coordenada')
+
+    try:
+        d = pd.DataFrame({
+            'NOTA':['1','1'], 'ORIGEM_BASE':['SANEAMENTO','LEVANTAMENTO'], 'MUNICIPIO':['A','B'],
+            'LATITUDE':[-2.5,-3.5], 'LONGITUDE':[-44.2,-45.2],
+            'COR_NOME':['🔴 Notas Duplicadas']*2, 'COR_MAPA':['red']*2, 'CLUSTER_ID':[0,1],
+            'SITUACAO SAP':['APTO','APTO'], 'NOTA_VALIDA_FLUXO':['SIM','SIM'], 'MOTIVO_INVALIDADE':['-','-'],
+            'DUPLICADA':['SIM','SIM'], 'COLABORADORES MAIS PROXIMOS':['Equipe A','Equipe B'],
+            'ALERTA_EQUIPE_DISTANTE':['NÃO','NÃO']
+        })
+        a = auditar_duplicidades_geograficas(d, {'1'}, 100)
+        if not (a['CLASSIFICACAO_DUPLICIDADE_GEO'] == 'LOCAIS DIFERENTES').all():
+            erros.append('auditoria geográfica de duplicidade distante')
+        if not a['LINK_DUPLICATA_MAPS'].astype(str).str.startswith('https://www.google.com/maps?q=').all():
+            erros.append('link bidirecional de duplicidade')
+        k = gerar_kml_analise(adicionar_metricas_clusters(a))
+        if '<kml' not in k or '<Placemark>' not in k or 'Abrir outra ocorrência no Google Maps' not in k:
+            erros.append('exportação KML/link duplicidade')
+    except Exception:
+        erros.append('auditoria/KML')
+    return {'ok': not erros, 'erros': erros}
 
 
 def limpar_estado_analise():
     for chave in [
         'df_final_analise', 'is_done_analise', 'df_coord_rejeitadas_analise',
         'df_coord_corrigidas_analise', 'config_analise', 'bytes_excel_analise',
-        'bytes_kml_analise', 'export_sig_excel_analise', 'export_sig_kml_analise'
+        'bytes_kml_analise', 'export_sig_excel_analise', 'export_sig_kml_analise',
+        'df_loc_rejeitadas_analise', 'df_loc_corrigidas_analise', 'df_loc_alertas_analise', 'autoteste_core_analise',
+        'filtro_cores_analise', 'filtro_origem_analise', 'filtro_municipio_analise',
+        'filtro_nota_analise', 'filtro_colab_analise', 'mostrar_mapa_analise'
     ]:
         st.session_state.pop(chave, None)
     st.session_state.df_final_analise = pd.DataFrame()
@@ -278,6 +599,8 @@ if "df_final_analise" not in st.session_state:
     st.session_state.df_final_analise = pd.DataFrame()
 if "is_done_analise" not in st.session_state:
     st.session_state.is_done_analise = False
+if "autoteste_core_analise" not in st.session_state:
+    st.session_state.autoteste_core_analise = executar_autoteste_core_analise()
 
 
 # ==============================================================
@@ -285,9 +608,27 @@ if "is_done_analise" not in st.session_state:
 # ==============================================================
 with st.sidebar:
     st.markdown("### ⚙️ Configurações da Análise")
-    raio_prox = st.slider("Distância p/ agrupar obras (Metros)", 10, 1000, 100, 10, key='raio_prox_analise')
-    qtd_equipes_prox = st.number_input("Qtd. de equipes mais próximas", min_value=1, max_value=5, value=2, step=1, key='qtd_equipes_prox_analise')
-    distancia_max_equipe = st.number_input("Distância máx. p/ equipes adicionais (km)", min_value=1.0, max_value=1000.0, value=100.0, step=10.0, key='dist_max_equipe_analise')
+    cfg_locked = st.session_state.is_done_analise and not st.session_state.df_final_analise.empty
+    raio_prox = st.slider("Distância p/ agrupar obras (Metros)", 10, 1000, 100, 10, key='raio_prox_analise', disabled=cfg_locked)
+    qtd_equipes_prox = st.number_input("Qtd. de equipes mais próximas", min_value=1, max_value=5, value=2, step=1, key='qtd_equipes_prox_analise', disabled=cfg_locked)
+    distancia_max_equipe = st.number_input("Distância máx. p/ equipes adicionais (km)", min_value=1.0, max_value=1000.0, value=100.0, step=10.0, key='dist_max_equipe_analise', disabled=cfg_locked)
+    distancia_alerta_equipe = st.number_input("Alerta: equipe mais próxima acima de (km)", min_value=1.0, max_value=2000.0, value=100.0, step=10.0, key='dist_alerta_equipe_analise', disabled=cfg_locked)
+
+    teste_core = st.session_state.get('autoteste_core_analise', {'ok': True, 'erros': []})
+    if teste_core.get('ok'):
+        st.caption("✅ Testes internos de regressão: OK")
+    else:
+        with st.expander("⚠️ Falha em teste interno", expanded=False):
+            for err in teste_core.get('erros', []):
+                st.write(f"• {err}")
+
+    if cfg_locked:
+        cfg_usada = st.session_state.get('config_analise', {})
+        with st.expander("🔒 Configuração utilizada nesta análise", expanded=False):
+            st.write(f"Raio: **{cfg_usada.get('raio_proximidade_m', '-')} m**")
+            st.write(f"Equipes próximas: **{cfg_usada.get('qtd_equipes_proximas', '-')}**")
+            st.write(f"Distância adicional: **{cfg_usada.get('distancia_max_equipe_km', '-')} km**")
+            st.write(f"Alerta equipe distante: **{cfg_usada.get('distancia_alerta_equipe_km', '-')} km**")
 
     st.markdown("---")
 
@@ -298,55 +639,106 @@ with st.sidebar:
             limpar_estado_analise()
             st.rerun()
 
-        st.markdown("### 🎨 Filtro de Cores (Mapa e Export)")
+        config_analise = st.session_state.get('config_analise', {})
+        st.markdown("### 🎨 Filtros (Mapa e Export)")
+
         contagem_cores = df_fin['COR_NOME'].value_counts().to_dict()
         opcoes_cores = sorted(df_fin['COR_NOME'].dropna().unique().tolist())
         cores_selecionadas = st.multiselect(
-            "Selecione os dados para visualizar:",
+            "Classificação:",
             opcoes_cores,
             default=opcoes_cores,
-            format_func=lambda x: f"{x} ({int(contagem_cores.get(x, 0))})"
+            format_func=lambda x: f"{x} ({int(contagem_cores.get(x, 0))})",
+            key='filtro_cores_analise'
         )
-
         if not cores_selecionadas:
-            st.warning("Selecione pelo menos uma cor para gerar o mapa e os relatórios.")
+            st.warning("Selecione pelo menos uma classificação.")
             st.stop()
 
-        df_view = df_fin[df_fin['COR_NOME'].isin(cores_selecionadas)].copy()
-        config_analise = st.session_state.get('config_analise', {})
-        filtro_sig = tuple(sorted(cores_selecionadas))
+        opcoes_origem = sorted(df_fin['ORIGEM_BASE'].dropna().astype(str).unique().tolist()) if 'ORIGEM_BASE' in df_fin.columns else []
+        origens_selecionadas = st.multiselect("Origem:", opcoes_origem, default=opcoes_origem, key='filtro_origem_analise')
 
-        # Se o filtro mudar, os arquivos antigos deixam de representar a tela atual.
+        opcoes_mun = sorted([x for x in df_fin.get('MUNICIPIO', pd.Series(dtype='object')).dropna().astype(str).unique().tolist() if x.strip()])
+        municipios_selecionados = st.multiselect("Municípios (vazio = todos):", opcoes_mun, default=[], key='filtro_municipio_analise')
+        busca_nota = st.text_input("Pesquisar NOTA:", value='', key='filtro_nota_analise').strip()
+        busca_colaborador = st.text_input("Pesquisar colaborador próximo:", value='', key='filtro_colab_analise').strip()
+
+        df_view = df_fin[df_fin['COR_NOME'].isin(cores_selecionadas)].copy()
+        if opcoes_origem:
+            df_view = df_view[df_view['ORIGEM_BASE'].astype(str).isin(origens_selecionadas)].copy()
+        if municipios_selecionados:
+            df_view = df_view[df_view['MUNICIPIO'].astype(str).isin(municipios_selecionados)].copy()
+        if busca_nota:
+            df_view = df_view[df_view['NOTA'].astype(str).str.contains(re.escape(busca_nota), case=False, na=False)].copy()
+        if busca_colaborador:
+            serie_colab = df_view.get('COLABORADORES MAIS PROXIMOS', pd.Series(index=df_view.index, dtype='object'))
+            df_view = df_view[serie_colab.astype(str).str.contains(re.escape(busca_colaborador), case=False, na=False)].copy()
+
+        st.caption(f"Registros após filtros: **{len(df_view)}** de **{len(df_fin)}**")
+
+        filtros_export = {
+            'Classificações': ', '.join(cores_selecionadas),
+            'Origens': ', '.join(origens_selecionadas) if origens_selecionadas else '-',
+            'Municípios': ', '.join(municipios_selecionados) if municipios_selecionados else 'TODOS',
+            'Busca NOTA': busca_nota or '-',
+            'Busca colaborador': busca_colaborador or '-',
+        }
+        filtro_sig = (
+            tuple(sorted(cores_selecionadas)), tuple(sorted(origens_selecionadas)),
+            tuple(sorted(municipios_selecionados)), busca_nota.upper(), busca_colaborador.upper()
+        )
+
         if st.session_state.get('export_sig_excel_analise') != filtro_sig:
             st.session_state.pop('bytes_excel_analise', None)
         if st.session_state.get('export_sig_kml_analise') != filtro_sig:
             st.session_state.pop('bytes_kml_analise', None)
 
         st.markdown("---")
-        d_fmt = datetime.now().strftime("%d.%m.%Y_%H%M")
+        id_analise = config_analise.get('id_analise', criar_id_analise())
+        id_safe = re.sub(r'[^A-Za-z0-9_-]', '_', str(id_analise))
 
         if 'bytes_excel_analise' not in st.session_state:
             if st.button("⚙️ Gerar Planilha Excel", use_container_width=True):
                 with st.spinner("Gerando planilhas..."):
                     df_corrigidas = st.session_state.get('df_coord_corrigidas_analise', pd.DataFrame()).copy()
                     df_rejeitadas = st.session_state.get('df_coord_rejeitadas_analise', pd.DataFrame()).copy()
+                    df_loc_corrigidas = st.session_state.get('df_loc_corrigidas_analise', pd.DataFrame()).copy()
+                    df_loc_rejeitadas = st.session_state.get('df_loc_rejeitadas_analise', pd.DataFrame()).copy()
+                    df_loc_alertas = st.session_state.get('df_loc_alertas_analise', pd.DataFrame()).copy()
 
+                    resumo_exec = montar_resumo_executivo(
+                        df_view, config_analise,
+                        rejeitadas_obras=len(df_rejeitadas),
+                        rejeitadas_localidades=len(df_loc_rejeitadas)
+                    )
+                    classificacao_final = (
+                        df_view['COR_NOME'].value_counts().rename_axis('CLASSIFICACAO_FINAL').reset_index(name='QUANTIDADE')
+                        if 'COR_NOME' in df_view.columns else pd.DataFrame()
+                    )
+
+                    classe_dup = df_view.get('CLASSIFICACAO_DUPLICIDADE_GEO', pd.Series(index=df_view.index, dtype='object')).astype(str)
                     dict_dfs = {
+                        'Resumo Executivo': resumo_exec,
+                        'Classificacao Final': classificacao_final,
                         'Consolidado (Todas)': df_view,
                         'Apenas Saneamento': df_view[df_view['ORIGEM_BASE'] == 'SANEAMENTO'],
                         'Apenas Levantamento': df_view[df_view['ORIGEM_BASE'] == 'LEVANTAMENTO'],
                         'Notas Inválidas': df_view[df_view['COR_NOME'].astype(str).str.contains('Inválidas', na=False)],
                         'Notas Duplicadas': df_view[df_view['DUPLICADA'].astype(str).eq('SIM')] if 'DUPLICADA' in df_view.columns else pd.DataFrame(),
+                        'Duplicadas Locais Diferentes': df_view[classe_dup.eq('LOCAIS DIFERENTES')],
                         'Notas Próximas': df_view[df_view['PROXIMA'].astype(str).eq('SIM')] if 'PROXIMA' in df_view.columns else pd.DataFrame(),
                         'Notas Solitárias': df_view[df_view['PROXIMA'].astype(str).eq('NÃO')] if 'PROXIMA' in df_view.columns else pd.DataFrame(),
                         'Coordenadas Corrigidas': df_corrigidas,
                         'Coordenadas Rejeitadas': df_rejeitadas,
+                        'Localidades Corrigidas': df_loc_corrigidas,
+                        'Localidades Rejeitadas': df_loc_rejeitadas,
+                        'Alertas Localidades': df_loc_alertas,
                     }
                     excel_bytes = gerar_excel_analise(dict_dfs)
                     bu_xl = io.BytesIO()
                     with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx:
-                        zx.writestr("Planilha_Analise_Cruzada.xlsx", excel_bytes)
-                        zx.writestr("Configuracao_Analise.txt", montar_config_txt(config_analise, cores_selecionadas).encode('utf-8'))
+                        zx.writestr(f"Analise_Cruzada_{id_safe}.xlsx", excel_bytes)
+                        zx.writestr(f"Configuracao_Analise_{id_safe}.txt", montar_config_txt(config_analise, cores_selecionadas, filtros_export).encode('utf-8'))
                     st.session_state.bytes_excel_analise = bu_xl.getvalue()
                     st.session_state.export_sig_excel_analise = filtro_sig
                 st.rerun()
@@ -354,18 +746,18 @@ with st.sidebar:
             st.download_button(
                 "🌐 Baixar Planilha Excel (ZIP)",
                 data=st.session_state.bytes_excel_analise,
-                file_name=f"Analise_Planilhas_{d_fmt}.zip",
+                file_name=f"Analise_Planilhas_{id_safe}.zip",
                 use_container_width=True
             )
 
         if 'bytes_kml_analise' not in st.session_state:
             if st.button("⚙️ Gerar Mapa KML", use_container_width=True):
                 with st.spinner("Gerando KML..."):
-                    kml_str = gerar_kml_analise(df_view)
+                    kml_str = gerar_kml_analise(df_view, nome_documento=f"Análise Cruzada {id_analise}")
                     bu_kml = io.BytesIO()
                     with zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk:
-                        zk.writestr("Mapa_Analise_Cruzada.kml", kml_str.encode('utf-8'))
-                        zk.writestr("Configuracao_Analise.txt", montar_config_txt(config_analise, cores_selecionadas).encode('utf-8'))
+                        zk.writestr(f"Mapa_Analise_Cruzada_{id_safe}.kml", kml_str.encode('utf-8'))
+                        zk.writestr(f"Configuracao_Analise_{id_safe}.txt", montar_config_txt(config_analise, cores_selecionadas, filtros_export).encode('utf-8'))
                     st.session_state.bytes_kml_analise = bu_kml.getvalue()
                     st.session_state.export_sig_kml_analise = filtro_sig
                 st.rerun()
@@ -373,7 +765,7 @@ with st.sidebar:
             st.download_button(
                 "🗺️ Baixar Mapa (KML)",
                 data=st.session_state.bytes_kml_analise,
-                file_name=f"Analise_Mapa_{d_fmt}.zip",
+                file_name=f"Analise_Mapa_{id_safe}.zip",
                 use_container_width=True
             )
 
@@ -390,111 +782,177 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     id_analise = config_analise.get('id_analise', '-')
     st.caption(f"ID da análise: **{id_analise}**")
 
+    if not config_analise.get('status_sap_localizado', True):
+        st.warning("⚠️ A coluna de Status SAP não foi localizada na base de Levantamento. O bloqueio FINL/CANC não pôde ser validado para esta execução.")
+
+    tempos = config_analise.get('tempos_etapas', {}) or {}
+    if tempos:
+        with st.expander("⏱️ Tempo por etapa", expanded=False):
+            cols_tempo = st.columns(min(4, max(1, len(tempos))))
+            for i, (etapa, seg) in enumerate(tempos.items()):
+                cols_tempo[i % len(cols_tempo)].metric(etapa, f"{seg:.2f}s")
+
     st.markdown("### 📈 Resumo da Volumetria")
-    total_san = len(df_view[df_view['ORIGEM_BASE'] == 'SANEAMENTO'])
-    total_lev = len(df_view[df_view['ORIGEM_BASE'] == 'LEVANTAMENTO'])
+    total_san = len(df_view[df_view['ORIGEM_BASE'] == 'SANEAMENTO']) if 'ORIGEM_BASE' in df_view.columns else 0
+    total_lev = len(df_view[df_view['ORIGEM_BASE'] == 'LEVANTAMENTO']) if 'ORIGEM_BASE' in df_view.columns else 0
 
     col_a, col_b, col_c = st.columns(3)
     col_a.info(f"**🟣 Saneamento (Validado):** {total_san} obras")
     col_b.success(f"**🟢 Levantamento (Validado):** {total_lev} obras")
     col_c.warning(f"**🎯 Total Geral:** {len(df_view)} obras")
 
-    # Painel de qualidade sem interferir em nenhuma classificação.
-    invalidas = int(df_view['COR_NOME'].astype(str).str.contains('Inválidas', na=False).sum())
+    invalidas = int(df_view.get('COR_NOME', pd.Series(index=df_view.index, dtype='object')).astype(str).str.contains('Inválidas', na=False).sum())
     duplicadas = int(df_view.get('DUPLICADA', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM').sum())
     proximas = int(df_view.get('PROXIMA', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM').sum())
     corrigidas = int(df_view.get('COORDENADA_CORRIGIDA', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM').sum())
     clusters = int(df_view['CLUSTER_ID'].nunique()) if 'CLUSTER_ID' in df_view.columns else len(df_view)
     municipios = int(df_view['MUNICIPIO'].dropna().nunique()) if 'MUNICIPIO' in df_view.columns else 0
     alertas_geo = int(df_view.get('COORDENADA_ALERTA', pd.Series(index=df_view.index, dtype='object')).astype(str).str.strip().ne('').sum())
+    alertas_equipe = int(df_view.get('ALERTA_EQUIPE_DISTANTE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM').sum())
+    dup_coord_div = int(df_view.get('COORDENADA_DIVERGENTE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM').sum())
     rejeitadas = len(st.session_state.get('df_coord_rejeitadas_analise', pd.DataFrame()))
+    loc_rejeitadas = len(st.session_state.get('df_loc_rejeitadas_analise', pd.DataFrame()))
 
     st.markdown("#### 🧪 Qualidade da Análise")
     q1, q2, q3, q4 = st.columns(4)
     q1.metric("Notas inválidas", invalidas)
     q2.metric("Notas duplicadas", duplicadas)
-    q3.metric("Notas próximas", proximas)
+    q3.metric("Duplicadas em locais distintos", dup_coord_div)
     q4.metric("Clusters", clusters)
     q5, q6, q7, q8 = st.columns(4)
     q5.metric("Municípios", municipios)
     q6.metric("Coords. corrigidas", corrigidas)
     q7.metric("Coords. rejeitadas", rejeitadas)
-    q8.metric("Alertas geográficos", alertas_geo)
+    q8.metric("Equipe distante", alertas_equipe)
 
     if rejeitadas > 0:
-        with st.expander(f"⚠️ {rejeitadas} registros com coordenadas rejeitadas", expanded=False):
+        with st.expander(f"⚠️ {rejeitadas} obras com coordenadas rejeitadas", expanded=False):
             st.dataframe(st.session_state.df_coord_rejeitadas_analise, use_container_width=True, hide_index=True)
-
+    if loc_rejeitadas > 0:
+        with st.expander(f"👥 {loc_rejeitadas} localidades rejeitadas", expanded=False):
+            st.dataframe(st.session_state.df_loc_rejeitadas_analise, use_container_width=True, hide_index=True)
+    loc_corrigidas = len(st.session_state.get('df_loc_corrigidas_analise', pd.DataFrame()))
+    loc_alertas = len(st.session_state.get('df_loc_alertas_analise', pd.DataFrame()))
+    if loc_corrigidas > 0:
+        with st.expander(f"🧭 {loc_corrigidas} localidades com coordenadas corrigidas", expanded=False):
+            st.dataframe(st.session_state.df_loc_corrigidas_analise, use_container_width=True, hide_index=True)
+    if loc_alertas > 0:
+        with st.expander(f"🧭 {loc_alertas} localidades com alertas geográficos", expanded=False):
+            st.dataframe(st.session_state.df_loc_alertas_analise, use_container_width=True, hide_index=True)
     if alertas_geo > 0:
         with st.expander(f"🌍 {alertas_geo} registros com coordenadas geograficamente atípicas", expanded=False):
             cols_alerta = [c for c in ['NOTA', 'ORIGEM_BASE', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'COORDENADA_ALERTA'] if c in df_view.columns]
             st.dataframe(df_view[df_view['COORDENADA_ALERTA'].astype(str).str.strip().ne('')][cols_alerta], use_container_width=True, hide_index=True)
+    if alertas_equipe > 0:
+        with st.expander(f"🚗 {alertas_equipe} obras com equipe mais próxima acima do limite de alerta", expanded=False):
+            cols_eq = [c for c in ['NOTA','MUNICIPIO','EQUIPE_1','TIPO_EQUIPE_1','DISTANCIA_EQUIPE_1_KM','ALERTA_EQUIPE_DISTANTE'] if c in df_view.columns]
+            st.dataframe(df_view[df_view['ALERTA_EQUIPE_DISTANTE'].astype(str).eq('SIM')][cols_eq], use_container_width=True, hide_index=True)
 
     st.markdown("### 🗺️ Mapa Analítico")
     mostrar_mapa = st.checkbox("Exibir mapa analítico", value=False, key='mostrar_mapa_analise')
     if mostrar_mapa:
         mapa = folium.Map(location=[df_view['LATITUDE'].mean(), df_view['LONGITUDE'].mean()], zoom_start=8) if not df_view.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        m_clust = MarkerCluster(name="📍 Obras Filtradas").add_to(mapa)
+        layers = {}
+
+        def obter_layer(nome):
+            if nome not in layers:
+                fg = folium.FeatureGroup(name=str(nome), show=True)
+                mc = MarkerCluster().add_to(fg)
+                fg.add_to(mapa)
+                layers[nome] = mc
+            return layers[nome]
 
         for cid, grp in df_view.groupby('CLUSTER_ID'):
-            lat = grp['LATITUDE'].iloc[0]
-            lon = grp['LONGITUDE'].iloc[0]
-            c_names = grp['COR_NOME'].tolist()
+            lat = grp['LAT_CENTRO_CLUSTER'].iloc[0] if 'LAT_CENTRO_CLUSTER' in grp.columns else grp['LATITUDE'].mean()
+            lon = grp['LONG_CENTRO_CLUSTER'].iloc[0] if 'LONG_CENTRO_CLUSTER' in grp.columns else grp['LONGITUDE'].mean()
+            c_names = grp['COR_NOME'].astype(str).tolist()
 
-            if any('Preto' in c for c in c_names) or any('Inválidas' in c for c in c_names):
-                c_i = 'black'
-            elif any('Vermelho' in c for c in c_names) or any('Duplicadas' in c for c in c_names):
-                c_i = 'red'
-            elif len(grp) > 1:
-                c_i = 'orange'
+            if any('Inválidas' in c or 'Preto' in c for c in c_names):
+                c_i, layer_nome = 'black', '⚫ Notas Inválidas'
+            elif any('Duplicadas' in c or 'Vermelho' in c for c in c_names):
+                c_i, layer_nome = 'red', '🔴 Notas Duplicadas'
+            elif len(grp) > 1 or any('Próximas' in c for c in c_names):
+                c_i, layer_nome = 'orange', '🟠 Notas Próximas'
             else:
-                c_i = grp['COR_MAPA'].iloc[0]
+                c_i = str(grp['COR_MAPA'].iloc[0])
+                layer_nome = str(grp['COR_NOME'].iloc[0])
 
-            titulo_card = f"📍 Obras no Local ({len(grp)})"
+            total_cluster = int(grp['QTD_OBRAS_CLUSTER'].iloc[0]) if 'QTD_OBRAS_CLUSTER' in grp.columns and pd.notna(grp['QTD_OBRAS_CLUSTER'].iloc[0]) else len(grp)
+            titulo_card = f"📍 Obras no Local ({len(grp)})" if len(grp) == total_cluster else f"📍 {len(grp)} visíveis de {total_cluster} obras no local"
             pop_html = f'''
-            <div style="font-family:sans-serif; width:280px; max-height:280px; overflow-y:auto; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
+            <div style="font-family:sans-serif; width:300px; max-height:340px; overflow-y:auto; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
                 <div style="background:#0D256C; color:#ffffff; padding:8px; font-size:13px; font-weight:bold; text-align:center; position:sticky; top:0;">{titulo_card}</div>
                 <div style="padding:10px; background:#fafafa; font-size:12px;">
             '''
+
+            if 'DISTANCIA_MAX_CLUSTER_M' in grp.columns:
+                pop_html += f"<div style='margin-bottom:6px;color:#555;'><b>Cluster:</b> {total_cluster} obra(s) | diâmetro máx.: {grp['DISTANCIA_MAX_CLUSTER_M'].iloc[0]} m</div>"
 
             for _, r in grp.iterrows():
                 n = html.escape(str(r.get('NOTA', '')))
                 mun = html.escape(str(r.get('MUNICIPIO', '')))
                 o = html.escape(str(r.get('ORIGEM_BASE', '')))
-                s = html.escape(str(r.get('SITUACAO SAP', '')))
+                sap = html.escape(str(r.get('SITUACAO SAP', '')))
                 s_sisco = html.escape(valor_alias(r, ['STATUS SISCO', 'STATUS_SISCO']))
                 s_list = html.escape(valor_alias(r, ['STATUS LIST', 'STATUS_LIST']))
                 col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
                 dup = html.escape(str(r.get('DUPLICADA', '')))
+                dup_geo = html.escape(str(r.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')))
+                dist_dup = r.get('DISTANCIA_ENTRE_DUPLICATAS_KM', np.nan)
+                dist_dup_txt = f"{float(dist_dup):.3f} km" if pd.notna(dist_dup) else '-'
+                alert_eq = html.escape(str(r.get('ALERTA_EQUIPE_DISTANTE', 'NÃO')))
+                classificacao = html.escape(str(r.get('COR_NOME', '-')))
+                motivo_inval = html.escape(str(r.get('MOTIVO_INVALIDADE', '-')))
+                nota_valida_fluxo = str(r.get('NOTA_VALIDA_FLUXO', 'SIM')).upper()
 
-                aviso_gps = ""
-                if dup == 'SIM' and len(grp) == 1:
-                    aviso_gps = "<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
+                link_dup = str(r.get('LINK_DUPLICATA_MAPS', '')).strip()
+                origem_dup = html.escape(str(r.get('DUPLICATA_ORIGEM_DESTINO', '')))
+                mun_dup = html.escape(str(r.get('DUPLICATA_MUNICIPIO_DESTINO', '')))
+                nota_dup = html.escape(str(r.get('DUPLICATA_NOTA_DESTINO', '')))
+                link_dup_html = ''
+                if dup == 'SIM' and dup_geo == 'LOCAIS DIFERENTES' and link_dup:
+                    link_dup_safe = html.escape(link_dup, quote=True)
+                    link_dup_html = (
+                        "<div style='margin:6px 0;padding:7px;background:#fff3f3;border-left:3px solid #d32f2f;'>"
+                        f"<b>Outra ocorrência:</b> {origem_dup or '-'} | {mun_dup or '-'}<br>"
+                        f"<b>Nota:</b> {nota_dup or n}<br>"
+                        f"<a href='{link_dup_safe}' target='_blank' style='color:#0D47A1;font-weight:bold;text-decoration:none;'>📍 Abrir outra ocorrência no Google Maps</a>"
+                        "</div>"
+                    )
+
+                motivo_html = ''
+                if nota_valida_fluxo == 'NÃO':
+                    motivo_html = f"<tr><td style='padding:2px;color:#b71c1c;'><b>Motivo da invalidez:</b></td><td style='padding:2px;color:#b71c1c;font-weight:bold;'>{motivo_inval}</td></tr>"
 
                 pop_html += f'''
                 <table style="width:100%; border-collapse:collapse; margin-bottom:5px;">
                     <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
+                    <tr><td style="padding:2px;"><b>Classificação:</b></td><td style="padding:2px;font-weight:bold;">{classificacao}</td></tr>
                     <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                     <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
-                    <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{s}</td></tr>
+                    <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{sap}</td></tr>
                     <tr><td style="padding:2px;"><b>SISCO / LIST:</b></td><td style="padding:2px;">{s_sisco} / {s_list}</td></tr>
+                    {motivo_html}
                     <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
-                    <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
+                    <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup} {dup_geo}</td></tr>
+                    <tr><td style="padding:2px;"><b>Dist. duplicata:</b></td><td style="padding:2px;">{dist_dup_txt}</td></tr>
+                    <tr><td style="padding:2px;"><b>Equipe distante:</b></td><td style="padding:2px;">{alert_eq}</td></tr>
                 </table>
+                {link_dup_html}
                 <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
                 '''
 
             pop_html += '</div></div>'
-            folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon='info-sign'), popup=folium.Popup(pop_html, max_width=320)).add_to(m_clust)
+            folium.Marker([lat, lon], icon=folium.Icon(color=c_i, icon='info-sign'), popup=folium.Popup(pop_html, max_width=340)).add_to(obter_layer(layer_nome))
 
-        folium.LayerControl().add_to(mapa)
+        folium.LayerControl(collapsed=False).add_to(mapa)
         st_folium(mapa, use_container_width=True, height=550)
     else:
         st.caption("O mapa é carregado apenas quando solicitado para manter a tela mais rápida.")
 
     st.markdown("### 📊 Tabela Consolidada Detalhada")
     st.dataframe(
-        df_view.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME', 'CLUSTER_ID'], errors='ignore'),
+        df_view.drop(columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME'], errors='ignore'),
         use_container_width=True,
         hide_index=True
     )
@@ -540,19 +998,24 @@ else:
         render_t(0.08, "Lendo e padronizando planilhas...")
 
         try:
+            tempos_etapas = {}
+            t_etapa = time.time()
+
             if file_san.name.lower().endswith('.csv'):
-                df_san_raw = pd.read_csv(io.BytesIO(file_san.getvalue()))
+                df_san_raw = ler_csv_resiliente(file_san.getvalue())
             else:
                 df_san_raw = ler_planilha_cached(file_san.getvalue())
 
             if file_lev.name.lower().endswith('.csv'):
-                df_lev_raw = pd.read_csv(io.BytesIO(file_lev.getvalue()))
+                df_lev_raw = ler_csv_resiliente(file_lev.getvalue())
             else:
                 df_lev_raw = ler_planilha_cached(file_lev.getvalue())
 
             df_san = preparar_base_obras(df_san_raw, 'SANEAMENTO')
             df_lev = preparar_base_obras(df_lev_raw, 'LEVANTAMENTO')
+            tempos_etapas['Leitura/Padronização'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.20, "Validando estrutura das bases...")
             ok = True
             ok &= validar_colunas(df_san, ['NOTA', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE'], 'Base Saneamento')
@@ -565,28 +1028,77 @@ else:
             if not validar_colunas(df_loc, ['NOME_COLAB', 'LAT_LOC', 'LON_LOC'], 'Base Localidades'):
                 st.stop()
 
-            df_loc['LAT_LOC'] = pd.to_numeric(df_loc['LAT_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            df_loc['LON_LOC'] = pd.to_numeric(df_loc['LON_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            df_loc = df_loc.dropna(subset=['LAT_LOC', 'LON_LOC']).copy()
+            # Mesma auditoria/correção aplicada às coordenadas das obras.
+            df_loc['LAT_LOC_ORIGINAL'] = df_loc['LAT_LOC']
+            df_loc['LON_LOC_ORIGINAL'] = df_loc['LON_LOC']
+            lat_loc_orig = pd.to_numeric(df_loc['LAT_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
+            lon_loc_orig = pd.to_numeric(df_loc['LON_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
+            df_loc['LAT_LOC'] = lat_loc_orig.apply(lambda x: corrigir_coord(x, 90))
+            df_loc['LON_LOC'] = lon_loc_orig.apply(lambda x: corrigir_coord(x, 180))
+            mudou_lat_loc = lat_loc_orig.notna() & df_loc['LAT_LOC'].notna() & ((lat_loc_orig - df_loc['LAT_LOC']).abs() > 1e-10)
+            mudou_lon_loc = lon_loc_orig.notna() & df_loc['LON_LOC'].notna() & ((lon_loc_orig - df_loc['LON_LOC']).abs() > 1e-10)
+            df_loc['COORDENADA_LOCALIDADE_CORRIGIDA'] = np.where(mudou_lat_loc | mudou_lon_loc, 'SIM', 'NÃO')
+
+            nomes_limpos = df_loc['NOME_COLAB'].astype(str).str.strip()
+            m_nome_invalido = nomes_limpos.str.upper().isin(['', 'NAN', 'NONE', 'NULL'])
+            m_coord_loc_invalida = df_loc['LAT_LOC'].isna() | df_loc['LON_LOC'].isna()
+            m_loc_rej = m_nome_invalido | m_coord_loc_invalida
+            df_loc_rej = df_loc[m_loc_rej].copy()
+            if not df_loc_rej.empty:
+                motivos = []
+                for idx in df_loc_rej.index:
+                    mm = []
+                    if m_nome_invalido.loc[idx]:
+                        mm.append('Nome do colaborador vazio')
+                    if pd.isna(df_loc_rej.loc[idx, 'LAT_LOC']):
+                        mm.append('Latitude inválida')
+                    if pd.isna(df_loc_rej.loc[idx, 'LON_LOC']):
+                        mm.append('Longitude inválida')
+                    motivos.append(' | '.join(mm))
+                df_loc_rej['MOTIVO_REJEICAO'] = motivos
+
+            df_loc = df_loc[~m_loc_rej].copy()
+            df_loc['NOME_COLAB'] = df_loc['NOME_COLAB'].astype(str).str.strip()
+            alertas_loc = []
+            for _, rr in df_loc.iterrows():
+                al = []
+                la, lo = float(rr['LAT_LOC']), float(rr['LON_LOC'])
+                if la == 0.0 or lo == 0.0:
+                    al.append('Coordenada zerada')
+                if la > 0 or lo > 0:
+                    al.append('Coordenada positiva')
+                if abs(la) > abs(lo):
+                    al.append('Possível LAT/LON invertida')
+                alertas_loc.append(' | '.join(al))
+            df_loc['COORDENADA_LOCALIDADE_ALERTA'] = alertas_loc
+            df_loc_corr = df_loc[df_loc['COORDENADA_LOCALIDADE_CORRIGIDA'] == 'SIM'].copy()
+            st.session_state.df_loc_rejeitadas_analise = df_loc_rej
+            st.session_state.df_loc_corrigidas_analise = df_loc_corr
+            st.session_state.df_loc_alertas_analise = df_loc[df_loc['COORDENADA_LOCALIDADE_ALERTA'].astype(str).str.strip().ne('')].copy()
+
             if df_loc.empty:
-                st.error("❌ A base de Localidades não possui coordenadas válidas.")
+                st.error("❌ A base de Localidades não possui colaboradores com nome e coordenadas válidas.")
                 st.stop()
 
             lat_locs = df_loc['LAT_LOC'].to_numpy(dtype=float)
             lon_locs = df_loc['LON_LOC'].to_numpy(dtype=float)
             nomes_locs = df_loc['NOME_COLAB'].astype(str).to_numpy()
             tipos_locs = df_loc['TIPO_EQUIPE'].astype(str).to_numpy()
+            tempos_etapas['Validação/Localidades'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.36, "Validando Status SAP (Bloqueios)...")
             status_col = encontrar_coluna(df_lev, ['STATUS_SAP', 'STATUS SAP', 'STATUS'])
+            status_sap_localizado = status_col is not None
             status_dict = {}
             if status_col:
                 tmp_status = df_lev[['NOTA', status_col]].copy()
                 tmp_status = tmp_status[tmp_status['NOTA'].apply(nota_valida)]
-                tmp_status['_STATUS'] = tmp_status[status_col].astype(str).str.strip().str.upper().str.replace('.0', '', regex=False)
+                tmp_status['_STATUS'] = tmp_status[status_col].apply(lambda v: normalizar_status_fluxo(v, ''))
 
                 def consolidar_status(vals):
-                    vals = [v for v in vals if v not in ['', 'NAN', 'NONE']]
+                    vals = [normalizar_status_fluxo(v, '') for v in vals]
+                    vals = [v for v in vals if v]
                     bloqueados = []
                     if 'FINL' in vals:
                         bloqueados.append('FINL')
@@ -599,9 +1111,9 @@ else:
                 status_dict = tmp_status.groupby('NOTA')['_STATUS'].agg(consolidar_status).to_dict()
 
             def get_situacao(nota):
-                s = str(status_dict.get(nota, '')).strip().upper()
-                if 'FINL' in s or 'CANC' in s:
-                    return f"BLOQUEADO ({s})"
+                s_status = str(status_dict.get(nota, '')).strip().upper()
+                if 'FINL' in s_status or 'CANC' in s_status:
+                    return f"BLOQUEADO ({s_status})"
                 return "APTO"
 
             df_san['SITUACAO SAP'] = df_san['NOTA'].apply(get_situacao)
@@ -613,7 +1125,6 @@ else:
             set_san = set(notas_san_validas)
             set_lev = set(notas_lev_validas)
             duplicadas_inter = set_san.intersection(set_lev)
-
             rep_san = set(notas_san_validas[notas_san_validas.duplicated(keep=False)])
             rep_lev = set(notas_lev_validas[notas_lev_validas.duplicated(keep=False)])
 
@@ -623,7 +1134,9 @@ else:
             df_lev['DUPLICADA_INTERBASE'] = df_lev['DUPLICADA']
             df_san['REPETIDA_NA_ORIGEM'] = df_san['NOTA'].apply(lambda x: 'SIM' if nota_valida(x) and x in rep_san else 'NÃO')
             df_lev['REPETIDA_NA_ORIGEM'] = df_lev['NOTA'].apply(lambda x: 'SIM' if nota_valida(x) and x in rep_lev else 'NÃO')
+            tempos_etapas['SAP/Duplicidades'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.53, "Validando e auditando coordenadas...")
             df_master = pd.concat([df_san, df_lev], ignore_index=True)
             df_master['LATITUDE_ORIGINAL'] = df_master['LATITUDE']
@@ -650,32 +1163,33 @@ else:
                 )
 
             df_valid = df_master[~m_coord_invalida].copy()
-
-            # Apenas auditoria: nenhuma dessas situações é excluída automaticamente.
             alertas = []
             for _, rr in df_valid.iterrows():
-                a = []
+                al = []
                 lat = float(rr['LATITUDE'])
                 lon = float(rr['LONGITUDE'])
                 if lat == 0.0 or lon == 0.0:
-                    a.append('Coordenada zerada')
+                    al.append('Coordenada zerada')
                 if lat > 0 or lon > 0:
-                    a.append('Coordenada positiva')
+                    al.append('Coordenada positiva')
                 if abs(lat) > abs(lon):
-                    a.append('Possível LAT/LON invertida')
-                alertas.append(' | '.join(a))
+                    al.append('Possível LAT/LON invertida')
+                alertas.append(' | '.join(al))
             df_valid['COORDENADA_ALERTA'] = alertas
+
+            # Complementa a duplicidade com distância, município e divergência geográfica.
+            df_valid = auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_prox)
 
             df_corrigidas = df_valid[df_valid['COORDENADA_CORRIGIDA'] == 'SIM'].copy()
             st.session_state.df_coord_rejeitadas_analise = df_rej_coord
             st.session_state.df_coord_corrigidas_analise = df_corrigidas
-
             if df_valid.empty:
                 st.error("❌ Nenhum registro possui coordenadas válidas para a análise espacial.")
                 st.stop()
+            tempos_etapas['Coordenadas'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.63, "Agrupando Obras Vizinhas e Processando Cores...")
-            # Usa diretamente o valor selecionado no slider.
             df_clustered, _ = fundir_super_pontos(df_valid, raio_metros=raio_prox, agrupar_por_levantador=False)
 
             expanded = []
@@ -695,70 +1209,53 @@ else:
                     expanded.append(nr)
                 c_id += 1
 
-            df_final = pd.DataFrame(expanded)
+            df_final = adicionar_metricas_clusters(pd.DataFrame(expanded))
+            tempos_etapas['Clusters'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.74, "Calculando colaboradores mais próximos...")
-            df_final['COLABORADORES MAIS PROXIMOS'] = colaboradores_proximos_em_lote(
+            detalhe_equipes = colaboradores_proximos_em_lote(
                 df_final,
                 lat_locs, lon_locs, nomes_locs, tipos_locs,
                 qtd_equipes_prox,
-                distancia_max_equipe
+                distancia_max_equipe,
+                distancia_alerta_equipe
             )
+            for c in detalhe_equipes.columns:
+                df_final[c] = detalhe_equipes[c].values
+            tempos_etapas['Equipes Próximas'] = round(time.time() - t_etapa, 3)
 
+            t_etapa = time.time()
             render_t(0.86, "Classificando regras e cores da auditoria...")
 
-            def determinar_cor(linha):
-                dupl = str(linha.get('DUPLICADA', ''))
-                prox = str(linha.get('PROXIMA', ''))
-                orig = str(linha.get('ORIGEM_BASE', ''))
-                is_black = False
+            validacoes_fluxo = [avaliar_validade_fluxo(r) for _, r in df_final.iterrows()]
+            df_final['STATUS_LIST_NORMALIZADO'] = [v['status_list_normalizado'] for v in validacoes_fluxo]
+            df_final['STATUS_SISCO_NORMALIZADO'] = [v['status_sisco_normalizado'] for v in validacoes_fluxo]
+            df_final['NOTA_VALIDA_FLUXO'] = ['SIM' if v['valida'] else 'NÃO' for v in validacoes_fluxo]
+            df_final['MOTIVO_INVALIDADE'] = [v['motivo'] for v in validacoes_fluxo]
 
-                st_sap = str(linha.get('SITUACAO SAP', '')).upper()
-                if 'BLOQUEADO' in st_sap or 'FINL' in st_sap or 'CANC' in st_sap:
-                    is_black = True
-
-                if orig == 'LEVANTAMENTO':
-                    st_list_raw = valor_alias(linha, ['STATUS_LIST', 'STATUS LIST'], '0').strip().upper().replace('.0', '')
-                    if st_list_raw in ['NAN', 'NONE', '']:
-                        st_list_raw = '0'
-                    st_list = remover_acentos_str(st_list_raw)
-
-                    st_sisco_raw = valor_alias(linha, ['STATUS_SISCO', 'STATUS SISCO'], '0').strip().upper().replace('.0', '')
-                    if st_sisco_raw in ['NAN', 'NONE', '']:
-                        st_sisco_raw = '0'
-                    st_sisco = remover_acentos_str(st_sisco_raw)
-
-                    v_list = ['0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO']
-                    v_sisco = ['0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P/ LEVANTAMENTO']
-
-                    if st_list not in v_list or st_sisco not in v_sisco:
-                        is_black = True
-
-                if is_black:
-                    return 'black', '⚫ Notas Inválidas'
-                if dupl == 'SIM':
-                    return 'red', '🔴 Notas Duplicadas'
-                if prox == 'SIM':
-                    return 'orange', '🟠 Notas Próximas'
-                if orig == 'LEVANTAMENTO':
-                    return 'green', '🟢 Notas Levantamento Solitárias'
-                if orig == 'SANEAMENTO':
-                    return 'purple', '🟣 Notas Saneamento Solitárias'
-                return 'blue', '🔵 Outras'
-
-            cores_calculadas = [determinar_cor(r) for _, r in df_final.iterrows()]
+            cores_calculadas = [determinar_classificacao_analise(r) for _, r in df_final.iterrows()]
             df_final['COR_MAPA'] = [c[0] for c in cores_calculadas]
             df_final['COR_NOME'] = [c[1] for c in cores_calculadas]
+            tempos_etapas['Classificação'] = round(time.time() - t_etapa, 3)
 
             id_analise = criar_id_analise()
             df_final['ID_ANALISE'] = id_analise
 
             front_cols = [
-                'ID_ANALISE', 'NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'DUPLICADA',
-                'DUPLICADA_INTERBASE', 'REPETIDA_NA_ORIGEM', 'PROXIMA',
-                'COLABORADORES MAIS PROXIMOS', 'MUNICIPIO', 'LATITUDE', 'LONGITUDE',
-                'LATITUDE_ORIGINAL', 'LONGITUDE_ORIGINAL', 'COORDENADA_CORRIGIDA',
-                'COORDENADA_ALERTA', 'CLUSTER_ID', 'COR_MAPA', 'COR_NOME'
+                'ID_ANALISE', 'NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'NOTA_VALIDA_FLUXO',
+                'MOTIVO_INVALIDADE', 'STATUS_SISCO_NORMALIZADO', 'STATUS_LIST_NORMALIZADO', 'DUPLICADA',
+                'DUPLICADA_INTERBASE', 'REPETIDA_NA_ORIGEM', 'CLASSIFICACAO_DUPLICIDADE_GEO',
+                'DISTANCIA_ENTRE_DUPLICATAS_KM', 'DUPLICATA_MESMO_LOCAL', 'COORDENADA_DIVERGENTE',
+                'MUNICIPIO_DIVERGENTE', 'DUPLICATA_NOTA_DESTINO', 'DUPLICATA_ORIGEM_DESTINO',
+                'DUPLICATA_MUNICIPIO_DESTINO', 'DUPLICATA_LAT_DESTINO', 'DUPLICATA_LON_DESTINO',
+                'LINK_DUPLICATA_MAPS', 'PROXIMA', 'COLABORADORES MAIS PROXIMOS',
+                'EQUIPE_1', 'TIPO_EQUIPE_1', 'DISTANCIA_EQUIPE_1_KM',
+                'DISTANCIA_EQUIPE_MAIS_PROXIMA_KM', 'ALERTA_EQUIPE_DISTANTE',
+                'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'LATITUDE_ORIGINAL', 'LONGITUDE_ORIGINAL',
+                'COORDENADA_CORRIGIDA', 'COORDENADA_ALERTA', 'CLUSTER_ID', 'QTD_OBRAS_CLUSTER',
+                'QTD_SANEAMENTO_CLUSTER', 'QTD_LEVANTAMENTO_CLUSTER', 'DISTANCIA_MAX_CLUSTER_M',
+                'ORIGENS_CLUSTER', 'LAT_CENTRO_CLUSTER', 'LONG_CENTRO_CLUSTER', 'COR_MAPA', 'COR_NOME'
             ]
             front_cols = [c for c in front_cols if c in df_final.columns]
             rest_cols = [c for c in df_final.columns if c not in front_cols and not c.startswith('_')]
@@ -772,14 +1269,21 @@ else:
                 'raio_proximidade_m': int(raio_prox),
                 'qtd_equipes_proximas': int(qtd_equipes_prox),
                 'distancia_max_equipe_km': float(distancia_max_equipe),
+                'distancia_alerta_equipe_km': float(distancia_alerta_equipe),
                 'linhas_saneamento': int(len(df_san)),
                 'linhas_levantamento': int(len(df_lev)),
                 'linhas_validas': int(len(df_final)),
                 'coordenadas_rejeitadas': int(len(df_rej_coord)),
                 'coordenadas_corrigidas': int(len(df_corrigidas)),
-                'duplicadas_interbase': int(df_final['DUPLICADA'].astype(str).eq('SIM').sum()),
+                'localidades_rejeitadas': int(len(df_loc_rej)),
+                'localidades_corrigidas': int(len(df_loc_corr)),
+                'localidades_alertas': int(len(st.session_state.get('df_loc_alertas_analise', pd.DataFrame()))),
+                'status_sap_localizado': bool(status_sap_localizado),
+                'duplicadas_interbase': int(len(duplicadas_inter)),
+                'linhas_duplicadas_interbase': int(df_final['DUPLICADA'].astype(str).eq('SIM').sum()),
                 'repetidas_saneamento': int(len(rep_san)),
                 'repetidas_levantamento': int(len(rep_lev)),
+                'tempos_etapas': tempos_etapas,
                 'tempo_processamento_s': round(time.time() - st_run, 2),
             }
 
