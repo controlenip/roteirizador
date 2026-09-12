@@ -1195,6 +1195,13 @@ if status_exec == "PACKAGING":
                 linhas_gerais.append(rn)
 
         df_excel_full = pd.DataFrame(linhas_gerais)
+
+        # Garante que todos os arquivos exportados usem o fiscal realmente
+        # atribuido pelo roteirizador. A coluna FISCAL original pode estar
+        # vazia em algumas linhas da planilha de entrada.
+        if 'BASE_ATRIBUIDA' in df_excel_full.columns:
+            df_excel_full['FISCAL'] = df_excel_full['BASE_ATRIBUIDA']
+
         for c in df_excel_full.columns:
             if 'POSTE' in c.upper():
                 df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
