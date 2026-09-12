@@ -85,11 +85,19 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         
-        # O FILTRO TRAVADO CORRETAMENTE NA COLUNA 'FISCAL' (Sem usar variáveis camaleão)
-        df_b = df_kml[df_kml['FISCAL'] == b]
-        
-        for p in df_b['PERIODO'].unique():
-            df_p = df_b[df_b['PERIODO'] == p]
+        # Usa a coluna real de atribuição do roteirizador.
+        # BASE_ATRIBUIDA é a coluna criada/usada pela página de Fiscalização;
+        # FISCAL fica apenas como fallback para compatibilidade com arquivos antigos.
+        col_fiscal = 'BASE_ATRIBUIDA' if 'BASE_ATRIBUIDA' in df_kml.columns else 'FISCAL'
+        if col_fiscal not in df_kml.columns:
+            continue
+
+        df_b = df_kml[df_kml[col_fiscal].astype(str).str.strip() == str(b).strip()]
+
+        # Compatibilidade caso o dataframe não tenha PERIODO.
+        periodos = df_b['PERIODO'].dropna().unique() if 'PERIODO' in df_b.columns else [1]
+        for p in periodos:
+            df_p = df_b[df_b['PERIODO'] == p] if 'PERIODO' in df_b.columns else df_b
             pasta.append(f'<Folder><name>Período {p}</name>')
             coords_linha = []
             for _, r in df_p.iterrows():
@@ -104,8 +112,16 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
             if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
 
             for _, r in df_p.iterrows():
-                # Leitura travada na coluna 'NOTA' garantida pelo motor da página 3
-                if r.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                # Aceita NOTA, PROTOCOLO ou OS como identificador da obra.
+                id_obra = r.get('NOTA')
+                if pd.isna(id_obra) or str(id_obra).strip() in ['', 'nan', 'None']:
+                    id_obra = r.get('PROTOCOLO')
+                if pd.isna(id_obra) or str(id_obra).strip() in ['', 'nan', 'None']:
+                    id_obra = r.get('OS', 'Ponto')
+
+                if str(id_obra).strip() in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+                    continue
+
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                 if pd.isna(lat) or pd.isna(lon): continue
                 
@@ -113,7 +129,7 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
                 qtd = int(float(raw_qtd)) if pd.notna(raw_qtd) and str(raw_qtd).strip() != '' else 0
                 
                 cor = r.get('COR_ICONE', 'gray')
-                nome = str(r.get('NOTA', 'Ponto'))
+                nome = str(id_obra)
                 
                 bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
                 txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
