@@ -148,20 +148,26 @@ def gerar_kml_tatica(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tipo_pe
             nome_pasta_periodo = f"Semana {p}" if tipo_periodo == "Semana" else f"Dia {p}"
             pasta.append(f'<Folder><name>{nome_pasta_periodo}</name>')
             
-            coords_linha = []
+            # Cada geometria vira um LineString independente dentro de MultiGeometry.
+            # Assim, se um trecho do OSRM falhar e vier vazio, o Google Earth nao
+            # liga dois trechos distantes com uma reta artificial.
+            segmentos_kml = []
             for _, r in df_p.iterrows():
                 geom = r.get('ROTA_GEOMETRIA')
-                if isinstance(geom, list) and len(geom) > 0:
-                    for pt in geom:
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2: coords_linha.append(f"{pt[0]},{pt[1]},0")
-                else:
-                    lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                    if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
-            
-            if coords_linha:
-                str_coords = '\n'.join(coords_linha)
-                pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
-                pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
+                if not isinstance(geom, list) or len(geom) < 2:
+                    continue
+                coords_segmento = []
+                for pt in geom:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        coords_segmento.append(f"{pt[0]},{pt[1]},0")
+                if len(coords_segmento) >= 2:
+                    str_coords = '\n'.join(coords_segmento)
+                    segmentos_kml.append('<LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString>')
+
+            if segmentos_kml:
+                multi = '<MultiGeometry>' + ''.join(segmentos_kml) + '</MultiGeometry>'
+                pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl>' + multi + '</Placemark>')
+                pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl>' + multi + '</Placemark>')
 
             for _, r in df_p.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -248,12 +254,19 @@ def gerar_gpx_simples(df_kml, nome_rota):
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
         if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get("PROTOCOLO", "Ponto")))}</name></wpt>')
     if 'ROTA_GEOMETRIA' in df_kml.columns:
-        gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name><trkseg>')
+        gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name>')
         for _, row in df_kml.iterrows():
             geom = row.get('ROTA_GEOMETRIA')
-            if isinstance(geom, list):
-                for lon, lat in geom: gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
-        gpx.append('    </trkseg></trk>')
+            if not isinstance(geom, list) or len(geom) < 2:
+                continue
+            pts_validos = [pt for pt in geom if isinstance(pt, (list, tuple)) and len(pt) >= 2]
+            if len(pts_validos) < 2:
+                continue
+            gpx.append('    <trkseg>')
+            for lon, lat in pts_validos:
+                gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
+            gpx.append('    </trkseg>')
+        gpx.append('  </trk>')
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
