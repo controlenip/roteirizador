@@ -11,6 +11,7 @@ import gc
 import altair as alt
 import plotly.express as px
 import unicodedata
+import uuid
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -188,13 +189,52 @@ def obter_rota_cache_fisc(lat1, lon1, lat2, lon2, url, velocidade):
     return rota, False
 
 
+def simplificar_geometria_visual(geom, max_pontos=160):
+    """Reduz somente os pontos desenhados no Folium; a geometria oficial permanece intacta."""
+    if not isinstance(geom, list) or len(geom) <= max_pontos:
+        return geom
+    if max_pontos < 2:
+        return [geom[0], geom[-1]]
+    idxs = np.linspace(0, len(geom) - 1, max_pontos, dtype=int)
+    return [geom[i] for i in idxs]
+
+
+def testar_osrm_fisc(df_bases, df_tasks, is_tatico, url, velocidade):
+    """Executa uma consulta curta antes do motor. É apenas diagnóstico e não altera a lógica."""
+    try:
+        if df_tasks is None or df_tasks.empty:
+            return False, 0.0, 'Sem obras válidas para teste.'
+
+        destino = df_tasks.iloc[0]
+        lat2, lon2 = float(destino['LATITUDE']), float(destino['LONGITUDE'])
+
+        if is_tatico and df_bases is not None and not df_bases.empty:
+            origem = df_bases.iloc[0]
+            lat1, lon1 = float(origem['LATITUDE']), float(origem['LONGITUDE'])
+        elif len(df_tasks) > 1:
+            origem = df_tasks.iloc[1]
+            lat1, lon1 = float(origem['LATITUDE']), float(origem['LONGITUDE'])
+        else:
+            # pequeno deslocamento apenas para validar disponibilidade do endpoint
+            lat1, lon1 = lat2 + 0.001, lon2 + 0.001
+
+        t0 = time.time()
+        rota, veio_cache = obter_rota_cache_fisc(lat1, lon1, lat2, lon2, url, velocidade)
+        ms = (time.time() - t0) * 1000.0
+        ok = bool(rota and len(rota) > 0 and isinstance(rota[0], list) and len(rota[0]) >= 2)
+        origem_txt = 'cache' if veio_cache else 'servidor'
+        return ok, ms, origem_txt
+    except Exception as exc:
+        return False, 0.0, str(exc)
+
+
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_fisc': False, 'vrp_status_fisc': "IDLE", 'vrp_state_fisc': {}, 'df_routed_fisc': pd.DataFrame(), 'bases_records_fisc': [], 'colunas_exibir_fisc': [], 'colunas_originais_fisc': []})
-    for k in ['bytes_zip_xl_fisc', 'bytes_zip_kml_fisc', 'bytes_zip_gpx_fisc', 'bytes_zip_txt_fisc', 'start_time_run_fisc', 'start_time_pkg_fisc', 'df_unallocated_fisc', 'df_correcao_fiscalizacao', 'diagnostico_fisc']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl_fisc', 'bytes_zip_kml_fisc', 'bytes_zip_gpx_fisc', 'bytes_zip_txt_fisc', 'start_time_run_fisc', 'start_time_pkg_fisc', 'df_unallocated_fisc', 'df_correcao_fiscalizacao', 'diagnostico_fisc', 'tempos_fisc', 'package_target_fisc', 'osrm_pretest_fisc', 'execucao_id_fisc']: st.session_state.pop(k, None)
     # Mantém cache de leitura e cache OSRM para acelerar uma nova execução com os mesmos arquivos/trechos.
     tentar_rerun()
 
@@ -210,7 +250,7 @@ is_done = st.session_state.roteamento_concluido_fisc
 is_locked = status_exec != "IDLE" or is_done
 
 st.markdown("<h1 class='brand-title'>📋 Planejamento de Fiscalização</h1>", unsafe_allow_html=True)
-st.info("💡 **A Regra do Bolsão:** A IA ancora os Fiscais nas obras com MAIS POSTES primeiro. Em seguida, varre as obras menores e finaliza a rota exatamente no maior foco do mapa.")
+st.info("💡 **Regra do Bolsão:** na Lógica Padrão, o roteiro percorre os pontos por proximidade e termina no maior foco de postes. Na Varredura Reversa, a mesma sequência é percorrida no sentido oposto, iniciando pelo maior foco.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -221,6 +261,7 @@ with st.sidebar:
         
         trava_global = st.number_input("Trava Total de Obras no Estado", min_value=0, value=0, step=50, disabled=is_locked)
         sentido_rota = st.radio("Sentido do Roteamento:", ["📍 Lógica Padrão", "🎯 Varredura Reversa"], index=0, disabled=is_locked)
+        st.caption("Padrão: maior foco no final. Reversa: maior foco no início, mantendo a mesma sequência no sentido oposto.")
         raio_sp = st.slider("Raio Super Ponto (Metros)", 10, 1000, 100, 10, disabled=is_locked)
         st.markdown("---")
         
@@ -242,17 +283,39 @@ with st.sidebar:
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
+        qtd_cache = len(st.session_state.get('osrm_cache_fisc', {}))
+        st.caption(f"Cache de rotas: {qtd_cache} trecho(s)")
+        if st.button("🧹 Limpar cache de rotas", use_container_width=True, disabled=status_exec != "IDLE"):
+            st.session_state.osrm_cache_fisc = {}
+            st.success("Cache OSRM limpo.")
+            tentar_rerun()
 
     st.markdown("---")
     sb_html = st.empty()
     
     if is_done and not st.session_state.df_routed_fisc.empty:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
-        st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_fisc', b"vazio"), file_name=f"Fiscais_Planilhas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_fisc', b"vazio"), file_name=f"Fiscais_TXT - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml_fisc', b"vazio"), file_name=f"Fiscais_Mapas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_fisc', b"vazio"), file_name=f"Fiscais_GPS - {d_fmt}.zip", use_container_width=True)
-        if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
+        exec_id_sidebar = st.session_state.get('execucao_id_fisc', '-')
+        st.caption(f"Execução: {exec_id_sidebar}")
+
+        pacotes = [
+            ('xl', 'bytes_zip_xl_fisc', '🌐 Gerar Planilhas (ZIP)', '🌐 Baixar Planilhas (ZIP)', f"Fiscais_Planilhas - {d_fmt}.zip"),
+            ('txt', 'bytes_zip_txt_fisc', '📝 Gerar Relatórios (TXT)', '📝 Baixar Relatórios (TXT)', f"Fiscais_TXT - {d_fmt}.zip"),
+            ('kml', 'bytes_zip_kml_fisc', '🗺️ Gerar Mapas (KML)', '🗺️ Baixar Mapas (KML)', f"Fiscais_Mapas - {d_fmt}.zip"),
+            ('gpx', 'bytes_zip_gpx_fisc', '🛰️ Gerar GPS (GPX)', '🛰️ Baixar GPS (GPX)', f"Fiscais_GPS - {d_fmt}.zip"),
+        ]
+        for alvo, chave_bytes, rotulo_gerar, rotulo_baixar, nome_arq in pacotes:
+            dados = st.session_state.get(chave_bytes)
+            if dados:
+                st.download_button(rotulo_baixar, data=dados, file_name=nome_arq, use_container_width=True, key=f"download_{alvo}_fisc")
+            else:
+                if st.button(rotulo_gerar, use_container_width=True, key=f"gerar_{alvo}_fisc", disabled=status_exec != "IDLE"):
+                    st.session_state.package_target_fisc = alvo
+                    st.session_state.vrp_status_fisc = "PACKAGING"
+                    tentar_rerun()
+
+        if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True, disabled=status_exec != "IDLE"):
+            limpar_roteirizador()
 
 # ==========================================
 # EXIBIÇÃO DE RESULTADOS (SE CONCLUÍDO)
@@ -292,7 +355,24 @@ if is_done and not st.session_state.df_routed_fisc.empty:
     c3.markdown(render_metric_card("Postes Auditados", tot_postes_global, "🏗️", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Previsto Total", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
+    exec_id_result = st.session_state.get('execucao_id_fisc', st.session_state.get('vrp_state_fisc', {}).get('config', {}).get('execucao_id', '-'))
+    tempos_result = st.session_state.get('tempos_fisc', {})
+    partes_tempo = []
+    if tempos_result.get('preparacao_s') is not None:
+        partes_tempo.append(f"Preparação {tempos_result['preparacao_s']:.1f}s")
+    if tempos_result.get('super_pontos_s') is not None:
+        partes_tempo.append(f"Super Pontos {tempos_result['super_pontos_s']:.1f}s")
+    if tempos_result.get('motor_s') is not None:
+        partes_tempo.append(f"Motor {tempos_result['motor_s']:.1f}s")
+    if tempos_result.get('osrm_s') is not None:
+        partes_tempo.append(f"OSRM {tempos_result['osrm_s']:.1f}s")
+    tempos_export = [v for k, v in tempos_result.items() if k.startswith('exportacao_')]
+    if tempos_export:
+        partes_tempo.append(f"Exportações {sum(tempos_export):.1f}s")
+    st.caption(f"Execução: {exec_id_result}" + (" | " + " | ".join(partes_tempo) if partes_tempo else ""))
+
     # Diagnóstico de arruamento: apenas informativo, sem interferir nas rotas.
+    qtd_sem_rota = qtd_osrm = qtd_estimado = 0
     if 'STATUS_ROTA' in dfr.columns:
         status_validos = dfr[dfr['PROTOCOLO'] != 'PAUSA_ALMOCO']['STATUS_ROTA'].fillna('SEM STATUS').astype(str)
         qtd_sem_rota = int(status_validos.str.contains('SEM_ROTA', na=False).sum())
@@ -302,6 +382,76 @@ if is_done and not st.session_state.df_routed_fisc.empty:
             st.warning(f"⚠️ Arruamento: {qtd_osrm} trechos OSRM | {qtd_sem_rota} sem rota | {qtd_estimado} estimados.")
         else:
             st.caption(f"🛣️ Arruamento: {qtd_osrm} trechos OSRM | {qtd_estimado} estimados | nenhuma falha pendente.")
+
+        qualidade_base = dfr[dfr['PROTOCOLO'] != 'PAUSA_ALMOCO'].copy()
+        qualidade_base['_OSRM_OK'] = qualidade_base['STATUS_ROTA'].astype(str).str.startswith('OSRM')
+        qualidade_base['_SEM_ROTA'] = qualidade_base['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA', na=False)
+        qualidade_base['_CACHE'] = qualidade_base.get('ROTA_CACHE', False)
+        qualidade_base['_KM_ROD'] = pd.to_numeric(qualidade_base.get('DISTANCIA_RODOVIARIA_KM', np.nan), errors='coerce')
+        qualidade = qualidade_base.groupby('BASE_ATRIBUIDA', as_index=False).agg(
+            Trechos=('STATUS_ROTA', 'size'),
+            OSRM_OK=('_OSRM_OK', 'sum'),
+            Sem_Rota=('_SEM_ROTA', 'sum'),
+            Cache=('_CACHE', 'sum'),
+            KM_Rodoviario=('_KM_ROD', 'sum'),
+            Maior_Trecho_KM=('_KM_ROD', 'max')
+        ).rename(columns={'BASE_ATRIBUIDA': 'Fiscal'})
+        denom = (qualidade['OSRM_OK'] + qualidade['Sem_Rota']).replace(0, np.nan)
+        qualidade['Taxa_OSRM_%'] = ((qualidade['OSRM_OK'] / denom) * 100).fillna(0).round(1)
+        qualidade['KM_Rodoviario'] = qualidade['KM_Rodoviario'].round(2)
+        qualidade['Maior_Trecho_KM'] = qualidade['Maior_Trecho_KM'].round(2)
+        with st.expander("🩺 Qualidade das Rotas", expanded=False):
+            st.dataframe(qualidade, use_container_width=True, hide_index=True)
+            cache_usado = int(qualidade['Cache'].sum()) if 'Cache' in qualidade.columns else 0
+            st.caption(f"Trechos reaproveitados do cache nesta execução: {cache_usado} | Cache disponível na sessão: {len(st.session_state.get('osrm_cache_fisc', {}))}")
+            pretest = st.session_state.get('osrm_pretest_fisc', {})
+            if pretest:
+                estado_pre = "disponível" if pretest.get('ok') else "sem resposta válida"
+                st.caption(f"Teste inicial OSRM: {estado_pre} | {pretest.get('latencia_ms', 0):.0f} ms | origem: {pretest.get('origem', '-')}")
+
+        if qtd_sem_rota > 0 and st.session_state.get('vrp_state_fisc', {}).get('config', {}).get('tracado_real', True):
+            if st.button("🔄 Reprocessar somente trechos sem rota", use_container_width=True):
+                df_retry = st.session_state.df_routed_fisc.copy()
+                mask_retry = df_retry['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA', na=False)
+                indices_retry = df_retry.index[mask_retry].tolist()
+                pb_retry = st.progress(0.0)
+                msg_retry = st.empty()
+                cfg_retry = st.session_state.get('vrp_state_fisc', {}).get('config', {})
+                sucessos_retry = 0
+                for pos_retry, idx_retry in enumerate(indices_retry, start=1):
+                    rr = df_retry.loc[idx_retry]
+                    lat1, lon1 = rr.get('_ROTA_ORIG_LAT'), rr.get('_ROTA_ORIG_LON')
+                    lat2, lon2 = rr.get('LATITUDE'), rr.get('LONGITUDE')
+                    msg_retry.info(f"Reprocessando trecho {pos_retry}/{len(indices_retry)}...")
+                    rota_retry = None
+                    veio_cache_retry = False
+                    if all(pd.notna(v) for v in [lat1, lon1, lat2, lon2]):
+                        for tentativa_retry in range(5):
+                            try:
+                                t_retry = time.time()
+                                rota_retry, veio_cache_retry = obter_rota_cache_fisc(lat1, lon1, lat2, lon2, cfg_retry.get('url_osrm_base', url_osrm), cfg_retry.get('velocidade_media_kmh', 30.0))
+                                st.session_state.tempos_fisc['osrm_s'] = st.session_state.tempos_fisc.get('osrm_s', 0.0) + (time.time() - t_retry)
+                                if rota_retry and isinstance(rota_retry[0], list) and len(rota_retry[0]) >= 2:
+                                    break
+                            except Exception:
+                                rota_retry = None
+                            time.sleep(1.0 + tentativa_retry * 0.5)
+                    if rota_retry and isinstance(rota_retry[0], list) and len(rota_retry[0]) >= 2:
+                        geom_retry = rota_retry[0]
+                        dur_retry = float(rota_retry[1]) if len(rota_retry) > 1 and pd.notna(rota_retry[1]) else 0.0
+                        df_retry.at[idx_retry, 'ROTA_GEOMETRIA'] = geom_retry
+                        df_retry.at[idx_retry, 'STATUS_ROTA'] = 'OSRM'
+                        df_retry.at[idx_retry, 'DISTANCIA_RODOVIARIA_KM'] = round(float(distancia_geometria_km(geom_retry)), 2)
+                        df_retry.at[idx_retry, 'TEMPO_ROTA_MIN'] = round(dur_retry / 60.0, 2)
+                        df_retry.at[idx_retry, 'ROTA_CACHE'] = bool(veio_cache_retry)
+                        sucessos_retry += 1
+                    pb_retry.progress(pos_retry / max(1, len(indices_retry)))
+                st.session_state.df_routed_fisc = df_retry
+                for chave_limpar in ['bytes_zip_xl_fisc', 'bytes_zip_kml_fisc', 'bytes_zip_gpx_fisc', 'bytes_zip_txt_fisc']:
+                    st.session_state.pop(chave_limpar, None)
+                msg_retry.success(f"✅ {sucessos_retry} de {len(indices_retry)} trecho(s) recuperado(s).")
+                time.sleep(0.5)
+                tentar_rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -370,7 +520,6 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
         co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
 
-        m_clust = MarkerCluster(name="📍 Obras").add_to(mapa)
         bases_unicas = dfr['BASE_ATRIBUIDA'].dropna().unique().tolist()
         for bn in bases_unicas:
             cr = co_f[bases_unicas.index(bn) % len(co_f)]
@@ -378,6 +527,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
             bn_safe = str(bn).replace("{", "[").replace("}", "]")
             fg = folium.FeatureGroup(name=f"Rota: {bn_safe}", show=False)
+            m_clust = MarkerCluster(name=f"📍 Obras: {bn_safe}").add_to(fg)
 
             for pe in db['PERIODO'].unique():
                 dp = db[db['PERIODO'] == pe]
@@ -387,8 +537,9 @@ if is_done and not st.session_state.df_routed_fisc.empty:
                     if not isinstance(geom, list) or len(geom) < 2:
                         continue
 
+                    geom_visual = simplificar_geometria_visual(geom, max_pontos=160)
                     pts_seg = []
-                    for pt in geom:
+                    for pt in geom_visual:
                         if isinstance(pt, (list, tuple)) and len(pt) >= 2:
                             lon_pt, lat_pt = pt[0], pt[1]
                             if pd.notna(lat_pt) and pd.notna(lon_pt):
@@ -437,7 +588,7 @@ if is_done and not st.session_state.df_routed_fisc.empty:
 
     t1, t2 = st.tabs(["📊 Dados Tabulares", "📉 Resumo por Técnico"])
     with t1:
-        st.data_editor(st.session_state.df_routed_fisc.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'COR_ICONE'], errors='ignore'), use_container_width=True)
+        st.dataframe(st.session_state.df_routed_fisc.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'PERIODO', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'COR_ICONE'], errors='ignore'), use_container_width=True)
     with t2:
         resumo_dict = dict(zip(df_chart['Fiscal'], df_chart['Obras'])) if not df_chart.empty else {}
         dr = pd.DataFrame([{"Fiscal": b['LEVANTADOR'], "Obras Roteirizadas": int(resumo_dict.get(b['LEVANTADOR'], 0))} for b in st.session_state.bases_records_fisc]).reset_index(drop=True)
@@ -545,6 +696,10 @@ elif status_exec == "IDLE":
         if st.button("⏹️ Abortar", use_container_width=True): limpar_roteirizador(); st.stop()
     
     pbg = st.progress(0.0); tmp = st.empty(); sgt = st.empty(); df_rej = pd.DataFrame(); df_tasks['MOTIVO_REJEICAO'] = ''
+
+    # Auditoria: preserva exatamente o que veio da planilha antes de qualquer correção numérica.
+    df_tasks['LATITUDE_ORIGINAL'] = df_tasks['LATITUDE']
+    df_tasks['LONGITUDE_ORIGINAL'] = df_tasks['LONGITUDE']
     
     m_m = df_tasks['MUNICIPIO'].isna() | (df_tasks['MUNICIPIO'].astype(str).str.strip() == '') | (df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper() == 'NAN')
     if m_m.sum() > 0:
@@ -553,9 +708,14 @@ elif status_exec == "IDLE":
 
     df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
     df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+    lat_antes_correcao = df_tasks['LAT_NUM'].copy()
+    lon_antes_correcao = df_tasks['LON_NUM'].copy()
     
     df_tasks['LAT_NUM'] = df_tasks['LAT_NUM'].apply(lambda x: corrigir_coord(x, 90))
     df_tasks['LON_NUM'] = df_tasks['LON_NUM'].apply(lambda x: corrigir_coord(x, 180))
+    mudou_lat = lat_antes_correcao.notna() & df_tasks['LAT_NUM'].notna() & ((lat_antes_correcao - df_tasks['LAT_NUM']).abs() > 1e-10)
+    mudou_lon = lon_antes_correcao.notna() & df_tasks['LON_NUM'].notna() & ((lon_antes_correcao - df_tasks['LON_NUM']).abs() > 1e-10)
+    df_tasks['COORDENADA_CORRIGIDA'] = np.where(mudou_lat | mudou_lon, 'SIM', 'NÃO')
 
     m_na, m_0 = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna(), (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
     df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Inválida'
@@ -683,9 +843,26 @@ elif status_exec == "IDLE":
         colunas_exibir.sort(key=get_sort_index)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
+        prep_inicio = time.time()
+        execucao_id = f"FISC-{datetime.now().strftime('%Y%m%d-%H%M')}-{uuid.uuid4().hex[:4].upper()}"
+        st.session_state.execucao_id_fisc = execucao_id
+        st.session_state.tempos_fisc = {}
+        for chave_limpar in ['bytes_zip_xl_fisc', 'bytes_zip_kml_fisc', 'bytes_zip_gpx_fisc', 'bytes_zip_txt_fisc']:
+            st.session_state.pop(chave_limpar, None)
+
         prep_pb = st.progress(0.0)
         prep_msg = st.empty()
         prep_msg.info("⚙️ Preparando dados para o motor...")
+
+        if usa_osrm:
+            prep_msg.info("📡 Testando disponibilidade do OSRM...")
+            ok_osrm, latencia_osrm, origem_teste = testar_osrm_fisc(df_bases, df_tasks, is_tatico, url_osrm, vel_kmh)
+            st.session_state.osrm_pretest_fisc = {'ok': ok_osrm, 'latencia_ms': latencia_osrm, 'origem': origem_teste}
+            if ok_osrm:
+                st.success(f"✅ OSRM disponível — {latencia_osrm:.0f} ms ({origem_teste}).")
+            else:
+                st.warning("⚠️ O teste do OSRM não retornou uma rota válida. O motor continuará normalmente e registrará eventuais falhas por trecho.")
+            prep_msg.info("⚙️ Preparando dados para o motor...")
 
         df_ta = pd.DataFrame()
         df_u = pd.DataFrame()
@@ -766,6 +943,7 @@ elif status_exec == "IDLE":
             df_ta['QTD PREVISTA DE POSTES'], df_ta['COR_ICONE'] = 0.0, 'gray'
 
         prep_msg.info("🧩 Consolidando Super Pontos...")
+        inicio_super_pontos = time.time()
         dfs_fundidos = []
         bases_lista = list(df_ta['BASE_ATRIBUIDA'].dropna().unique())
         total_bases = max(1, len(bases_lista))
@@ -776,6 +954,7 @@ elif status_exec == "IDLE":
             prep_pb.progress(min(0.90, 0.50 + 0.40 * ((ib + 1) / total_bases)))
 
         df_ta = pd.concat(dfs_fundidos, ignore_index=True) if dfs_fundidos else pd.DataFrame()
+        st.session_state.tempos_fisc['super_pontos_s'] = time.time() - inicio_super_pontos
         if df_ta.empty:
             prep_pb.empty(); prep_msg.empty()
             st.error("Nenhuma obra pôde ser consolidada para roteirização.")
@@ -825,6 +1004,7 @@ elif status_exec == "IDLE":
                 'is_tatico': is_tatico,
                 'modo_operacao': st.session_state.modo_operacao_fisc,
                 'regra_atribuicao': ta if is_tatico else 'Fiscal da própria planilha',
+                'execucao_id': execucao_id,
                 'raio_super_ponto_m': raio_sp,
                 'trava_global': trava_global,
                 'capacidade_por_fiscal': cm,
@@ -837,6 +1017,7 @@ elif status_exec == "IDLE":
             'routed_data': [],
             'current_geoms': []
         }
+        st.session_state.tempos_fisc['preparacao_s'] = time.time() - prep_inicio
         prep_pb.progress(1.0)
         prep_msg.success("✅ Preparação concluída. Iniciando motor de roteirização...")
         st.session_state.vrp_status_fisc = "RUNNING"
@@ -844,7 +1025,7 @@ elif status_exec == "IDLE":
         tentar_rerun()
 
 # ==========================================
-# CÁLCULO VRP (LÓGICA: SMALL -> BIG)
+# CÁLCULO VRP (LÓGICA PADRÃO / VARREDURA REVERSA)
 # ==========================================
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor VRP (Fiscalização de Bolsões)")
@@ -882,9 +1063,10 @@ if status_exec == "RUNNING":
             
             ot = []
             if oe:
+                # Lógica Padrão preservada: percorre os pontos por proximidade e termina no maior foco de postes.
                 max_idx = max(range(len(oe)), key=lambda i: extrair_qtd(oe[i].get('QTD PREVISTA DE POSTES', 0)))
                 p_max = oe.pop(max_idx)
-                
+
                 cl, cL = bl, bL
                 while oe:
                     closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
@@ -892,6 +1074,11 @@ if status_exec == "RUNNING":
                     ot.append(nx)
                     cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
                 ot.append(p_max)
+
+                # Varredura Reversa percorre exatamente a mesma sequência no sentido oposto.
+                # Assim o maior foco passa a ser o primeiro ponto, sem mudar obras, Super Pontos ou alocação.
+                if "Varredura Reversa" in cfg.get('sentido_rota', "📍 Lógica Padrão"):
+                    ot = list(reversed(ot))
             
             rf, da, sa, dds = [], 1, 1, 1
             dtb = datetime.combine(cfg['data_inicio'], datetime.min.time()).replace(hour=8, minute=0)
@@ -995,12 +1182,14 @@ if status_exec == "RUNNING":
                     for tentativa in range(5):
                         try:
                             time.sleep(0.8)
+                            t_osrm = time.time()
                             rota, _ = obter_rota_cache_fisc(
                                 it['la'], it['La'],
                                 it['lt'], it['Lt'],
                                 cfg['url_osrm_base'],
                                 cfg['velocidade_media_kmh']
                             )
+                            st_v['tempo_osrm_s'] = st_v.get('tempo_osrm_s', 0.0) + (time.time() - t_osrm)
                             if rota and len(rota) > 0:
                                 geom_rota = rota[0]
                                 if isinstance(geom_rota, list) and len(geom_rota) >= 2:
@@ -1050,7 +1239,10 @@ if status_exec == "RUNNING":
                 campos_rota = {
                     'STATUS_ROTA': status_rota,
                     'DISTANCIA_RODOVIARIA_KM': dist_real_round,
-                    'TEMPO_ROTA_MIN': tempo_rota_min
+                    'TEMPO_ROTA_MIN': tempo_rota_min,
+                    'ROTA_CACHE': bool(info_rota.get('cache', False)) if isinstance(info_rota, dict) else False,
+                    '_ROTA_ORIG_LAT': it.get('la'),
+                    '_ROTA_ORIG_LON': it.get('La')
                 }
 
                 if it['il']:
@@ -1074,19 +1266,24 @@ if status_exec == "RUNNING":
     else:
         sgt.success("✅ Rotas de Fiscalização Traçadas!"); pb.progress(1.0)
         st.session_state.df_routed_fisc = pd.DataFrame(st_v['routed_data'])
-        st.session_state.vrp_status_fisc = "PACKAGING"; time.sleep(1); tentar_rerun()
+        st.session_state.tempos_fisc = st.session_state.get('tempos_fisc', {})
+        st.session_state.tempos_fisc['motor_s'] = time.time() - st_run
+        st.session_state.tempos_fisc['osrm_s'] = float(st_v.get('tempo_osrm_s', 0.0))
+        st.session_state.roteamento_concluido_fisc = True
+        st.session_state.vrp_status_fisc = "IDLE"
+        tentar_rerun()
 
 # ==========================================
 # PACOTES E DOWNLOAD
 # ==========================================
 if status_exec == "PACKAGING":
-    st.markdown("## 📦 Empacotamento")
-    if 'start_time_pkg_fisc' not in st.session_state:
-        st.session_state.start_time_pkg_fisc = time.time()
+    alvo_pacote = st.session_state.get('package_target_fisc')
+    nomes_alvo = {'xl': 'Planilhas', 'txt': 'Relatórios TXT', 'kml': 'Mapas KML', 'gpx': 'GPS GPX'}
+    st.markdown(f"## 📦 Gerando {nomes_alvo.get(alvo_pacote, 'pacote')}")
+    inicio_pkg = time.time()
 
     df_routed = st.session_state.df_routed_fisc.copy()
     d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx, bu_txt = io.BytesIO(), io.BytesIO(), io.BytesIO(), io.BytesIO()
 
     try:
         from modules.export_fisc import limpar_colunas_fisc, gerar_txt_fisc
@@ -1121,6 +1318,7 @@ if status_exec == "PACKAGING":
         # Relatório de configuração/rastreabilidade sem interferir na roteirização.
         config_linhas = [
             "CONFIGURAÇÃO DA ROTEIRIZAÇÃO DE FISCALIZAÇÃO",
+            f"Execução: {cfg_pack.get('execucao_id', st.session_state.get('execucao_id_fisc', '-'))}",
             f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
             f"Modo de operação: {cfg_pack.get('modo_operacao', '-')}",
             f"Regra de atribuição: {cfg_pack.get('regra_atribuicao', '-')}",
@@ -1153,6 +1351,7 @@ if status_exec == "PACKAGING":
             qtd_sem_rota = int(db.get('STATUS_ROTA', pd.Series(dtype='object')).astype(str).str.contains('SEM_ROTA', na=False).sum()) if 'STATUS_ROTA' in db.columns else 0
 
             item_res = {
+                'EXECUCAO_ID': cfg_pack.get('execucao_id', st.session_state.get('execucao_id_fisc', '-')),
                 'FISCAL': b,
                 'TIPO EQUIPE': br.get('TIPO_EQUIPE', 'PRINCIPAL') if br else 'DESCONHECIDO',
                 'Obras Roteirizadas': qtd_obras,
@@ -1201,6 +1400,7 @@ if status_exec == "PACKAGING":
         # vazia em algumas linhas da planilha de entrada.
         if 'BASE_ATRIBUIDA' in df_excel_full.columns:
             df_excel_full['FISCAL'] = df_excel_full['BASE_ATRIBUIDA']
+        df_excel_full['EXECUCAO_ID'] = cfg_pack.get('execucao_id', st.session_state.get('execucao_id_fisc', '-'))
 
         for c in df_excel_full.columns:
             if 'POSTE' in c.upper():
@@ -1241,126 +1441,143 @@ if status_exec == "PACKAGING":
         # ================================================================
         # PLANILHAS ZIP
         # ================================================================
-        with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx:
-            zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_fisc(df_resumo))
-            zx.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
-            zx.writestr(f"Integridade_Roteirizacao - {d_fmt}.txt", integridade_txt.encode('utf-8'))
+        if alvo_pacote == 'xl':
+            bu_xl = io.BytesIO()
+            with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx:
+                zx.writestr(f"Resumo_Fiscais - {d_fmt}.xlsx", gerar_excel_resumo_fisc(df_resumo))
+                zx.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
+                zx.writestr(f"Integridade_Roteirizacao - {d_fmt}.txt", integridade_txt.encode('utf-8'))
 
-            dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
-            if not dfc.empty:
-                dfcc = dfc.copy()
-                dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
-                dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
-                for cc in dfcc.columns:
-                    if str(dfcc[cc].dtype) == 'object':
-                        dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
-                out_e = io.BytesIO()
-                dfcc.to_excel(out_e, index=False)
-                zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
+                dfc = st.session_state.get('df_correcao_fiscalizacao', pd.DataFrame())
+                if not dfc.empty:
+                    dfcc = dfc.copy()
+                    dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                    dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
+                    for cc in dfcc.columns:
+                        if str(dfcc[cc].dtype) == 'object':
+                            dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
+                    out_e = io.BytesIO()
+                    dfcc.to_excel(out_e, index=False)
+                    zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
 
-            if not df_falhas_rota.empty:
-                falhas_saida = df_falhas_rota.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS'], errors='ignore')
-                out_f = io.BytesIO()
-                falhas_saida.to_excel(out_f, index=False)
-                zx.writestr(f"Trechos_Sem_Rota_OSRM - {d_fmt}.xlsx", out_f.getvalue())
+                if not df_falhas_rota.empty:
+                    falhas_saida = df_falhas_rota.drop(columns=['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS'], errors='ignore')
+                    out_f = io.BytesIO()
+                    falhas_saida.to_excel(out_f, index=False)
+                    zx.writestr(f"Trechos_Sem_Rota_OSRM - {d_fmt}.xlsx", out_f.getvalue())
 
-            dfg = limpar_colunas_fisc(
-                df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'),
-                st.session_state.colunas_originais_fisc
-            )
-            dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
-            for cc in dfg.columns:
-                if str(dfg[cc].dtype) == 'object':
-                    dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_fisc(dfg, st.session_state.colunas_originais_fisc))
-
-            for b_name in fiscais_reais:
-                ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
-                df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == b_name]
-                if df_base_excel.empty:
-                    continue
-                dfg_b = limpar_colunas_fisc(
-                    df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'),
+                dfg = limpar_colunas_fisc(
+                    df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'),
                     st.session_state.colunas_originais_fisc
                 )
-                dfg_b = dfg_b.loc[:, ~dfg_b.columns.duplicated()].copy()
-                for cc in dfg_b.columns:
-                    if str(dfg_b[cc].dtype) == 'object':
-                        dfg_b[cc] = dfg_b[cc].astype(str).replace('nan', '')
-                zx.writestr(f"Rotas_{d_fmt}/Rota_{ns}.xlsx", gerar_excel_fisc(dfg_b, st.session_state.colunas_originais_fisc))
+                dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
+                for cc in dfg.columns:
+                    if str(dfg[cc].dtype) == 'object':
+                        dfg[cc] = dfg[cc].astype(str).replace('nan', '')
+                zx.writestr(f"Demanda_Fiscalizacao - {d_fmt}.xlsx", gerar_excel_fisc(dfg, st.session_state.colunas_originais_fisc))
+
+                for b_name in fiscais_reais:
+                    ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
+                    df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == b_name]
+                    if df_base_excel.empty:
+                        continue
+                    dfg_b = limpar_colunas_fisc(
+                        df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'),
+                        st.session_state.colunas_originais_fisc
+                    )
+                    dfg_b = dfg_b.loc[:, ~dfg_b.columns.duplicated()].copy()
+                    for cc in dfg_b.columns:
+                        if str(dfg_b[cc].dtype) == 'object':
+                            dfg_b[cc] = dfg_b[cc].astype(str).replace('nan', '')
+                    zx.writestr(f"Rotas_{d_fmt}/Rota_{ns}.xlsx", gerar_excel_fisc(dfg_b, st.session_state.colunas_originais_fisc))
 
         # ================================================================
         # TXT ZIP
         # ================================================================
-        with zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt:
-            zt.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
-            zt.writestr(f"Integridade_Roteirizacao - {d_fmt}.txt", integridade_txt.encode('utf-8'))
-            txt_total = gerar_txt_fisc(df_excel_full, st.session_state.colunas_originais_fisc)
-            zt.writestr(f"Demanda_Fiscalizacao_Total - {d_fmt}.txt", txt_total.encode('utf-8'))
+        if alvo_pacote == 'txt':
+            bu_txt = io.BytesIO()
+            with zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt:
+                zt.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
+                zt.writestr(f"Integridade_Roteirizacao - {d_fmt}.txt", integridade_txt.encode('utf-8'))
+                txt_total = gerar_txt_fisc(df_excel_full, st.session_state.colunas_originais_fisc)
+                zt.writestr(f"Demanda_Fiscalizacao_Total - {d_fmt}.txt", txt_total.encode('utf-8'))
 
-            if not df_falhas_rota.empty:
-                falhas_txt = ["TRECHOS SEM ROTA OSRM"]
-                for _, rr in df_falhas_rota.iterrows():
-                    falhas_txt.append(f"{rr.get('BASE_ATRIBUIDA', '-')} | {rr.get('PROTOCOLO', '-')} | {rr.get('DIA_MES', '-')} | ordem {rr.get('ORDEM', '-')}")
-                zt.writestr(f"Trechos_Sem_Rota_OSRM - {d_fmt}.txt", "\n".join(falhas_txt).encode('utf-8'))
+                if not df_falhas_rota.empty:
+                    falhas_txt = ["TRECHOS SEM ROTA OSRM"]
+                    for _, rr in df_falhas_rota.iterrows():
+                        falhas_txt.append(f"{rr.get('BASE_ATRIBUIDA', '-')} | {rr.get('PROTOCOLO', '-')} | {rr.get('DIA_MES', '-')} | ordem {rr.get('ORDEM', '-')}")
+                    zt.writestr(f"Trechos_Sem_Rota_OSRM - {d_fmt}.txt", "\n".join(falhas_txt).encode('utf-8'))
 
-            for b_name in fiscais_reais:
-                ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
-                df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == b_name]
-                if not df_base_excel.empty:
-                    txt_ind = gerar_txt_fisc(df_base_excel, st.session_state.colunas_originais_fisc)
-                    zt.writestr(f"Relatorios_TXT_{d_fmt}/ROTA_{ns}.txt", txt_ind.encode('utf-8'))
+                for b_name in fiscais_reais:
+                    ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
+                    df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == b_name]
+                    if not df_base_excel.empty:
+                        txt_ind = gerar_txt_fisc(df_base_excel, st.session_state.colunas_originais_fisc)
+                        zt.writestr(f"Relatorios_TXT_{d_fmt}/ROTA_{ns}.txt", txt_ind.encode('utf-8'))
 
         # ================================================================
         # KML ZIP
         # ================================================================
-        with zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk:
-            zk.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
-            for b_name in fiscais_reais:
-                ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
-                dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == b_name) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
-                if dfk_base.empty:
-                    continue
-                dfk_base['DIA_SEMANA'] = dfk_base.apply(dia_semana_da_linha, axis=1)
-                dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS']) > 1 else "NÃO", axis=1)
-                kl = gerar_kml_fisc(dfk_base, f"Rota {ns}", col_exibir, [b_name], formatar_valor_coluna)
-                zk.writestr(f"KML_{d_fmt}/Rota_{ns}.kml", kl.encode('utf-8'))
+        if alvo_pacote == 'kml':
+            bu_kml = io.BytesIO()
+            with zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk:
+                zk.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
+                for b_name in fiscais_reais:
+                    ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
+                    dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == b_name) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
+                    if dfk_base.empty:
+                        continue
+                    dfk_base['DIA_SEMANA'] = dfk_base.apply(dia_semana_da_linha, axis=1)
+                    dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS']) > 1 else "NÃO", axis=1)
+                    kl = gerar_kml_fisc(dfk_base, f"Rota {ns}", col_exibir, [b_name], formatar_valor_coluna)
+                    zk.writestr(f"KML_{d_fmt}/Rota_{ns}.kml", kl.encode('utf-8'))
 
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
-            if not dfk_total.empty:
-                dfk_total['DIA_SEMANA'] = dfk_total.apply(dia_semana_da_linha, axis=1)
-                dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS']) > 1 else "NÃO", axis=1)
-                ks = gerar_kml_fisc(dfk_total, "ROTA_TOTAL", col_exibir, fiscais_reais, formatar_valor_coluna)
-                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
+                dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+                if not dfk_total.empty:
+                    dfk_total['DIA_SEMANA'] = dfk_total.apply(dia_semana_da_linha, axis=1)
+                    dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS']) > 1 else "NÃO", axis=1)
+                    ks = gerar_kml_fisc(dfk_total, "ROTA_TOTAL", col_exibir, fiscais_reais, formatar_valor_coluna)
+                    zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks.encode('utf-8'))
 
-            if not df_u.empty:
-                ku = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>', '<Style id="wp"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>']
-                for _, r in df_u.iterrows():
-                    if pd.notna(r.get('LATITUDE')) and pd.notna(r.get('LONGITUDE')):
-                        ku.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO", "Rejeitado")))}</name><styleUrl>#wp</styleUrl><Point><coordinates>{r.get("LONGITUDE")},{r.get("LATITUDE")}</coordinates></Point></Placemark>')
-                ku.append('</Document></kml>')
-                zk.writestr(f"OBRAS_NAO_ALOCADAS - {d_fmt}.kml", "\n".join(ku).encode('utf-8'))
+                if not df_u.empty:
+                    ku = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document><name>OBRAS NÃO ALOCADAS</name>', '<Style id="wp"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png</href></Icon></IconStyle></Style>']
+                    for _, r in df_u.iterrows():
+                        if pd.notna(r.get('LATITUDE')) and pd.notna(r.get('LONGITUDE')):
+                            ku.append(f'<Placemark><name>{html.escape(str(r.get("PROTOCOLO", "Rejeitado")))}</name><styleUrl>#wp</styleUrl><Point><coordinates>{r.get("LONGITUDE")},{r.get("LATITUDE")}</coordinates></Point></Placemark>')
+                    ku.append('</Document></kml>')
+                    zk.writestr(f"OBRAS_NAO_ALOCADAS - {d_fmt}.kml", "\n".join(ku).encode('utf-8'))
 
         # ================================================================
         # GPX ZIP
         # ================================================================
-        with zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
-            zg.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
-            for b_name in fiscais_reais:
-                ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
-                dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == b_name) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
-                if not dfk_base.empty:
-                    zg.writestr(f"GPX_{d_fmt}/Rota_{ns}.gpx", gerar_gpx_simples(dfk_base, f"Rota {ns}").encode('utf-8'))
+        if alvo_pacote == 'gpx':
+            bu_gpx = io.BytesIO()
+            with zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
+                zg.writestr(f"Configuracao_Roteirizacao - {d_fmt}.txt", config_txt.encode('utf-8'))
+                for b_name in fiscais_reais:
+                    ns = re.sub(r'[^A-Za-z0-9_ -]', '', str(b_name)).strip()
+                    dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == b_name) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
+                    if not dfk_base.empty:
+                        zg.writestr(f"GPX_{d_fmt}/Rota_{ns}.gpx", gerar_gpx_simples(dfk_base, f"Rota {ns}").encode('utf-8'))
 
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
-            if not dfk_total.empty:
-                zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+                dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+                if not dfk_total.empty:
+                    zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
-        st.session_state.bytes_zip_xl_fisc = bu_xl.getvalue()
-        st.session_state.bytes_zip_kml_fisc = bu_kml.getvalue()
-        st.session_state.bytes_zip_gpx_fisc = bu_gpx.getvalue()
-        st.session_state.bytes_zip_txt_fisc = bu_txt.getvalue()
-        st.session_state.roteamento_concluido_fisc = True
+        if alvo_pacote == 'xl':
+            st.session_state.bytes_zip_xl_fisc = bu_xl.getvalue()
+        elif alvo_pacote == 'txt':
+            st.session_state.bytes_zip_txt_fisc = bu_txt.getvalue()
+        elif alvo_pacote == 'kml':
+            st.session_state.bytes_zip_kml_fisc = bu_kml.getvalue()
+        elif alvo_pacote == 'gpx':
+            st.session_state.bytes_zip_gpx_fisc = bu_gpx.getvalue()
+        else:
+            raise ValueError("Tipo de pacote de exportação inválido.")
+
+        st.session_state.tempos_fisc = st.session_state.get('tempos_fisc', {})
+        st.session_state.tempos_fisc[f'exportacao_{alvo_pacote}_s'] = time.time() - inicio_pkg
+        st.session_state.package_target_fisc = None
         st.session_state.vrp_status_fisc = "IDLE"
         tentar_rerun()
 
