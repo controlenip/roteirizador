@@ -8,6 +8,7 @@ import html
 import re
 import time
 import gc
+import inspect
 from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -20,6 +21,70 @@ from modules.export_tatica import injetar_logo, identificar_icone_folium, gerar_
 
 st.set_page_config(page_title="Roteirizador Tático", page_icon="🗺️", layout="wide")
 injetar_logo()
+
+@st.cache_data(show_spinner=False)
+def carregar_arquivo_normalizado_tatica(file_bytes, file_name):
+    """Lê e normaliza um arquivo apenas uma vez por conteúdo/nome durante a sessão/cache do Streamlit."""
+    nome = str(file_name).lower()
+    if nome.endswith('.csv'):
+        df = pd.read_csv(io.BytesIO(file_bytes))
+    else:
+        df = ler_planilha_cached(file_bytes)
+    df = df.copy()
+    df.columns = normalize_cols(df.columns)
+    return df.loc[:, ~df.columns.duplicated()].copy()
+
+
+@st.cache_data(show_spinner=False)
+def preparar_demanda_arquivo_tatica(file_bytes, file_name, criar_id_generico=False):
+    """Cacheia normalização, identificação de protocolo e explosão de notas compostas."""
+    dft = carregar_arquivo_normalizado_tatica(file_bytes, file_name).copy()
+    for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
+        if cc in dft.columns:
+            dft['PROTOCOLO'] = dft[cc]
+            break
+    if 'PROTOCOLO' not in dft.columns and criar_id_generico:
+        dft['PROTOCOLO'] = "GEN_" + dft.index.astype(str)
+    if 'PROTOCOLO' in dft.columns:
+        dft['PROTOCOLO'] = dft['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
+        dft = dft.explode('PROTOCOLO').reset_index(drop=True)
+        dft['PROTOCOLO'] = dft['PROTOCOLO'].str.strip()
+    return dft
+
+
+@st.cache_data(show_spinner=False)
+def preparar_bases_tatica_cache(b_t, selecionadas):
+    """Guarda a base já filtrada, geocodificada e normalizada para evitar refazer o preparo a cada rerun."""
+    df = b_t[b_t['BASE_NOME'].isin(list(selecionadas))].copy()
+    if 'LATITUDE' in df.columns and 'LONGITUDE' in df.columns:
+        df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+        df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
+    elif 'RESIDENCIA' in df.columns or 'MUNICIPIO' in df.columns:
+        cr = 'RESIDENCIA' if 'RESIDENCIA' in df.columns else 'MUNICIPIO'
+        mc = {m: obter_coordenadas_municipio_cached(m) for m in df[cr].dropna().unique()}
+        df['LATITUDE'] = df[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0])
+        df['LONGITUDE'] = df[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
+    df = df.dropna(subset=['LATITUDE', 'LONGITUDE'])
+    cr_mun = 'MUNICIPIO' if 'MUNICIPIO' in df.columns else ('RESIDENCIA' if 'RESIDENCIA' in df.columns else None)
+    if cr_mun:
+        try:
+            df['MUN_LIMPO_BASE'] = normalizar_municipios(df[cr_mun].astype(str)).astype(str).str.strip().str.upper()
+        except Exception:
+            df['MUN_LIMPO_BASE'] = df[cr_mun].astype(str).str.strip().str.upper()
+    return df
+
+
+def chamar_osrm_compativel(lat1, lon1, lat2, lon2, url_base, velocidade, timeout_s=12.0):
+    """Usa timeout quando a implementação de routing_engine oferecer esse parâmetro, sem quebrar versões antigas."""
+    try:
+        params = inspect.signature(obter_rota_ruas).parameters
+    except Exception:
+        params = {}
+    if 'timeout' in params:
+        return obter_rota_ruas(lat1, lon1, lat2, lon2, url_base, velocidade, timeout=timeout_s)
+    if 'timeout_s' in params:
+        return obter_rota_ruas(lat1, lon1, lat2, lon2, url_base, velocidade, timeout_s=timeout_s)
+    return obter_rota_ruas(lat1, lon1, lat2, lon2, url_base, velocidade)
 
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
@@ -167,18 +232,280 @@ def ordenar_bolsoes_diarios(obras, base_lat, base_lon, capacidade_dia, sentido, 
     return saida
 
 
+def calcular_metricas_resultado_tatica(df):
+    """Calcula os indicadores uma vez; pode ser refeito apenas quando as rotas mudarem."""
+    if df is None or df.empty:
+        return {'obras': 0, 'equipes': 0, 'super_pontos': 0, 'km_total': 0.0, 'osrm': 0, 'falhas': 0, 'estimados': 0}
+    d = df.copy()
+    d_t = d[~d['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])] if 'PROTOCOLO' in d.columns else d
+    if 'DISTANCIA_RODOVIARIA_KM' in d.columns:
+        km_real = pd.to_numeric(d['DISTANCIA_RODOVIARIA_KM'], errors='coerce')
+        km_est = pd.to_numeric(d.get('DISTANCIA_PONTO_ANTERIOR_KM', 0), errors='coerce').fillna(0)
+        km_total = float(km_real.fillna(km_est).fillna(0).sum())
+    else:
+        km_total = float(pd.to_numeric(d.get('DISTANCIA_PONTO_ANTERIOR_KM', 0), errors='coerce').fillna(0).sum())
+    tsp = sum(1 for _, r in d_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
+    status = d.get('STATUS_ROTA', pd.Series(dtype=str)).astype(str)
+    return {
+        'obras': int(len(d_t)),
+        'equipes': int(d['BASE_ATRIBUIDA'].nunique()) if 'BASE_ATRIBUIDA' in d.columns else 0,
+        'super_pontos': int(tsp),
+        'km_total': km_total,
+        'osrm': int(status.str.startswith('OSRM').sum()) if not status.empty else 0,
+        'falhas': int(status.str.contains('SEM_ROTA|TIMEOUT|ERRO', regex=True).sum()) if not status.empty else 0,
+        'estimados': int(status.str.contains('ESTIMADA|LINHA_RETA', regex=True).sum()) if not status.empty else 0,
+    }
+
+
+def registrar_excedente_capacidade(registro):
+    """Mantém compatibilidade com df_unallocated e separa excedentes de capacidade das falhas de atribuição."""
+    r = dict(registro)
+    r['MOTIVO_REJEICAO'] = 'Fora da Capacidade de Dias/Equipes'
+    linha = pd.DataFrame([r])
+    atual_cap = st.session_state.get('df_unallocated_capacity', pd.DataFrame())
+    st.session_state.df_unallocated_capacity = pd.concat([atual_cap, linha], ignore_index=True)
+    atual = st.session_state.get('df_unallocated', pd.DataFrame())
+    st.session_state.df_unallocated = pd.concat([atual, linha], ignore_index=True)
+
+
+def _montar_contexto_exportacao_tatica(df_routed):
+    """Prepara dados comuns aos três pacotes somente quando algum download for solicitado."""
+    df = df_routed.copy()
+    if 'DISTANCIA_PROXIMO_PONTO_KM' not in df.columns:
+        df['DISTANCIA_PROXIMO_PONTO_KM'] = df.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+
+    linhas_gerais = []
+    for _, r in df.iterrows():
+        if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+            continue
+        is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1
+        sp_text = f"SIM ({len(r['_ORIGINAL_ROWS'])} Obras)" if is_sp else "NÃO"
+        if is_sp:
+            for orig in r['_ORIGINAL_ROWS']:
+                nr = r.copy()
+                for k, v in orig.items():
+                    if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'ROTA_GEOMETRIA', 'PERIODO', 'NOME_DIA', 'DIA_MES']:
+                        nr[k] = v
+                nr['SUPER_PONTO'] = sp_text
+                linhas_gerais.append(nr)
+        else:
+            rn = r.copy(); rn['SUPER_PONTO'] = sp_text; linhas_gerais.append(rn)
+
+    df_excel_full = pd.DataFrame(linhas_gerais)
+    for c in df_excel_full.columns:
+        if 'POSTE' in str(c).upper():
+            df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
+
+    col_exibir = list(st.session_state.get('colunas_exibir', []))
+    if 'NOME_DIA' not in col_exibir: col_exibir.insert(0, 'NOME_DIA')
+    if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
+    if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
+    tpc_exp = st.session_state.get('vrp_state', {}).get('config', {}).get('tipo_periodo', 'Semana')
+    return df, df_excel_full, col_exibir, tpc_exp
+
+
+def gerar_zip_planilhas_sob_demanda(df_routed):
+    df, df_excel_full, col_exibir, _ = _montar_contexto_exportacao_tatica(df_routed)
+    d_fmt = st.session_state.get('d_fmt_resultado_tatica', datetime.now().strftime('%d.%m.%Y'))
+    bu = io.BytesIO()
+    with zipfile.ZipFile(bu, 'w', zipfile.ZIP_DEFLATED) as zx:
+        obras_por_dia_est = st.session_state.get('vrp_state', {}).get('config', {}).get('obras_por_dia', 4.0)
+        res = []
+        for b in df['BASE_ATRIBUIDA'].dropna().unique():
+            db = df[(df['BASE_ATRIBUIDA'] == b) & (~df['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
+            qtd_obras, qtd_postes = 0, 0.0
+            for _, r in db.iterrows():
+                origs = r.get('_ORIGINAL_ROWS') if isinstance(r.get('_ORIGINAL_ROWS'), list) else None
+                registros = origs if origs else [r]
+                qtd_obras += len(registros)
+                for orig in registros:
+                    vals = []
+                    for k, v in orig.items():
+                        if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
+                            try:
+                                vf = float(v)
+                                if vf > 0: vals.append(vf)
+                            except Exception:
+                                pass
+                    if vals: qtd_postes += min(vals)
+            postes_dia = (qtd_postes / (qtd_obras / float(obras_por_dia_est))) if qtd_obras > 0 else 0
+            postes_semana = postes_dia * 5.0
+            db_all = df[df['BASE_ATRIBUIDA'] == b]
+            if 'DISTANCIA_RODOVIARIA_KM' in db_all.columns:
+                km_total = pd.to_numeric(db_all['DISTANCIA_RODOVIARIA_KM'], errors='coerce').fillna(pd.to_numeric(db_all['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce')).fillna(0).sum()
+            else:
+                km_total = pd.to_numeric(db_all['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0).sum()
+            status = db_all.get('STATUS_ROTA', pd.Series(dtype=str)).astype(str)
+            res.append({
+                'Equipe': b,
+                'Obras Roteirizadas': qtd_obras,
+                'Postes/Dia (Est.)': int(round(postes_dia)),
+                'Postes/Semana (Est.)': int(round(postes_semana)),
+                'Postes Total': int(round(qtd_postes)),
+                'Super Pontos': sum(1 for _, r_sp in db.iterrows() if isinstance(r_sp.get('_ORIGINAL_ROWS'), list) and len(r_sp.get('_ORIGINAL_ROWS')) > 1),
+                'Prioridades Atendidas': len(db[db['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in db.columns else 0,
+                'KM Total Previsto': round(float(km_total), 2),
+                'Trechos OSRM': int(status.str.startswith('OSRM').sum()),
+                'Trechos sem rota': int(status.str.contains('SEM_ROTA', regex=False).sum())
+            })
+        zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
+
+        dfc = st.session_state.get('df_correcao_tatica', pd.DataFrame())
+        if not dfc.empty:
+            dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+            dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
+            for cc in dfcc.columns:
+                if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
+            out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
+
+        if 'STATUS_ROTA' in df.columns:
+            dff = df[df['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA|TIMEOUT|ERRO', regex=True)].copy()
+            if not dff.empty:
+                cols_falha = [c for c in ['BASE_ATRIBUIDA', 'PROTOCOLO', 'ORDEM', 'DIA_MES', 'LATITUDE', 'LONGITUDE', 'DISTANCIA_ESTIMADA_KM', 'STATUS_ROTA'] if c in dff.columns]
+                out_f = io.BytesIO(); dff[cols_falha].to_excel(out_f, index=False); zx.writestr(f"Trechos_Falha_OSRM - {d_fmt}.xlsx", out_f.getvalue())
+
+        for estado_key, nome in [('df_unallocated_area', 'Obras_Nao_Alocadas_Area'), ('df_unallocated_capacity', 'Obras_Excedentes_Capacidade')]:
+            dfx = st.session_state.get(estado_key, pd.DataFrame())
+            if not dfx.empty:
+                out_e = io.BytesIO(); dfx.to_excel(out_e, index=False); zx.writestr(f"{nome} - {d_fmt}.xlsx", out_e.getvalue())
+
+        if not df_excel_full.empty:
+            dfg_total = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
+            dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
+            for cc in dfg_total.columns:
+                if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
+            zx.writestr(f"Demanda_Tatica_Total - {d_fmt}.xlsx", gerar_excel_tatica(dfg_total, st.session_state.get('colunas_originais_tat', [])))
+            for base in df['BASE_ATRIBUIDA'].dropna().unique():
+                b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
+                df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == base]
+                if df_base_excel.empty: continue
+                dfg = limpar_colunas_tatica(df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
+                dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
+                for cc in dfg.columns:
+                    if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
+                zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_tatica(dfg, st.session_state.get('colunas_originais_tat', [])))
+    return bu.getvalue()
+
+
+def gerar_zip_kml_sob_demanda(df_routed):
+    df, _, col_exibir, tpc_exp = _montar_contexto_exportacao_tatica(df_routed)
+    d_fmt = st.session_state.get('d_fmt_resultado_tatica', datetime.now().strftime('%d.%m.%Y'))
+    bu = io.BytesIO()
+    with zipfile.ZipFile(bu, 'w', zipfile.ZIP_DEFLATED) as zk:
+        dfk_total = df[~df['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+        if not dfk_total.empty:
+            dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS']) > 1 else "NÃO", axis=1)
+            bases = df['BASE_ATRIBUIDA'].dropna().unique().tolist()
+            ks_tot = gerar_kml_tatica(dfk_total, "ROTA TOTAL", col_exibir, bases, tpc_exp, formatar_valor_coluna)
+            zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
+            for base in bases:
+                b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
+                dfk_base = dfk_total[dfk_total['BASE_ATRIBUIDA'] == base].copy()
+                if not dfk_base.empty:
+                    ks = gerar_kml_tatica(dfk_base, f"Rota {b_safe}", col_exibir, [base], tpc_exp, formatar_valor_coluna)
+                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
+    return bu.getvalue()
+
+
+def gerar_zip_gpx_sob_demanda(df_routed):
+    df, _, _, _ = _montar_contexto_exportacao_tatica(df_routed)
+    d_fmt = st.session_state.get('d_fmt_resultado_tatica', datetime.now().strftime('%d.%m.%Y'))
+    bu = io.BytesIO()
+    with zipfile.ZipFile(bu, 'w', zipfile.ZIP_DEFLATED) as zg:
+        dfk_total = df[~df['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
+        if not dfk_total.empty:
+            zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+            for base in df['BASE_ATRIBUIDA'].dropna().unique():
+                b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
+                dfk_base = dfk_total[dfk_total['BASE_ATRIBUIDA'] == base].copy()
+                if not dfk_base.empty:
+                    zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
+    return bu.getvalue()
+
+
+def reprocessar_falhas_osrm(df_routed):
+    """Refaz somente trechos sinalizados como falha, sem recalcular a distribuição ou a ordem das obras."""
+    if df_routed is None or df_routed.empty or 'STATUS_ROTA' not in df_routed.columns:
+        return df_routed, 0, 0
+    df = df_routed.copy()
+    cfg = st.session_state.get('vrp_state', {}).get('config', {})
+    bases_df = pd.DataFrame(st.session_state.get('bases_records', []))
+    if bases_df.empty:
+        return df, 0, int(df['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA', regex=False).sum())
+    cache = st.session_state.setdefault('osrm_cache_tatica_global', {})
+    falhas_total = int(df['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA', regex=False).sum())
+    if falhas_total == 0:
+        return df, 0, 0
+    pb = st.progress(0.0); msg = st.empty(); processadas = 0; recuperadas = 0
+    for equipe, idxs in df.groupby('BASE_ATRIBUIDA').groups.items():
+        base_rows = bases_df[bases_df['BASE_NOME'] == equipe]
+        if base_rows.empty: continue
+        prev_lat, prev_lon = float(base_rows.iloc[0]['LATITUDE']), float(base_rows.iloc[0]['LONGITUDE'])
+        ordem_idxs = sorted(list(idxs), key=lambda ix: float(df.at[ix, 'ORDEM']) if pd.notna(df.at[ix, 'ORDEM']) else 0)
+        for ix in ordem_idxs:
+            row = df.loc[ix]
+            destino_lat, destino_lon = row.get('LATITUDE'), row.get('LONGITUDE')
+            if pd.isna(destino_lat) or pd.isna(destino_lon):
+                continue
+            status = str(row.get('STATUS_ROTA', ''))
+            if 'SEM_ROTA' in status and row.get('PROTOCOLO') != 'PAUSA_ALMOCO':
+                processadas += 1
+                msg.info(f"🔄 Reprocessando trechos com falha... {processadas}/{falhas_total}")
+                chave = chave_rota_cache(prev_lat, prev_lon, destino_lat, destino_lon)
+                cached = cache.get(chave)
+                rota = cached[0] if cached is not None else None
+                meta = dict(cached[1]) if cached is not None else None
+                if rota is None or not rota[0]:
+                    for tentativa in range(3):
+                        try:
+                            ini = time.time()
+                            rr = chamar_osrm_compativel(prev_lat, prev_lon, destino_lat, destino_lon, cfg.get('url_osrm_base', 'http://router.project-osrm.org'), cfg.get('velocidade_media_kmh', 30.0), timeout_s=12.0)
+                            if rr and len(rr) >= 2 and isinstance(rr[0], list) and len(rr[0]) >= 2:
+                                geom, dur = rr[0], rr[1]
+                                km_real = distancia_geometria_km(geom)
+                                status_ok = 'OSRM_LENTO' if (time.time() - ini) > 12.0 else 'OSRM'
+                                meta = {'status': status_ok, 'km_real': km_real if km_real > 0 else np.nan, 'km_estimado': float(row.get('DISTANCIA_ESTIMADA_KM', row.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)) or 0), 'tempo_real_min': float(dur) / 60.0 if pd.notna(dur) else np.nan}
+                                rota = (geom, dur); cache[chave] = (rota, dict(meta)); break
+                        except Exception:
+                            time.sleep(1.0 + tentativa)
+                if rota is not None and rota[0] and meta:
+                    df.at[ix, 'ROTA_GEOMETRIA'] = rota[0]
+                    df.at[ix, 'STATUS_ROTA'] = meta.get('status', 'OSRM')
+                    df.at[ix, 'DISTANCIA_RODOVIARIA_KM'] = round(float(meta.get('km_real')), 2) if pd.notna(meta.get('km_real')) else np.nan
+                    if pd.notna(meta.get('km_real')): df.at[ix, 'DISTANCIA_PONTO_ANTERIOR_KM'] = round(float(meta.get('km_real')), 2)
+                    df.at[ix, 'TEMPO_ROTA_REAL_MIN'] = round(float(meta.get('tempo_real_min')), 1) if pd.notna(meta.get('tempo_real_min')) else np.nan
+                    recuperadas += 1
+                pb.progress(min(1.0, processadas / max(1, falhas_total)))
+            prev_lat, prev_lon = float(destino_lat), float(destino_lon)
+    st.session_state.osrm_cache_tatica_global = cache
+    restantes = int(df['STATUS_ROTA'].astype(str).str.contains('SEM_ROTA', regex=False).sum())
+    pb.empty(); msg.empty()
+    return df, recuperadas, restantes
+
+
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
 
 def limpar_roteirizador():
+    # O cache global de rotas OSRM é intencionalmente preservado durante a sessão.
     st.session_state.update({'roteamento_concluido': False, 'vrp_status': "IDLE", 'vrp_state': {}, 'df_routed': pd.DataFrame(), 'bases_records': [], 'colunas_exibir': [], 'colunas_originais_tat': []})
-    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated', 'df_correcao_tatica', 'qtd_coords_autocorrigidas']: st.session_state.pop(k, None)
+    for k in [
+        'bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg',
+        'df_unallocated', 'df_unallocated_area', 'df_unallocated_capacity', 'df_correcao_tatica',
+        'qtd_coords_autocorrigidas', 'metricas_resultado_tatica', 'd_fmt_resultado_tatica',
+        'prep_tasks_tatica', 'prep_bases_tatica', 'prep_params_tatica', 'inicio_em_processamento_tatica',
+        'mostrar_mapa_tatico', 'checkpoint_tatico'
+    ]:
+        st.session_state.pop(k, None)
     ler_planilha_cached.clear()
+    gc.collect()
     tentar_rerun()
 
 if "roteamento_concluido" not in st.session_state: st.session_state.roteamento_concluido = False
 if "vrp_status" not in st.session_state: st.session_state.vrp_status = "IDLE"
+if "osrm_cache_tatica_global" not in st.session_state: st.session_state.osrm_cache_tatica_global = {}
+if "mostrar_mapa_tatico" not in st.session_state: st.session_state.mostrar_mapa_tatico = False
 
 status_exec = st.session_state.vrp_status
 is_done = st.session_state.roteamento_concluido
@@ -207,10 +534,33 @@ with st.sidebar:
     sb_html = st.empty()
 
     if is_done and not st.session_state.df_routed.empty:
-        d_fmt = datetime.now().strftime("%d.%m.%Y")
-        st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl', b"vazio"), file_name=f"Rotas_Planilhas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml', b"vazio"), file_name=f"Rotas_Mapas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx', b"vazio"), file_name=f"Rotas_GPS - {d_fmt}.zip", use_container_width=True)
+        d_fmt = st.session_state.get('d_fmt_resultado_tatica', datetime.now().strftime("%d.%m.%Y"))
+
+        if st.session_state.get('bytes_zip_xl'):
+            st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.bytes_zip_xl, file_name=f"Rotas_Planilhas - {d_fmt}.zip", use_container_width=True)
+        else:
+            if st.button("🌐 Preparar Planilhas (ZIP)", use_container_width=True):
+                with st.spinner("Gerando planilhas somente agora..."):
+                    st.session_state.bytes_zip_xl = gerar_zip_planilhas_sob_demanda(st.session_state.df_routed)
+                tentar_rerun()
+
+        if st.session_state.get('bytes_zip_kml'):
+            st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.bytes_zip_kml, file_name=f"Rotas_Mapas - {d_fmt}.zip", use_container_width=True)
+        else:
+            if st.button("🗺️ Preparar Mapas (KML)", use_container_width=True):
+                with st.spinner("Gerando KML somente agora..."):
+                    st.session_state.bytes_zip_kml = gerar_zip_kml_sob_demanda(st.session_state.df_routed)
+                tentar_rerun()
+
+        if st.session_state.get('bytes_zip_gpx'):
+            st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.bytes_zip_gpx, file_name=f"Rotas_GPS - {d_fmt}.zip", use_container_width=True)
+        else:
+            if st.button("🛰️ Preparar GPS (GPX)", use_container_width=True):
+                with st.spinner("Gerando GPX somente agora..."):
+                    st.session_state.bytes_zip_gpx = gerar_zip_gpx_sob_demanda(st.session_state.df_routed)
+                tentar_rerun()
+
+        st.caption("Os pacotes são gerados sob demanda para o resultado aparecer mais rápido.")
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
 if is_done and not st.session_state.df_routed.empty:
@@ -227,31 +577,30 @@ if is_done and not st.session_state.df_routed.empty:
         </div>
         """, unsafe_allow_html=True)
 
-    st.session_state.df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = st.session_state.df_routed.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+    # Trabalha em cópia para não alterar o DataFrame oficial da sessão durante a visualização.
     dfr = st.session_state.df_routed.copy()
+    dfr['DISTANCIA_PROXIMO_PONTO_KM'] = dfr.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
     dfr_t = dfr[~dfr['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-    
-    tr = len(dfr_t)
-    te = dfr['BASE_ATRIBUIDA'].nunique()
-    if 'DISTANCIA_RODOVIARIA_KM' in dfr.columns:
-        km_real_s = pd.to_numeric(dfr['DISTANCIA_RODOVIARIA_KM'], errors='coerce')
-        km_fallback_s = pd.to_numeric(dfr['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0)
-        km_total_apurado = km_real_s.fillna(km_fallback_s).fillna(0).sum()
-    else:
-        km_total_apurado = pd.to_numeric(dfr['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0).sum()
-    tk = f"{km_total_apurado:.1f} km"
-    
-    tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
+
+    metricas = st.session_state.get('metricas_resultado_tatica')
+    if not metricas:
+        metricas = calcular_metricas_resultado_tatica(dfr)
+        st.session_state.metricas_resultado_tatica = metricas
+    tk = f"{metricas['km_total']:.1f} km"
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(render_metric_card("Obras Planejadas", tr, "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
-    c2.markdown(render_metric_card("Equipes Alocadas", te, "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
-    c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
+    c1.markdown(render_metric_card("Obras Planejadas", metricas['obras'], "🎯", "#0D256C", "rgba(13,37,108,0.12)"), unsafe_allow_html=True)
+    c2.markdown(render_metric_card("Equipes Alocadas", metricas['equipes'], "👥", "#8b5cf6", "rgba(139,92,246,0.15)"), unsafe_allow_html=True)
+    c3.markdown(render_metric_card("Super Pontos", str(metricas['super_pontos']), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
-    if not st.session_state.get('df_unallocated', pd.DataFrame()).empty:
-        st.warning(f"⚠️ {len(st.session_state.df_unallocated)} obras não couberam na cota de dias/equipes (Verifique o arquivo ZIP gerado).")
-    else:
+    df_area = st.session_state.get('df_unallocated_area', pd.DataFrame())
+    df_cap = st.session_state.get('df_unallocated_capacity', pd.DataFrame())
+    if not df_area.empty:
+        st.warning(f"⚠️ {len(df_area)} obras não foram atribuídas por área/município sem equipe compatível.")
+    if not df_cap.empty:
+        st.warning(f"⚠️ {len(df_cap)} obras excederam a capacidade configurada de dias/equipes.")
+    if df_area.empty and df_cap.empty:
         st.success("✅ 100% das obras foram alocadas com sucesso.")
 
     # Diagnóstico adicional sem alterar o fluxo original da tela.
@@ -271,41 +620,52 @@ if is_done and not st.session_state.df_routed.empty:
             st.caption(f"Balanceamento por equipe — mín.: {int(cargas.min())} | média: {cargas.mean():.1f} | máx.: {int(cargas.max())}")
         if qtd_falha > 0:
             st.warning("Existem trechos em que o servidor de arruamento não retornou geometria. Eles não são desenhados como linha reta; permanecem sinalizados para conferência.")
+            if st.button("🔄 Reprocessar somente trechos com falha", use_container_width=True):
+                with st.spinner("Tentando recuperar somente os trechos que falharam..."):
+                    novo_df, recuperadas, restantes = reprocessar_falhas_osrm(st.session_state.df_routed)
+                    st.session_state.df_routed = novo_df
+                    st.session_state.metricas_resultado_tatica = calcular_metricas_resultado_tatica(novo_df)
+                    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx']:
+                        st.session_state.pop(k, None)
+                st.success(f"Trechos recuperados: {recuperadas}. Falhas restantes: {restantes}.")
+                time.sleep(0.6)
+                tentar_rerun()
 
     st.markdown("### 🗺️ Mapa Operacional")
-    mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-    co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
-    
-    for bn in dfr['BASE_ATRIBUIDA'].unique().tolist():
-        cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
-        db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
-        
-        bn_safe = str(bn).replace("{", "[").replace("}", "]")
-        fg = folium.FeatureGroup(name=f"Equipe: {bn_safe}", show=False)
-        m_clust_eq = MarkerCluster(name=f"Obras - {bn_safe}").add_to(fg)
-        
-        for pe in db['PERIODO'].unique():
-            dp = db[db['PERIODO'] == pe]
-            # Cada geometria é desenhada separadamente: uma falha intermediária não liga dois trechos por uma reta artificial.
-            for _, r_linha in dp.iterrows():
-                geom = r_linha.get('ROTA_GEOMETRIA')
-                if isinstance(geom, list) and len(geom) >= 2:
-                    pts = [[pt[1], pt[0]] for pt in geom if isinstance(pt, (list, tuple)) and len(pt) >= 2]
-                    if len(pts) >= 2:
-                        folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
-                        folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
-            
-            for r in dp.to_dict('records'):
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                c_i = 'red' if str(r.get('PRIORIDADE')) == 'Sim' else 'blue'
-                ic = identificar_icone_folium(r, dfr.columns)
-                er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
-                status_rota = html.escape(str(r.get('STATUS_ROTA', '-')))
-                pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><b>Status rota:</b> {status_rota}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
-                pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
-                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust_eq)
-        fg.add_to(mapa)
-    folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
+    mostrar_mapa = st.checkbox("Carregar/Exibir mapa operacional", key='mostrar_mapa_tatico')
+    if not mostrar_mapa:
+        st.info("O mapa ficou sob demanda para acelerar a abertura do resultado. Ative a opção acima quando quiser visualizá-lo.")
+    else:
+        mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
+        co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
+        equipes_ordem = dfr['BASE_ATRIBUIDA'].dropna().unique().tolist()
+        for bn in equipes_ordem:
+            cr = co_f[equipes_ordem.index(bn) % len(co_f)]
+            db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
+            bn_safe = str(bn).replace("{", "[").replace("}", "]")
+            fg = folium.FeatureGroup(name=f"Equipe: {bn_safe}", show=False)
+            m_clust_eq = MarkerCluster(name=f"Obras - {bn_safe}").add_to(fg)
+            for pe in db['PERIODO'].unique():
+                dp = db[db['PERIODO'] == pe]
+                for _, r_linha in dp.iterrows():
+                    geom = r_linha.get('ROTA_GEOMETRIA')
+                    if isinstance(geom, list) and len(geom) >= 2:
+                        pts = [[pt[1], pt[0]] for pt in geom if isinstance(pt, (list, tuple)) and len(pt) >= 2]
+                        if len(pts) >= 2:
+                            folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
+                            folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
+                for r in dp.to_dict('records'):
+                    if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                    c_i = 'red' if str(r.get('PRIORIDADE')) == 'Sim' else 'blue'
+                    ic = identificar_icone_folium(r, dfr.columns)
+                    er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
+                    status_rota = html.escape(str(r.get('STATUS_ROTA', '-')))
+                    pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><b>Status rota:</b> {status_rota}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
+                    pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
+                    folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust_eq)
+            fg.add_to(mapa)
+        folium.LayerControl().add_to(mapa)
+        st_folium(mapa, use_container_width=True, height=550)
 
 elif status_exec == "IDLE":
     c_up1, c_up2 = st.columns(2)
@@ -314,8 +674,7 @@ elif status_exec == "IDLE":
         df_bases = pd.DataFrame()
         bf = st.file_uploader("Suba a planilha de Equipes (Excel)", type=["xlsx", "xls"])
         if bf:
-            b_t = ler_planilha_cached(bf.getvalue()); b_t.columns = normalize_cols(b_t.columns)
-            b_t = b_t.loc[:, ~b_t.columns.duplicated()].copy()
+            b_t = carregar_arquivo_normalizado_tatica(bf.getvalue(), bf.name)
             
             for pn in ['LEVANTADOR', 'FISCAL', 'NOME_FISCAL', 'NOME', 'TECNICO', 'COLABORADOR', 'EQUIPE']:
                 if pn in b_t.columns: b_t = b_t.rename(columns={pn: 'BASE_NOME'}); break
@@ -328,20 +687,8 @@ elif status_exec == "IDLE":
                 opts = sorted([str(x) for x in b_t['BASE_NOME'].dropna().unique() if str(x) not in ['SEM EQUIPE', 'NAN', 'NONE', '']])
                 sel = st.multiselect("Selecione as Equipes Ativas:", opts, default=opts)
                 if sel:
-                    df_bases = b_t[b_t['BASE_NOME'].isin(sel)].copy()
-                    if 'LATITUDE' in df_bases.columns and 'LONGITUDE' in df_bases.columns:
-                        df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-                        df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-                    elif 'RESIDENCIA' in df_bases.columns or 'MUNICIPIO' in df_bases.columns:
-                        cr = 'RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else 'MUNICIPIO'
-                        mc = {}
-                        with st.spinner("🌍 Mapeando bases via IBGE..."):
-                            for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
-                        df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
-                    df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
-                    cr_mun = 'MUNICIPIO' if 'MUNICIPIO' in df_bases.columns else ('RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else None)
-                    if cr_mun:
-                        df_bases['MUN_LIMPO_BASE'] = df_bases[cr_mun].apply(municipio_normalizado)
+                    with st.spinner("🌍 Preparando bases..."):
+                        df_bases = preparar_bases_tatica_cache(b_t, tuple(sel))
             else: st.error("❌ A planilha não possui coluna de nome da Equipe/Levantador.")
 
         st.markdown("##### 📍 Regra de Atribuição")
@@ -368,17 +715,11 @@ elif status_exec == "IDLE":
     if task_files:
         dfs = []
         for f in task_files:
-            dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
-            dft.columns = normalize_cols(dft.columns)
-            if not dfs: st.session_state.colunas_originais_tat = dft.columns.tolist()
-            for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
-                if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
+            raw_cols = carregar_arquivo_normalizado_tatica(f.getvalue(), f.name).columns.tolist()
+            dft = preparar_demanda_arquivo_tatica(f.getvalue(), f.name, criar_id_generico=False)
+            if not dfs: st.session_state.colunas_originais_tat = raw_cols
             dfs.append(dft)
-        
         df_tasks_padrao = pd.concat(dfs, ignore_index=True)
-        if 'PROTOCOLO' in df_tasks_padrao.columns:
-            df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-            df_tasks_padrao = df_tasks_padrao.explode('PROTOCOLO').reset_index(drop=True); df_tasks_padrao['PROTOCOLO'] = df_tasks_padrao['PROTOCOLO'].str.strip()
 
         st.markdown("---")
         st.markdown("#### ⚙️ Filtros - Demandas (Obras Padrão)")
@@ -397,7 +738,7 @@ elif status_exec == "IDLE":
                 df_tasks_padrao['TIPO NOTA'] = df_tasks_padrao['TIPO NOTA'].astype(str).str.strip().str.upper()
                 opts_n = sorted([str(x) for x in df_tasks_padrao['TIPO NOTA'].unique() if str(x) != 'NAN'])
                 sel_p = st.multiselect("🚨 2. Obras de Alta Prioridade:", options=opts_n, default=[n for n in opts_n if n in ['ASC', 'CCF', 'DIF', 'MGD', 'MTP', 'SID']])
-                df_tasks_padrao['PRIORIDADE'] = df_tasks_padrao['TIPO NOTA'].apply(lambda x: 'Sim' if str(x) in sel_p else 'Não')
+                df_tasks_padrao['PRIORIDADE'] = np.where(df_tasks_padrao['TIPO NOTA'].isin(sel_p), 'Sim', 'Não')
             else: df_tasks_padrao['PRIORIDADE'] = 'Não'
 
     # ------------------ BLOCO PLANILHA GENÉRICA ------------------
@@ -405,28 +746,16 @@ elif status_exec == "IDLE":
     if generic_files:
         dfs_gen = []
         for f in generic_files:
-            dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
-            dft.columns = normalize_cols(dft.columns)
-            
+            raw_cols = carregar_arquivo_normalizado_tatica(f.getvalue(), f.name).columns.tolist()
+            dft = preparar_demanda_arquivo_tatica(f.getvalue(), f.name, criar_id_generico=True)
             if 'colunas_originais_tat' not in st.session_state or not st.session_state.colunas_originais_tat:
-                st.session_state.colunas_originais_tat = dft.columns.tolist()
+                st.session_state.colunas_originais_tat = raw_cols
             else:
-                for col in dft.columns:
+                for col in raw_cols:
                     if col not in st.session_state.colunas_originais_tat:
                         st.session_state.colunas_originais_tat.append(col)
-                        
-            for cc in ['NOTA', 'PROTOCOLO', 'OS', 'ID']:
-                if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
             dfs_gen.append(dft)
-            
         df_tasks_gen = pd.concat(dfs_gen, ignore_index=True)
-        
-        if 'PROTOCOLO' not in df_tasks_gen.columns:
-            df_tasks_gen['PROTOCOLO'] = "GEN_" + df_tasks_gen.index.astype(str)
-            
-        if 'PROTOCOLO' in df_tasks_gen.columns:
-            df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
-            df_tasks_gen = df_tasks_gen.explode('PROTOCOLO').reset_index(drop=True); df_tasks_gen['PROTOCOLO'] = df_tasks_gen['PROTOCOLO'].str.strip()
 
         st.markdown("---")
         st.markdown("#### ⚙️ Filtros - Planilha Genérica")
@@ -438,7 +767,7 @@ elif status_exec == "IDLE":
                 df_tasks_gen[col_prio] = df_tasks_gen[col_prio].astype(str).str.strip().str.upper()
                 opts_p = sorted([str(x) for x in df_tasks_gen[col_prio].unique() if str(x) != 'NAN'])
                 sel_p_gen = st.multiselect("🚨 Escolha os Valores de Alta Prioridade:", options=opts_p)
-                df_tasks_gen['PRIORIDADE'] = df_tasks_gen[col_prio].apply(lambda x: 'Sim' if str(x) in sel_p_gen else 'Não')
+                df_tasks_gen['PRIORIDADE'] = np.where(df_tasks_gen[col_prio].isin(sel_p_gen), 'Sim', 'Não')
             else:
                 df_tasks_gen['PRIORIDADE'] = 'Não'
                 
@@ -519,27 +848,41 @@ elif status_exec == "IDLE":
     except Exception:
         df_tasks['MUN_LIMPO'] = df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper()
 
-    # A parte pesada (balanceamento + Super Pontos) foi movida para depois do clique.
-    # Assim o Streamlit nao recalcula milhares de obras toda vez que um widget muda.
-    with st.expander("🛠️ Configuração de Saída", expanded=True):
-        tc = [c for c in df_tasks.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        for c_extra in ['BASE_ATRIBUIDA', 'SUPER_PONTO']:
-            if c_extra not in tc:
-                tc.append(c_extra)
+    # Pré-validação rápida antes de qualquer cálculo pesado.
+    capacidade_total_teorica = int(cm * qtd_eq)
+    qtd_validas = int(len(df_tasks))
+    qtd_rejeitadas = int(len(df_rej))
+    excesso_teorico = max(0, qtd_validas - capacidade_total_teorica)
+    pv1, pv2, pv3, pv4 = st.columns(4)
+    pv1.metric("Obras válidas", qtd_validas)
+    pv2.metric("Retidas/correção", qtd_rejeitadas)
+    pv3.metric("Equipes ativas", int(qtd_eq))
+    pv4.metric("Excesso teórico", excesso_teorico)
+    if not dias_sel:
+        st.warning("Nenhum dia útil foi selecionado. O motor manterá a regra padrão interna, mas é recomendável escolher os dias para que a capacidade exibida corresponda ao planejamento.")
 
-        cd = [
-            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME',
-            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE',
-            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
-        ]
+    # O formulário evita reruns ao ajustar apenas a configuração final de saída.
+    # Uploads e filtros permanecem como antes para preservar as opções dinâmicas da tela.
+    with st.form("form_inicio_motor_tatico", clear_on_submit=False):
+        with st.expander("🛠️ Configuração de Saída", expanded=True):
+            tc = [c for c in df_tasks.columns if not c.startswith('_') and c != 'MUN_LIMPO']
+            for c_extra in ['BASE_ATRIBUIDA', 'SUPER_PONTO']:
+                if c_extra not in tc:
+                    tc.append(c_extra)
 
-        cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
-        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+            cd = [
+                'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME',
+                'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE',
+                'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
+            ]
+            cp = [c for c in cd if c in tc]
+            colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
+            colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+        st.info("⚡ Distribuição, balanceamento e Super Pontos só serão processados depois da confirmação abaixo.")
+        iniciar_motor = st.form_submit_button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True)
 
-    st.info("⚡ Os cálculos pesados de distribuição e Super Pontos só serão executados após clicar em **Iniciar Motor de Roteirização**.")
-
-    if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
+    if iniciar_motor and not st.session_state.get('inicio_em_processamento_tatica', False):
+        st.session_state.inicio_em_processamento_tatica = True
         st.session_state.prep_tasks_tatica = df_tasks.copy()
         st.session_state.prep_bases_tatica = df_bases.copy()
         st.session_state.prep_params_tatica = {
@@ -660,7 +1003,9 @@ if status_exec == "PREPARING":
         st.session_state.vrp_status = "IDLE"
         st.stop()
 
-    st.session_state.df_unallocated = df_u
+    st.session_state.df_unallocated_area = df_u.copy()
+    st.session_state.df_unallocated_capacity = pd.DataFrame()
+    st.session_state.df_unallocated = df_u.copy()
     total_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
     sb_html.markdown(render_sidebar_card(cm_p, total_alocadas, qtd_eq_p, cm_p * qtd_eq_p), unsafe_allow_html=True)
 
@@ -686,8 +1031,14 @@ if status_exec == "PREPARING":
         'unvisited': df_ta.copy(),
         'routed_data': [],
         'current_geoms': [],
-        'route_cache': {}
+        'route_cache': dict(st.session_state.get('osrm_cache_tatica_global', {}))
     }
+
+    # Libera cópias intermediárias grandes antes de iniciar o roteamento.
+    for k in ['prep_tasks_tatica', 'prep_bases_tatica']:
+        st.session_state.pop(k, None)
+    st.session_state.inicio_em_processamento_tatica = False
+    gc.collect()
 
     pb_prep.progress(1.0)
     msg_prep.success("✅ Preparação concluída. Iniciando o motor de roteirização...")
@@ -697,6 +1048,9 @@ if status_exec == "PREPARING":
 
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor VRP Tático")
+    cp_salvo = st.session_state.get('checkpoint_tatico')
+    if cp_salvo:
+        st.caption(f"Checkpoint: {cp_salvo.get('indice_proxima', 0)}/{cp_salvo.get('total_equipes', 0)} equipes processadas. Última: {cp_salvo.get('equipe_concluida', '-')}")
     if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
     
     st_run = st.session_state.get('start_time_run', time.time())
@@ -704,6 +1058,7 @@ if status_exec == "RUNNING":
     
     pb = st.progress(0.0); tmp = st.empty(); sgt = st.empty()
     st_v = st.session_state.vrp_state; cfg = st_v['config']; b_n = st_v['b_names']; b_i = st_v.get('b_idx', 0)
+    bases_df_run = pd.DataFrame(st.session_state.get('bases_records', []))
     
     def render_t(bi, ii, it):
         e = time.time() - st_run; f = (bi + (ii / max(1, it))) / max(1, len(b_n))
@@ -716,8 +1071,7 @@ if status_exec == "RUNNING":
         render_t(b_i, 0, 1)
         
         if 'c_rotas' not in st_v:
-            br = pd.DataFrame(st.session_state.bases_records)
-            br = br[br['BASE_NOME'] == bn].iloc[0]
+            br = bases_df_run[bases_df_run['BASE_NOME'] == bn].iloc[0]
             if pd.isna(br.get('LATITUDE')): st_v['b_idx'] += 1; st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
@@ -742,7 +1096,7 @@ if status_exec == "RUNNING":
 
             for o in ot:
                 if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
-                    st.session_state.df_unallocated = pd.concat([st.session_state.get('df_unallocated', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
+                    registrar_excedente_capacidade(o); continue
 
                 qr = len(o.get('_ORIGINAL_ROWS', [1])) if isinstance(o.get('_ORIGINAL_ROWS'), list) else 1
                 vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE'])
@@ -766,7 +1120,7 @@ if status_exec == "RUNNING":
                         if dds > len(cfg['dias_selecionados']): sa += 1; dds = 1
                     es = gi(da)
                     if (cfg['tipo_periodo'] == "Semana" and sa > cfg['limite_periodos']) or (cfg['tipo_periodo'] == "Dia" and da > cfg['limite_periodos']):
-                        st.session_state.df_unallocated = pd.concat([st.session_state.get('df_unallocated', pd.DataFrame()), pd.DataFrame([o])], ignore_index=True); continue
+                        registrar_excedente_capacidade(o); continue
                     vkr = haversine_vectorized(es['l'], es['L'], o['LATITUDE'], o['LONGITUDE']); vk = vkr * 1.3
                     if vkr < 0.05 and es['oh'] > 0: vm, em = 0.0, 30.0
                     else: vm, em = (vk / (cfg['velocidade_media_kmh']*1.5 if vk>20 else cfg['velocidade_media_kmh']))*60, cfg['tempo_medio_obra']*60
@@ -788,53 +1142,74 @@ if status_exec == "RUNNING":
 
             for i in range(oi, ei):
                 it = rf[i]
+                if i % 5 == 0:
+                    sgt.info(f"🛣️ Etapa de arruamento — **{bn}** | trecho {i + 1}/{len(rf)} | equipe {b_i + 1}/{len(b_n)}")
+                render_t(b_i, i, len(rf))
+
+                # Pausas e outros deslocamentos nulos não precisam consultar o OSRM.
+                if abs(float(it['la']) - float(it['lt'])) < 1e-9 and abs(float(it['La']) - float(it['Lt'])) < 1e-9:
+                    gd.append(([], 0.0))
+                    gm.append({'status': 'SEM_DESLOCAMENTO', 'km_real': 0.0, 'km_estimado': 0.0, 'tempo_real_min': 0.0})
+                    continue
+
                 if not cfg['tracado_real']:
                     geom = [[it['La'], it['la']], [it['Lt'], it['lt']]]
                     dur = (it['dk'] / max(cfg['velocidade_media_kmh'], 1.0)) * 3600
                     gd.append((geom, dur))
                     gm.append({'status': 'LINHA_RETA_ESTIMADA', 'km_real': np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': dur / 60.0})
-                else:
-                    if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
-                    render_t(b_i, i, len(rf))
-                    chave = chave_rota_cache(it['la'], it['La'], it['lt'], it['Lt'])
-                    cached = cache.get(chave)
-                    if cached is not None:
-                        rota, meta = cached
-                        gd.append(rota)
-                        gm.append(dict(meta))
-                        continue
+                    continue
 
-                    sucesso_rota = False
-                    ultimo_erro = None
-                    for tentativa in range(5):
-                        try:
-                            time.sleep(0.8 if tentativa == 0 else 1.2)
-                            rota = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-                            if rota and len(rota) >= 2 and isinstance(rota[0], list) and len(rota[0]) >= 2:
-                                geom, dur = rota[0], rota[1]
-                                km_real = distancia_geometria_km(geom)
-                                meta = {'status': 'OSRM', 'km_real': km_real if km_real > 0 else np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': float(dur) / 60.0 if pd.notna(dur) else np.nan}
-                                gd.append((geom, dur))
-                                gm.append(meta)
-                                cache[chave] = ((geom, dur), dict(meta))
-                                sucesso_rota = True
-                                break
-                        except Exception as exc:
-                            ultimo_erro = exc
-                            time.sleep(1.5 + tentativa * 0.5)
+                chave = chave_rota_cache(it['la'], it['La'], it['lt'], it['Lt'])
+                cached = cache.get(chave)
+                if cached is not None:
+                    rota, meta = cached
+                    gd.append(rota)
+                    gm.append(dict(meta))
+                    continue
 
-                    if not sucesso_rota:
-                        # Com arruamento real ativado, não inventa uma reta. Mantém o trecho vazio e sinalizado.
-                        rota_vazia = ([], 0.0)
-                        meta = {'status': 'SEM_ROTA_OSRM', 'km_real': np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': np.nan}
-                        gd.append(rota_vazia)
-                        gm.append(meta)
-                        cache[chave] = (rota_vazia, dict(meta))
+                sucesso_rota = False
+                ultimo_erro = None
+                for tentativa in range(5):
+                    try:
+                        time.sleep(0.8 if tentativa == 0 else 1.2)
+                        ini_osrm = time.time()
+                        rota = chamar_osrm_compativel(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'], timeout_s=12.0)
+                        tempo_chamada = time.time() - ini_osrm
+                        if rota and len(rota) >= 2 and isinstance(rota[0], list) and len(rota[0]) >= 2:
+                            geom, dur = rota[0], rota[1]
+                            km_real = distancia_geometria_km(geom)
+                            status_ok = 'OSRM_LENTO' if tempo_chamada > 12.0 else 'OSRM'
+                            meta = {'status': status_ok, 'km_real': km_real if km_real > 0 else np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': float(dur) / 60.0 if pd.notna(dur) else np.nan}
+                            gd.append((geom, dur))
+                            gm.append(meta)
+                            cache[chave] = ((geom, dur), dict(meta))
+                            sucesso_rota = True
+                            break
+                    except Exception as exc:
+                        ultimo_erro = exc
+                        time.sleep(1.5 + tentativa * 0.5)
+
+                if not sucesso_rota:
+                    # Com arruamento real ativado, não inventa uma reta. Mantém o trecho vazio e sinalizado.
+                    rota_vazia = ([], 0.0)
+                    meta = {'status': 'SEM_ROTA_OSRM', 'km_real': np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': np.nan}
+                    gd.append(rota_vazia)
+                    gm.append(meta)
+                    cache[chave] = (rota_vazia, dict(meta))
 
             st_v['c_idx'], st_v['current_geoms'], st_v['current_meta'], st_v['route_cache'] = ei, gd, gm, cache
+            cache_global = st.session_state.get('osrm_cache_tatica_global', {})
+            for ck, cv in cache.items():
+                try:
+                    if cv and cv[0] and isinstance(cv[0][0], list) and len(cv[0][0]) >= 2:
+                        cache_global[ck] = cv
+                except Exception:
+                    pass
+            st.session_state.osrm_cache_tatica_global = cache_global
             if ei < len(rf): st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
             
-            bl, bL = float(pd.DataFrame(st.session_state.bases_records)[pd.DataFrame(st.session_state.bases_records)['BASE_NOME']==bn].iloc[0]['LATITUDE']), float(pd.DataFrame(st.session_state.bases_records)[pd.DataFrame(st.session_state.bases_records)['BASE_NOME']==bn].iloc[0]['LONGITUDE'])
+            base_row_run = bases_df_run[bases_df_run['BASE_NOME'] == bn].iloc[0]
+            bl, bL = float(base_row_run['LATITUDE']), float(base_row_run['LONGITUDE'])
             rdf, og, dp = [], 1, ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
             gm = st_v.get('current_meta', [{} for _ in gd])
             for idx_seg, (it, (g, ds)) in enumerate(zip(rf, gd)):
@@ -862,144 +1237,41 @@ if status_exec == "RUNNING":
                     rdf.append(ob)
                 og += 1
             st_v['routed_data'].extend(rdf); del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']; st_v.pop('current_meta', None)
-            st_v['b_idx'] += 1; st.session_state.vrp_state = st_v; gc.collect(); tentar_rerun()
+            st_v['b_idx'] += 1
+            st.session_state.checkpoint_tatico = {'equipe_concluida': bn, 'indice_proxima': st_v['b_idx'], 'total_equipes': len(b_n), 'rotas_acumuladas': len(st_v.get('routed_data', []))}
+            st.session_state.vrp_state = st_v
+            gc.collect()
+            tentar_rerun()
     else:
         sgt.success("✅ Rotas Finalizadas!"); pb.progress(1.0)
-        st.session_state.df_routed = pd.DataFrame(st_v['routed_data'])
-        st.session_state.vrp_status = "PACKAGING"; time.sleep(1); tentar_rerun()
+        df_final = pd.DataFrame(st_v.get('routed_data', []))
+        st.session_state.df_routed = df_final
+        cache_global = st.session_state.get('osrm_cache_tatica_global', {})
+        for ck, cv in st_v.get('route_cache', {}).items():
+            try:
+                if cv and cv[0] and isinstance(cv[0][0], list) and len(cv[0][0]) >= 2:
+                    cache_global[ck] = cv
+            except Exception:
+                pass
+        st.session_state.osrm_cache_tatica_global = cache_global
+        st.session_state.metricas_resultado_tatica = calcular_metricas_resultado_tatica(df_final)
+        st.session_state.d_fmt_resultado_tatica = datetime.now().strftime("%d.%m.%Y")
+        # Downloads passam a ser preparados apenas quando solicitados.
+        for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx']:
+            st.session_state.pop(k, None)
+        # Mantém somente a configuração necessária para resultado/exportação e libera estruturas pesadas.
+        st.session_state.vrp_state = {'config': dict(cfg)}
+        st.session_state.roteamento_concluido = True
+        st.session_state.vrp_status = "IDLE"
+        gc.collect()
+        time.sleep(0.3)
+        tentar_rerun()
 
 if status_exec == "PACKAGING":
-    st.markdown("## 📦 Empacotamento Tático")
-    df_routed = st.session_state.df_routed.copy()
-    df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
-    
-    d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx = io.BytesIO(), io.BytesIO(), io.BytesIO()
-    
-    try:
-        with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg:
-            
-            obras_por_dia_est = st.session_state.vrp_state.get('config', {}).get('obras_por_dia', 4.0)
-
-            res = []
-            for b in df_routed['BASE_ATRIBUIDA'].unique():
-                db = df_routed[(df_routed['BASE_ATRIBUIDA']==b) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))]
-                qs = len(db[db['SUPER_PONTO'].astype(str).str.startswith('SIM')]) if 'SUPER_PONTO' in db.columns else 0
-                
-                qtd_obras = 0
-                qtd_postes = 0
-                for _, r in db.iterrows():
-                    if isinstance(r.get('_ORIGINAL_ROWS'), list):
-                        qtd_obras += len(r['_ORIGINAL_ROWS'])
-                        for orig in r['_ORIGINAL_ROWS']:
-                            pv = []
-                            for k, v in orig.items():
-                                if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
-                                    try: 
-                                        val = float(v)
-                                        if val > 0: pv.append(val)
-                                    except: pass
-                            if pv: qtd_postes += min(pv)
-                    else:
-                        qtd_obras += 1
-                        pv = []
-                        for k, v in r.items():
-                            if 'POSTE' in str(k).upper() and pd.notna(v) and str(v).strip() != '':
-                                try: 
-                                    val = float(v)
-                                    if val > 0: pv.append(val)
-                                except: pass
-                        if pv: qtd_postes += min(pv)
-
-                postes_dia = (qtd_postes / (qtd_obras / float(obras_por_dia_est))) if qtd_obras > 0 else 0
-                postes_semana = postes_dia * 5.0
-
-                res.append({
-                    'Equipe': b, 
-                    'Obras Roteirizadas': qtd_obras, 
-                    'Postes/Dia (Est.)': int(round(postes_dia)),
-                    'Postes/Semana (Est.)': int(round(postes_semana)),
-                    'Postes Total': int(round(qtd_postes)),
-                    'Super Pontos': sum(1 for _, r_sp in db.iterrows() if isinstance(r_sp.get('_ORIGINAL_ROWS'), list) and len(r_sp.get('_ORIGINAL_ROWS')) > 1), 
-                    'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 
-                    'KM Total Previsto': round((pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_RODOVIARIA_KM'], errors='coerce').fillna(pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce')).fillna(0).sum()) if 'DISTANCIA_RODOVIARIA_KM' in df_routed.columns else pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0).sum(), 2),
-                    'Trechos OSRM': int(df_routed[df_routed['BASE_ATRIBUIDA']==b].get('STATUS_ROTA', pd.Series(dtype=str)).astype(str).str.startswith('OSRM').sum()),
-                    'Trechos sem rota': int(df_routed[df_routed['BASE_ATRIBUIDA']==b].get('STATUS_ROTA', pd.Series(dtype=str)).astype(str).str.contains('SEM_ROTA', regex=False).sum())
-                })
-            zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
-            
-            dfc = st.session_state.get('df_correcao_tatica', pd.DataFrame())
-            if not dfc.empty:
-                dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
-                dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
-                for cc in dfcc.columns:
-                    if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
-                out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
-            
-            linhas_gerais = []
-            for _, r in df_routed.iterrows():
-                if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
-                
-                is_sp = isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1
-                sp_text = f"SIM ({len(r['_ORIGINAL_ROWS'])} Obras)" if is_sp else "NÃO"
-                
-                if is_sp:
-                    for orig in r['_ORIGINAL_ROWS']:
-                        nr = r.copy()
-                        for k, v in orig.items(): 
-                            if k not in ['BASE_ATRIBUIDA', 'LEVANTADOR', 'FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'ROTA_GEOMETRIA', 'PERIODO', 'NOME_DIA', 'DIA_MES']: nr[k] = v
-                        nr['SUPER_PONTO'] = sp_text
-                        linhas_gerais.append(nr)
-                else:
-                    rn = r.copy()
-                    rn['SUPER_PONTO'] = sp_text
-                    linhas_gerais.append(rn)
-            
-            df_excel_full = pd.DataFrame(linhas_gerais)
-            
-            for c in df_excel_full.columns:
-                if 'POSTE' in c.upper():
-                    df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
-
-            col_exibir = st.session_state.colunas_exibir.copy()
-            if 'NOME_DIA' not in col_exibir: col_exibir.insert(0, 'NOME_DIA')
-            if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
-            if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
-
-            dfg_total = limpar_colunas_tatica(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
-            dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
-            for cc in dfg_total.columns:
-                if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_Tatica_Total - {d_fmt}.xlsx", gerar_excel_tatica(dfg_total, st.session_state.colunas_originais_tat))
-            
-            dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
-            if not dfk_total.empty:
-                dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
-                
-                tpc = st.session_state.vrp_state.get('config', {}).get('tipo_periodo', 'Semana')
-                ks_tot = gerar_kml_tatica(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), tpc, formatar_valor_coluna)
-                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
-                zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
-
-            for base in df_routed['BASE_ATRIBUIDA'].unique():
-                b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
-                
-                df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == base]
-                if not df_base_excel.empty:
-                    dfg = limpar_colunas_tatica(df_base_excel.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
-                    dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
-                    for cc in dfg.columns:
-                        if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-                    zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_tatica(dfg, st.session_state.colunas_originais_tat))
-                    
-                dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
-                if not dfk_base.empty:
-                    dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
-                    
-                    ks = gerar_kml_tatica(dfk_base, f"Rota {b_safe}", col_exibir, [base], tpc, formatar_valor_coluna)
-                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
-                    zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
-
-        st.session_state.bytes_zip_xl, st.session_state.bytes_zip_kml, st.session_state.bytes_zip_gpx = bu_xl.getvalue(), bu_kml.getvalue(), bu_gpx.getvalue()
-        st.session_state.roteamento_concluido = True; st.session_state.vrp_status = "IDLE"; tentar_rerun()
-    except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status = "IDLE"
+    # Compatibilidade com sessões antigas: a etapa de empacotamento automático foi removida.
+    if not st.session_state.get('df_routed', pd.DataFrame()).empty:
+        st.session_state.metricas_resultado_tatica = calcular_metricas_resultado_tatica(st.session_state.df_routed)
+        st.session_state.d_fmt_resultado_tatica = st.session_state.get('d_fmt_resultado_tatica', datetime.now().strftime("%d.%m.%Y"))
+        st.session_state.roteamento_concluido = True
+    st.session_state.vrp_status = "IDLE"
+    tentar_rerun()
