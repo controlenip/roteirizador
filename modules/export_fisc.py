@@ -60,6 +60,12 @@ def gerar_excel_resumo_fisc(df_resumo):
 def limpar_colunas_fisc(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
 
+    # A coluna oficial da atribuicao do roteirizador e BASE_ATRIBUIDA.
+    # Na exportacao, FISCAL deve sempre refletir o fiscal realmente atribuido
+    # pelo motor, mesmo quando a planilha de entrada possua FISCAL vazio.
+    if 'BASE_ATRIBUIDA' in df_alvo.columns:
+        df_alvo['FISCAL'] = df_alvo['BASE_ATRIBUIDA']
+
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'DISTANCIA_RODOVIARIA_KM' in df_alvo.columns:
         final_cols.append('DISTANCIA_RODOVIARIA_KM')
@@ -73,11 +79,15 @@ def limpar_colunas_fisc(df_alvo, cols_originais):
     if cols_originais is not None:
         for c in cols_originais:
             nome_c = c
+            # BASE_ATRIBUIDA e um campo tecnico interno. No arquivo final,
+            # seu valor e apresentado pela coluna FISCAL.
+            if nome_c == 'BASE_ATRIBUIDA':
+                continue
             if nome_c in df_alvo.columns and nome_c not in final_cols:
                 final_cols.append(nome_c)
 
     colunas_lixo = [
-        'LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO',
+        'BASE_ATRIBUIDA', 'LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO',
         'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO',
         'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC'
     ]
