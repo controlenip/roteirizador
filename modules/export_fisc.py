@@ -17,13 +17,17 @@ def formatar_planilha_fisc(writer, sheet_name):
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
     worksheet.auto_filter.ref = worksheet.dimensions
-    for col in worksheet.columns:
+    worksheet.freeze_panes = 'A2'
+    # Amostra até 500 linhas para dimensionar colunas. Em bases grandes isso evita
+    # percorrer centenas de milhares de células sem alterar o conteúdo do Excel.
+    max_row_amostra = min(worksheet.max_row, 500)
+    for col in worksheet.iter_cols(min_row=1, max_row=max_row_amostra):
         max_length = 0
         column = col[0].column_letter
         for cell in col:
             try:
-                if cell.value and len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
+                if cell.value is not None:
+                    max_length = max(max_length, len(str(cell.value)))
             except Exception:
                 pass
         worksheet.column_dimensions[column].width = min(max_length + 2, 60)
@@ -233,7 +237,8 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
                 for c in colunas_exibir:
                     if c.upper() in ['NOME_DIA', 'DIA_MES', 'SEMANA', 'FISCAL', 'COR_ICONE']:
                         continue
-                    label = html.escape(str(c))
+                    label_visual = 'NOTA' if c.upper() in ['PROTOCOLO', 'NOTA'] else ('FISCAL' if c.upper() in ['BASE_ATRIBUIDA'] else str(c))
+                    label = html.escape(label_visual)
                     valor = funcao_formatadora(c, r.get(c, ''))
                     linhas.append(
                         f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{label}:</td>"
@@ -342,13 +347,17 @@ def gerar_txt_fisc(df, colunas_originais=None):
         lat = str(r.get('LATITUDE', '')).strip()
         lon = str(r.get('LONGITUDE', '')).strip()
 
-        bloco = [
+        exec_id = str(r.get('EXECUCAO_ID', '')).strip()
+        bloco = []
+        if exec_id and exec_id.lower() not in ['nan', 'none']:
+            bloco.append(f'EXECUÇÃO: {exec_id}')
+        bloco.extend([
             f'NOTA: {nota}',
             f'MUNICÍPIO: {municipio}',
             f'ZONA: {zona}',
             f'QTD PREVISTA DE POSTES: {qtd_postes}',
             f'INFORMAÇÕES EXTRAS: {info_extra}'
-        ]
+        ])
 
         if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
             bloco.append(f'https://www.google.com.br/maps/place/{lat},{lon}')
