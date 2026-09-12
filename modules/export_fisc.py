@@ -6,6 +6,7 @@ import re
 import streamlit as st
 from openpyxl.styles import PatternFill, Font, Alignment
 
+
 def formatar_planilha_fisc(writer, sheet_name):
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
@@ -21,25 +22,31 @@ def formatar_planilha_fisc(writer, sheet_name):
         column = col[0].column_letter
         for cell in col:
             try:
-                if cell.value and len(str(cell.value)) > max_length: max_length = len(str(cell.value))
-            except: pass
+                if cell.value and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except Exception:
+                pass
         worksheet.column_dimensions[column].width = min(max_length + 2, 60)
+
 
 def gerar_excel_fisc(df, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
-    
-    # Padronização Absoluta
-    if 'NOTA' in df_saida.columns: 
+
+    if 'NOTA' in df_saida.columns:
         df_saida = df_saida[~df_saida['NOTA'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-        
-    colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
+
+    colunas_remover = [
+        'ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS',
+        '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY'
+    ]
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
-    
+
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
         formatar_planilha_fisc(writer, 'Obras Roteirizadas')
     return output.getvalue()
+
 
 def gerar_excel_resumo_fisc(df_resumo):
     output = io.BytesIO()
@@ -49,165 +56,296 @@ def gerar_excel_resumo_fisc(df_resumo):
         formatar_planilha_fisc(writer, 'Resumo Operacional')
     return output.getvalue()
 
+
 def limpar_colunas_fisc(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-        
+
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
-    if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
-    
+    if 'DISTANCIA_RODOVIARIA_KM' in df_alvo.columns:
+        final_cols.append('DISTANCIA_RODOVIARIA_KM')
+    if 'STATUS_ROTA' in df_alvo.columns:
+        final_cols.append('STATUS_ROTA')
+    if 'TEMPO_ROTA_MIN' in df_alvo.columns:
+        final_cols.append('TEMPO_ROTA_MIN')
+    if 'NOTA' in df_alvo.columns:
+        final_cols.append('NOTA')
+
     if cols_originais is not None:
         for c in cols_originais:
             nome_c = c
             if nome_c in df_alvo.columns and nome_c not in final_cols:
                 final_cols.append(nome_c)
-                
-    colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
+
+    colunas_lixo = [
+        'LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO',
+        'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO',
+        'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC'
+    ]
     for c in df_alvo.columns:
-        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo: final_cols.append(c)
+        if c not in final_cols and not str(c).startswith('_') and c not in colunas_lixo:
+            final_cols.append(c)
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
+
+def _id_obra(row):
+    """Retorna NOTA/PROTOCOLO/OS, nesta ordem, preservando a compatibilidade."""
+    for col in ['NOTA', 'PROTOCOLO', 'OS']:
+        val = row.get(col)
+        if pd.notna(val) and str(val).strip().lower() not in ['', 'nan', 'none']:
+            return str(val).strip()
+    return 'Ponto'
+
+
+def _segmentos_validos(df):
+    """Extrai geometrias válidas mantendo cada trecho independente."""
+    segmentos = []
+    if 'ROTA_GEOMETRIA' not in df.columns:
+        return segmentos
+
+    for _, r in df.iterrows():
+        geom = r.get('ROTA_GEOMETRIA')
+        if not isinstance(geom, list) or len(geom) < 2:
+            continue
+
+        coords = []
+        for pt in geom:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                lon, lat = pt[0], pt[1]
+                if pd.notna(lon) and pd.notna(lat):
+                    coords.append((lon, lat))
+        if len(coords) >= 2:
+            segmentos.append(coords)
+    return segmentos
+
+
 def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
-    kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
+    kml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<kml xmlns="http://www.opengis.net/kml/2.2">',
+        '<Document>',
+        f'<name>{html.escape(nome_arquivo)}</name>'
+    ]
+
+    # Mesmas cores e mesma regra de classificação dos marcadores da Fiscalização.
     styles = {
         'green': 'http://maps.google.com/mapfiles/kml/paddle/grn-blank.png',
         'blue': 'http://maps.google.com/mapfiles/kml/paddle/blu-blank.png',
-        'beige': 'http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png', 
+        'beige': 'http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png',
         'orange': 'http://maps.google.com/mapfiles/kml/paddle/orange-blank.png',
         'red': 'http://maps.google.com/mapfiles/kml/paddle/red-blank.png',
         'gray': 'http://maps.google.com/mapfiles/kml/paddle/wht-blank.png'
     }
     for color, url in styles.items():
-        kml.extend([f'<Style id="style_{color}"><IconStyle><Icon><href>{url}</href></Icon></IconStyle></Style>'])
-        
-    kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>')
+        kml.append(
+            f'<Style id="style_{color}"><IconStyle><scale>1.15</scale><Icon><href>{url}</href></Icon></IconStyle>'
+            '<LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>'
+        )
+
+    kml.append(
+        '<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle>'
+        '<LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>'
+    )
+
+    col_fiscal = 'BASE_ATRIBUIDA' if 'BASE_ATRIBUIDA' in df_kml.columns else 'FISCAL'
+    if col_fiscal not in df_kml.columns:
+        kml.extend(['</Document>', '</kml>'])
+        return "\n".join(kml)
 
     for b in bases_ativas:
-        if pd.isna(b) or b == "NÃO ALOCADO": continue
-        pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
-        
-        # Usa a coluna real de atribuição do roteirizador.
-        # BASE_ATRIBUIDA é a coluna criada/usada pela página de Fiscalização;
-        # FISCAL fica apenas como fallback para compatibilidade com arquivos antigos.
-        col_fiscal = 'BASE_ATRIBUIDA' if 'BASE_ATRIBUIDA' in df_kml.columns else 'FISCAL'
-        if col_fiscal not in df_kml.columns:
+        if pd.isna(b) or b == 'NÃO ALOCADO':
             continue
 
+        pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         df_b = df_kml[df_kml[col_fiscal].astype(str).str.strip() == str(b).strip()]
-
-        # Compatibilidade caso o dataframe não tenha PERIODO.
         periodos = df_b['PERIODO'].dropna().unique() if 'PERIODO' in df_b.columns else [1]
+
         for p in periodos:
             df_p = df_b[df_b['PERIODO'] == p] if 'PERIODO' in df_b.columns else df_b
-            pasta.append(f'<Folder><name>Período {p}</name>')
-            coords_linha = []
-            for _, r in df_p.iterrows():
-                geom = r.get('ROTA_GEOMETRIA')
-                if isinstance(geom, list) and len(geom) > 0:
-                    for pt in geom:
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2: coords_linha.append(f"{pt[0]},{pt[1]},0")
-                else:
-                    lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                    if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
-            
-            if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
+            pasta.append(f'<Folder><name>Período {html.escape(str(p))}</name>')
+
+            # Segmentos independentes: o Google Earth não conecta uma falha OSRM
+            # ao próximo trecho com uma reta artificial.
+            segmentos = _segmentos_validos(df_p)
+            if segmentos:
+                mg = [
+                    '<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><MultiGeometry>'
+                ]
+                for seg in segmentos:
+                    coords = ' '.join(f'{lon},{lat},0' for lon, lat in seg)
+                    mg.append(
+                        '<LineString><tessellate>1</tessellate><coordinates>'
+                        + coords
+                        + '</coordinates></LineString>'
+                    )
+                mg.append('</MultiGeometry></Placemark>')
+                pasta.append(''.join(mg))
 
             for _, r in df_p.iterrows():
-                # Aceita NOTA, PROTOCOLO ou OS como identificador da obra.
-                id_obra = r.get('NOTA')
-                if pd.isna(id_obra) or str(id_obra).strip() in ['', 'nan', 'None']:
-                    id_obra = r.get('PROTOCOLO')
-                if pd.isna(id_obra) or str(id_obra).strip() in ['', 'nan', 'None']:
-                    id_obra = r.get('OS', 'Ponto')
-
-                if str(id_obra).strip() in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+                id_obra = _id_obra(r)
+                if id_obra in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
                     continue
 
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
-                if pd.isna(lat) or pd.isna(lon): continue
-                
+                if pd.isna(lat) or pd.isna(lon):
+                    continue
+
                 raw_qtd = r.get('QTD PREVISTA DE POSTES', 0)
-                qtd = int(float(raw_qtd)) if pd.notna(raw_qtd) and str(raw_qtd).strip() != '' else 0
-                
-                cor = r.get('COR_ICONE', 'gray')
-                nome = str(id_obra)
-                
-                bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
-                txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
-                p_bg = bg_colors.get(cor, '#9E9E9E'); p_c = txt_colors.get(cor, '#ffffff')
-                p_txt = f"📋 FISCALIZAÇÃO - {qtd} POSTES"
+                try:
+                    qtd = int(float(raw_qtd)) if pd.notna(raw_qtd) and str(raw_qtd).strip() != '' else 0
+                except Exception:
+                    qtd = 0
 
-                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','FISCAL','COR_ICONE']])
-                desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
-                
-                desc = desc.replace("{", "&#123;").replace("}", "&#125;")
+                cor = str(r.get('COR_ICONE', 'gray'))
+                if cor not in styles:
+                    cor = 'gray'
 
-                pasta.append(f'<Placemark><name>[{qtd} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+                bg_colors = {
+                    'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107',
+                    'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'
+                }
+                txt_colors = {
+                    'beige': '#000000', 'orange': '#000000', 'green': '#ffffff',
+                    'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'
+                }
+                p_bg = bg_colors.get(cor, '#9E9E9E')
+                p_c = txt_colors.get(cor, '#ffffff')
+                p_txt = f'📋 FISCALIZAÇÃO - {qtd} POSTES'
+
+                # O conteúdo e a regra do card permanecem iguais. Foi alterado apenas
+                # o visual para seguir o padrão do KML de referência enviado.
+                linhas = [
+                    '<tr>'
+                    '<td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Ordem:</td>'
+                    f'<td style="padding:3px 6px; color:#333;">{html.escape(str(r.get("ORDEM", 0)))}</td>'
+                    '</tr>'
+                ]
+
+                for c in colunas_exibir:
+                    if c.upper() in ['NOME_DIA', 'DIA_MES', 'SEMANA', 'FISCAL', 'COR_ICONE']:
+                        continue
+                    label = html.escape(str(c))
+                    valor = funcao_formatadora(c, r.get(c, ''))
+                    linhas.append(
+                        f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{label}:</td>"
+                        f"<td style='padding:3px 6px; color:#333;'>{valor}</td></tr>"
+                    )
+
+                desc = (
+                    f'<div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; '
+                    f'box-shadow:0 2px 5px rgba(0,0,0,0.15);">'
+                    f'<div style="background:{p_bg}; color:{p_c}; padding:8px 10px; font-size:13px; font-weight:bold;">{p_txt}</div>'
+                    f'<div style="padding:10px; background:#fafafa; font-size:12px;">'
+                    f'<table style="width:100%; border-collapse:collapse;">{"".join(linhas)}</table>'
+                    '</div></div>'
+                )
+                desc = desc.replace('{', '&#123;').replace('}', '&#125;')
+
+                pasta.append(
+                    f'<Placemark><name>[{qtd} Postes] {html.escape(id_obra)}</name>'
+                    f'<styleUrl>#style_{cor}</styleUrl>'
+                    f'<description><![CDATA[{desc}]]></description>'
+                    f'<Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>'
+                )
+
             pasta.append('</Folder>')
+
         pasta.append('</Folder>')
         kml.extend(pasta)
+
     kml.extend(['</Document>', '</kml>'])
     return "\n".join(kml)
 
+
 def gerar_gpx_simples(df_kml, nome_rota):
-    gpx = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">', f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>']
+    gpx = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">',
+        f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>'
+    ]
+
     for _, row in df_kml.iterrows():
-        if row.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        nome = _id_obra(row)
+        if nome in ['RETORNO_BASE', 'PAUSA_ALMOCO']:
+            continue
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-        if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get("NOTA", "Ponto")))}</name></wpt>')
+        if pd.notna(lat) and pd.notna(lon):
+            gpx.append(
+                f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(nome)}</name></wpt>'
+            )
+
     if 'ROTA_GEOMETRIA' in df_kml.columns:
-        gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name><trkseg>')
-        for _, row in df_kml.iterrows():
-            geom = row.get('ROTA_GEOMETRIA')
-            if isinstance(geom, list):
-                for lon, lat in geom: gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
-        gpx.append('    </trkseg></trk>')
+        gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name>')
+        for seg in _segmentos_validos(df_kml):
+            gpx.append('    <trkseg>')
+            for lon, lat in seg:
+                gpx.append(f'      <trkpt lat="{lat}" lon="{lon}"></trkpt>')
+            gpx.append('    </trkseg>')
+        gpx.append('  </trk>')
+
     gpx.append('</gpx>')
     return "\n".join(gpx)
 
+
 def injetar_logo():
-    if os.path.exists("LOGO_NIP.png"): st.logo("LOGO_NIP.png", icon_image=None)
+    if os.path.exists('LOGO_NIP.png'):
+        st.logo('LOGO_NIP.png', icon_image=None)
+
 
 def identificar_icone_folium(row, colunas_disponiveis):
     if 'TIPO NOTA' in colunas_disponiveis:
         t = str(row.get('TIPO NOTA', '')).upper()
-        if t in ['UNR', 'ASC']: return 'bolt'
-        elif t in ['MGD', 'MTP']: return 'industry'
-        elif t == 'DIF': return 'exclamation-triangle'
+        if t in ['UNR', 'ASC']:
+            return 'bolt'
+        elif t in ['MGD', 'MTP']:
+            return 'industry'
+        elif t == 'DIF':
+            return 'exclamation-triangle'
     return 'map-marker'
+
 
 def gerar_txt_fisc(df, colunas_originais=None):
     linhas_txt = []
-    
+
     for _, r in df.iterrows():
-        nota = str(r.get('NOTA', '')).strip()
-        if nota.lower() in ['nan', 'none', '']: nota = '-'
-        
+        nota = _id_obra(r)
+        if nota.lower() in ['nan', 'none', '']:
+            nota = '-'
+
         municipio = str(r.get('MUNICIPIO', '')).strip()
-        if municipio.lower() in ['nan', 'none']: municipio = '-'
-        
+        if municipio.lower() in ['nan', 'none']:
+            municipio = '-'
+
         zona = str(r.get('ZONA', '')).strip()
-        if zona.lower() in ['nan', 'none']: zona = '-'
-        
+        if zona.lower() in ['nan', 'none']:
+            zona = '-'
+
         qtd_postes = str(r.get('QTD PREVISTA DE POSTES', '')).strip()
-        if qtd_postes.lower() in ['nan', 'none']: qtd_postes = '-'
-        
-        info_extra = str(r.get('OBSERVACAO', r.get('OBSERVAÇÃO', r.get('INFORMACOES EXTRAS', '')))).strip()
-        if info_extra.lower() in ['nan', 'none', '']: info_extra = ''
-            
+        if qtd_postes.lower() in ['nan', 'none']:
+            qtd_postes = '-'
+
+        info_extra = str(
+            r.get('OBSERVACAO', r.get('OBSERVAÇÃO', r.get('INFORMACOES EXTRAS', '')))
+        ).strip()
+        if info_extra.lower() in ['nan', 'none', '']:
+            info_extra = ''
+
         lat = str(r.get('LATITUDE', '')).strip()
         lon = str(r.get('LONGITUDE', '')).strip()
 
-        bloco = []
-        bloco.append(f"NOTA: {nota}")
-        bloco.append(f"MUNICÍPIO: {municipio}")
-        bloco.append(f"ZONA: {zona}")
-        bloco.append(f"QTD PREVISTA DE POSTES: {qtd_postes}")
-        bloco.append(f"INFORMAÇÕES EXTRAS: {info_extra}")
-        
+        bloco = [
+            f'NOTA: {nota}',
+            f'MUNICÍPIO: {municipio}',
+            f'ZONA: {zona}',
+            f'QTD PREVISTA DE POSTES: {qtd_postes}',
+            f'INFORMAÇÕES EXTRAS: {info_extra}'
+        ]
+
         if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
-            bloco.append(f"https://www.google.com.br/maps/place/{lat},{lon}")
-        
-        linhas_txt.append("\n".join(bloco))
-        linhas_txt.append("\n-------------------------------------------------------------------------------------------------------------------------\n")
-        
-    return "".join(linhas_txt)
+            bloco.append(f'https://www.google.com.br/maps/place/{lat},{lon}')
+
+        linhas_txt.append('\n'.join(bloco))
+        linhas_txt.append(
+            '\n-------------------------------------------------------------------------------------------------------------------------\n'
+        )
+
+    return ''.join(linhas_txt)
