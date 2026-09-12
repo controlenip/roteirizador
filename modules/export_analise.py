@@ -25,7 +25,7 @@ def gerar_excel_analise(dict_dfs):
 
             escreveu_aba = True
             df_saida = df.drop(
-                columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME', 'CLUSTER_ID'],
+                columns=['_ORIGINAL_ROWS', 'LAT_NUM', 'LON_NUM', 'COR_MAPA', 'COR_NOME'],
                 errors='ignore'
             ).copy()
 
@@ -67,7 +67,7 @@ def gerar_excel_analise(dict_dfs):
     return output.getvalue()
 
 
-def gerar_kml_analise(df):
+def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
     # Trabalha sempre em cópia para não alterar o DataFrame usado pela tela/exportações.
     df = df.copy()
 
@@ -75,7 +75,7 @@ def gerar_kml_analise(df):
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<kml xmlns="http://www.opengis.net/kml/2.2">',
         '<Document>',
-        '<name>Análise Cruzada NIP</name>'
+        f'<name>{html.escape(str(nome_documento))}</name>'
     ]
 
     styles = {
@@ -103,8 +103,10 @@ def gerar_kml_analise(df):
 
     clusters = []
     for cid, grp in df.groupby('CLUSTER_ID'):
-        lat = str(grp['LATITUDE'].iloc[0]).strip()
-        lon = str(grp['LONGITUDE'].iloc[0]).strip()
+        lat_val = grp['LAT_CENTRO_CLUSTER'].iloc[0] if 'LAT_CENTRO_CLUSTER' in grp.columns else grp['LATITUDE'].mean()
+        lon_val = grp['LONG_CENTRO_CLUSTER'].iloc[0] if 'LONG_CENTRO_CLUSTER' in grp.columns else grp['LONGITUDE'].mean()
+        lat = str(lat_val).strip()
+        lon = str(lon_val).strip()
         if not lat or not lon or lat.lower() == 'nan' or lon.lower() == 'nan':
             continue
 
@@ -130,12 +132,15 @@ def gerar_kml_analise(df):
             if c_mapa not in styles and c_mapa != 'black':
                 c_mapa = 'blue'
 
-        titulo_card = f"📍 Obras no Local ({len(grp)})"
+        total_cluster = int(grp['QTD_OBRAS_CLUSTER'].iloc[0]) if 'QTD_OBRAS_CLUSTER' in grp.columns and pd.notna(grp['QTD_OBRAS_CLUSTER'].iloc[0]) else len(grp)
+        titulo_card = f"📍 Obras no Local ({len(grp)})" if len(grp) == total_cluster else f"📍 {len(grp)} visíveis de {total_cluster} obras no local"
         desc = f'''<![CDATA[
         <div style="font-family:sans-serif; width:300px; max-height:360px; overflow-y:auto; border-radius:8px; overflow-x:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
             <div style="background:#0D256C; color:#ffffff; padding:8px 10px; font-size:13px; font-weight:bold; text-align:center; position:sticky; top:0;">{titulo_card}</div>
             <div style="padding:10px; background:#fafafa; font-size:12px;">
         '''
+        if 'DISTANCIA_MAX_CLUSTER_M' in grp.columns:
+            desc += f"<div style='margin-bottom:6px;color:#555;'><b>Cluster:</b> {total_cluster} obra(s) | diâmetro máx.: {grp['DISTANCIA_MAX_CLUSTER_M'].iloc[0]} m</div>"
 
         nomes_notas = []
         for _, r in grp.iterrows():
@@ -148,21 +153,50 @@ def gerar_kml_analise(df):
             s_list = html.escape(_valor_alias(r, ['STATUS LIST', 'STATUS_LIST']))
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
+            dup_geo = html.escape(str(r.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')))
+            dist_dup = r.get('DISTANCIA_ENTRE_DUPLICATAS_KM')
+            dist_dup_txt = f"{float(dist_dup):.3f} km" if pd.notna(dist_dup) else '-'
+            mun_div = html.escape(str(r.get('MUNICIPIO_DIVERGENTE', '')))
+            alerta_eq = html.escape(str(r.get('ALERTA_EQUIPE_DISTANTE', 'NÃO')))
+            classificacao = html.escape(str(r.get('COR_NOME', '-')))
+            motivo_inval = html.escape(str(r.get('MOTIVO_INVALIDADE', '-')))
+            nota_valida_fluxo = str(r.get('NOTA_VALIDA_FLUXO', 'SIM')).upper()
 
-            aviso_gps = ''
-            if dup == 'SIM' and len(grp) == 1:
-                aviso_gps = "<br><span style='color:red; font-size:10px;'>⚠️ A cópia desta nota está em outro ponto geográfico.</span>"
+            link_dup = str(r.get('LINK_DUPLICATA_MAPS', '')).strip()
+            origem_dup = html.escape(str(r.get('DUPLICATA_ORIGEM_DESTINO', '')))
+            mun_dup = html.escape(str(r.get('DUPLICATA_MUNICIPIO_DESTINO', '')))
+            nota_dup = html.escape(str(r.get('DUPLICATA_NOTA_DESTINO', '')))
+            link_dup_html = ''
+            if dup == 'SIM' and dup_geo == 'LOCAIS DIFERENTES' and link_dup:
+                link_dup_safe = html.escape(link_dup, quote=True)
+                link_dup_html = (
+                    "<div style='margin:6px 0;padding:7px;background:#fff3f3;border-left:3px solid #d32f2f;'>"
+                    f"<b>Outra ocorrência:</b> {origem_dup or '-'} | {mun_dup or '-'}<br>"
+                    f"<b>Nota:</b> {nota_dup or n}<br>"
+                    f"<a href='{link_dup_safe}' target='_blank' style='color:#0D47A1;font-weight:bold;text-decoration:none;'>📍 Abrir outra ocorrência no Google Maps</a>"
+                    "</div>"
+                )
+
+            motivo_html = ''
+            if nota_valida_fluxo == 'NÃO':
+                motivo_html = f"<tr><td style='padding:2px;color:#b71c1c;'><b>Motivo da invalidez:</b></td><td style='padding:2px;color:#b71c1c;font-weight:bold;'>{motivo_inval}</td></tr>"
 
             desc += f'''
             <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
                 <tr><td style="padding:2px;"><b>Nota:</b></td><td style="padding:2px;">{n}</td></tr>
+                <tr><td style="padding:2px;"><b>Classificação:</b></td><td style="padding:2px;font-weight:bold;">{classificacao}</td></tr>
                 <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>Status SAP:</b></td><td style="padding:2px;">{s}</td></tr>
                 <tr><td style="padding:2px;"><b>SISCO / LIST:</b></td><td style="padding:2px;">{s_sisco} / {s_list}</td></tr>
+                {motivo_html}
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
-                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup}{aviso_gps}</td></tr>
+                <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup} {dup_geo}</td></tr>
+                <tr><td style="padding:2px;"><b>Dist. duplicata:</b></td><td style="padding:2px;">{dist_dup_txt}</td></tr>
+                <tr><td style="padding:2px;"><b>Município divergente:</b></td><td style="padding:2px;">{mun_div or '-'}</td></tr>
+                <tr><td style="padding:2px;"><b>Equipe distante:</b></td><td style="padding:2px;">{alerta_eq}</td></tr>
             </table>
+            {link_dup_html}
             <hr style="margin:4px 0; border:0; border-top:1px solid #ddd;">
             '''
 
