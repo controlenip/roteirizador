@@ -29,10 +29,9 @@ def gerar_excel_fisc(df, colunas_originais=None):
     output = io.BytesIO()
     df_saida = df.loc[:, ~df.columns.duplicated()].copy()
     
-    # Identificação Camaleão
-    col_nota = 'NOTA' if 'NOTA' in df_saida.columns else ('PROTOCOLO' if 'PROTOCOLO' in df_saida.columns else None)
-    if col_nota: 
-        df_saida = df_saida[~df_saida[col_nota].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+    # Padronização Absoluta
+    if 'NOTA' in df_saida.columns: 
+        df_saida = df_saida[~df_saida['NOTA'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
         
     colunas_remover = ['ROTA_GEOMETRIA', '_HORA_INICIO_DT', '_HORA_FIM_DT', '_ORIGINAL_ROWS', '_ORIGEM_BASE', 'COR_ICONE', 'MUN_LIMPO', 'COORD_KEY']
     df_saida = df_saida.drop(columns=[c for c in colunas_remover if c in df_saida.columns], errors='ignore')
@@ -52,20 +51,15 @@ def gerar_excel_resumo_fisc(df_resumo):
 
 def limpar_colunas_fisc(df_alvo, cols_originais):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
-    
-    # Padroniza para Excel
-    if 'BASE_ATRIBUIDA' in df_alvo.columns and 'FISCAL' not in df_alvo.columns:
-        df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
-    if 'PROTOCOLO' in df_alvo.columns and 'NOTA' not in df_alvo.columns:
-        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
         
     final_cols = ['FISCAL', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
         for c in cols_originais:
-            if c in df_alvo.columns and c not in final_cols:
-                final_cols.append(c)
+            nome_c = c
+            if nome_c in df_alvo.columns and nome_c not in final_cols:
+                final_cols.append(nome_c)
                 
     colunas_lixo = ['LINK_NAVEGACAO_OFFLINE', 'ROTA_GEOMETRIA', 'COORD_KEY', 'MUN_LIMPO', 'COR_ICONE', 'ALERTA_TOPOLOGIA', 'TEMPO_VIAGEM_MINUTOS', 'HORA_INICIO', 'HORA_FIM', 'CLUSTER_ID', 'CLUSTER_GRP', 'MLC']
     for c in df_alvo.columns:
@@ -87,14 +81,12 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
         
     kml.append('<Style id="s_line"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>')
 
-    # Identificação Camaleão de Colunas (Aqui estava o erro)
-    col_fiscal = 'FISCAL' if 'FISCAL' in df_kml.columns else 'BASE_ATRIBUIDA'
-    col_nota = 'NOTA' if 'NOTA' in df_kml.columns else ('PROTOCOLO' if 'PROTOCOLO' in df_kml.columns else 'ID')
-
     for b in bases_ativas:
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
-        df_b = df_kml[df_kml[col_fiscal] == b]
+        
+        # Filtro rígido com a coluna padronizada
+        df_b = df_kml[df_kml['FISCAL'] == b]
         
         for p in df_b['PERIODO'].unique():
             df_p = df_b[df_b['PERIODO'] == p]
@@ -108,32 +100,31 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
                 else:
                     lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                     if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
+            
             if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
 
             for _, r in df_p.iterrows():
-                if r.get(col_nota) in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+                if r.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                 if pd.isna(lat) or pd.isna(lon): continue
-                qtd = float(r.get('QTD PREVISTA DE POSTES', 0))
+                
+                raw_qtd = r.get('QTD PREVISTA DE POSTES', 0)
+                qtd = int(float(raw_qtd)) if pd.notna(raw_qtd) and str(raw_qtd).strip() != '' else 0
+                
                 cor = r.get('COR_ICONE', 'gray')
-                nome = str(r.get(col_nota, 'Ponto'))
+                nome = str(r.get('NOTA', 'Ponto'))
                 
                 bg_colors = {'green': '#4CAF50', 'blue': '#2196F3', 'beige': '#FFC107', 'orange': '#FF9800', 'red': '#F44336', 'gray': '#9E9E9E'}
                 txt_colors = {'beige': '#000000', 'orange': '#000000', 'green': '#ffffff', 'blue': '#ffffff', 'red': '#ffffff', 'gray': '#ffffff'}
                 p_bg = bg_colors.get(cor, '#9E9E9E'); p_c = txt_colors.get(cor, '#ffffff')
-                p_txt = f"📋 FISCALIZAÇÃO - {int(qtd)} POSTES"
+                p_txt = f"📋 FISCALIZAÇÃO - {qtd} POSTES"
 
-                def formatar_popup(coluna):
-                    if coluna == 'PROTOCOLO': return 'NOTA'
-                    if coluna == 'BASE_ATRIBUIDA': return 'FISCAL'
-                    return coluna
-
-                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(formatar_popup(c))}</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','FISCAL','BASE_ATRIBUIDA','COR_ICONE']])
+                er = "".join([f"<tr><td style='padding:3px;'><b>{html.escape(c)}</b></td><td style='padding:3px;'>{funcao_formatadora(c, r.get(c, ''))}</td></tr>" for c in colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','FISCAL','COR_ICONE']])
                 desc = f'<div style="width:280px;"><div style="background:{p_bg};color:{p_c};padding:8px;font-weight:bold;">{p_txt}</div><table border="1" style="width:100%;font-size:12px;"><tr><td style="padding:3px;"><b>Ordem:</b></td><td style="padding:3px;">{r.get("ORDEM",0)}</td></tr>{er}</table></div>'
                 
                 desc = desc.replace("{", "&#123;").replace("}", "&#125;")
 
-                pasta.append(f'<Placemark><name>[{int(qtd)} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
+                pasta.append(f'<Placemark><name>[{qtd} Postes] {html.escape(nome)}</name><styleUrl>#style_{cor}</styleUrl><description><![CDATA[{desc}]]></description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
             pasta.append('</Folder>')
         pasta.append('</Folder>')
         kml.extend(pasta)
@@ -142,12 +133,10 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
 
 def gerar_gpx_simples(df_kml, nome_rota):
     gpx = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">', f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>']
-    col_nota = 'NOTA' if 'NOTA' in df_kml.columns else ('PROTOCOLO' if 'PROTOCOLO' in df_kml.columns else 'ID')
-    
     for _, row in df_kml.iterrows():
-        if row.get(col_nota) in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
+        if row.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
-        if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get(col_nota, "Ponto")))}</name></wpt>')
+        if pd.notna(lat) and pd.notna(lon): gpx.append(f'  <wpt lat="{lat}" lon="{lon}"><name>{html.escape(str(row.get("NOTA", "Ponto")))}</name></wpt>')
     if 'ROTA_GEOMETRIA' in df_kml.columns:
         gpx.append(f'  <trk><name>Traçado - {html.escape(str(nome_rota))}</name><trkseg>')
         for _, row in df_kml.iterrows():
@@ -171,10 +160,9 @@ def identificar_icone_folium(row, colunas_disponiveis):
 
 def gerar_txt_fisc(df, colunas_originais=None):
     linhas_txt = []
-    col_nota = 'NOTA' if 'NOTA' in df.columns else ('PROTOCOLO' if 'PROTOCOLO' in df.columns else 'ID')
     
     for _, r in df.iterrows():
-        nota = str(r.get(col_nota, '')).strip()
+        nota = str(r.get('NOTA', '')).strip()
         if nota.lower() in ['nan', 'none', '']: nota = '-'
         
         municipio = str(r.get('MUNICIPIO', '')).strip()
