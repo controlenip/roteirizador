@@ -26,7 +26,7 @@ def formatar_valor_coluna(c, v):
     try:
         if 'POSTE' in c.upper(): return str(int(float(v)))
         vf = float(v)
-        if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM']: 
+        if c.upper() in ['DISTANCIA_PONTO_ANTERIOR_KM', 'DISTANCIA_PROXIMO_PONTO_KM', 'DISTANCIA_RODOVIARIA_KM', 'DISTANCIA_ESTIMADA_KM']: 
             return f"{vf:.2f} KM"
         elif 'DISTANCIA' in c.upper(): 
             return f"{vf:.2f} Metros"
@@ -60,13 +60,120 @@ def render_metric_card(title, value, icon, border_color, bg_color):
     </div>
     """
 
+def contar_obras_registro(registro):
+    """Quantidade real de obras representadas por uma linha (inclui Super Ponto)."""
+    orig = registro.get('_ORIGINAL_ROWS') if isinstance(registro, dict) else registro.get('_ORIGINAL_ROWS', None)
+    return len(orig) if isinstance(orig, list) and len(orig) > 0 else 1
+
+
+def chave_rota_cache(lat1, lon1, lat2, lon2):
+    """Chave estável para reaproveitar consultas OSRM durante a mesma roteirização."""
+    return (round(float(lat1), 5), round(float(lon1), 5), round(float(lat2), 5), round(float(lon2), 5))
+
+
+def distancia_geometria_km(geom):
+    """Calcula a distância do traçado retornado pelo OSRM, em vez de linha reta x fator."""
+    if not isinstance(geom, list) or len(geom) < 2:
+        return 0.0
+    total = 0.0
+    for a, b in zip(geom[:-1], geom[1:]):
+        try:
+            lon1, lat1 = float(a[0]), float(a[1])
+            lon2, lat2 = float(b[0]), float(b[1])
+            total += float(haversine_scalar(lat1, lon1, lat2, lon2))
+        except Exception:
+            continue
+    return total
+
+
+def municipio_normalizado(valor):
+    """Aplica exatamente o mesmo normalizador usado nas demandas e nas bases."""
+    try:
+        return str(normalizar_municipios(pd.Series([str(valor)])).iloc[0]).strip().upper()
+    except Exception:
+        return str(valor).strip().upper()
+
+
+def ordenar_bolsoes_diarios(obras, base_lat, base_lon, capacidade_dia, sentido, url_osrm):
+    """
+    Agrupa espacialmente antes de otimizar a ordem. Mantém a mesma cota diária e o mesmo
+    motor TSP já usado pelo app; apenas evita que o corte do dia aconteça no meio de um bolsão.
+    """
+    if not obras:
+        return []
+    capacidade_dia = max(1, int(capacidade_dia))
+    pendentes = [dict(o) for o in obras]
+    saida = []
+    reversa = "Varredura Reversa" in str(sentido)
+
+    while pendentes:
+        # Mantém prioridades no início e respeita o sentido operacional existente.
+        prioritarias = [o for o in pendentes if str(o.get('PRIORIDADE', '')).strip().upper() == 'SIM']
+        universo_semente = prioritarias if prioritarias else pendentes
+        if reversa:
+            semente = max(universo_semente, key=lambda o: haversine_scalar(base_lat, base_lon, float(o['LATITUDE']), float(o['LONGITUDE'])))
+        else:
+            semente = min(universo_semente, key=lambda o: haversine_scalar(base_lat, base_lon, float(o['LATITUDE']), float(o['LONGITUDE'])))
+
+        grupo = [semente]
+        pendentes.remove(semente)
+        ocupacao = contar_obras_registro(semente)
+        cl, cL = float(semente['LATITUDE']), float(semente['LONGITUDE'])
+
+        while pendentes and ocupacao < capacidade_dia:
+            candidatos = sorted(
+                pendentes,
+                key=lambda o: (
+                    0 if str(o.get('PRIORIDADE', '')).strip().upper() == 'SIM' else 1,
+                    haversine_scalar(cl, cL, float(o['LATITUDE']), float(o['LONGITUDE']))
+                )
+            )
+            escolhido = None
+            for cand in candidatos:
+                peso = contar_obras_registro(cand)
+                if ocupacao == 0 or ocupacao + peso <= capacidade_dia:
+                    escolhido = cand
+                    break
+            if escolhido is None:
+                break
+            grupo.append(escolhido)
+            pendentes.remove(escolhido)
+            ocupacao += contar_obras_registro(escolhido)
+            cl, cL = float(escolhido['LATITUDE']), float(escolhido['LONGITUDE'])
+
+        # Dentro de cada bolsão, reaproveita a lógica original de ordenação.
+        if reversa:
+            restante = list(grupo)
+            ordenado = []
+            if restante:
+                idx = max(range(len(restante)), key=lambda i: haversine_scalar(base_lat, base_lon, float(restante[i]['LATITUDE']), float(restante[i]['LONGITUDE'])))
+                atual = restante.pop(idx)
+                ordenado.append(atual)
+                cl, cL = float(atual['LATITUDE']), float(atual['LONGITUDE'])
+                while restante:
+                    idx = min(range(len(restante)), key=lambda i: haversine_scalar(cl, cL, float(restante[i]['LATITUDE']), float(restante[i]['LONGITUDE'])))
+                    atual = restante.pop(idx)
+                    ordenado.append(atual)
+                    cl, cL = float(atual['LATITUDE']), float(atual['LONGITUDE'])
+            grupo = ordenado
+        else:
+            try:
+                otimizado = resolver_tsp_ortools(grupo, base_lat, base_lon, url_osrm) if grupo else []
+                if otimizado:
+                    grupo = otimizado
+            except Exception:
+                pass
+        saida.extend(grupo)
+    return saida
+
+
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido': False, 'vrp_status': "IDLE", 'vrp_state': {}, 'df_routed': pd.DataFrame(), 'bases_records': [], 'colunas_exibir': [], 'colunas_originais_tat': []})
-    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated', 'df_correcao_tatica']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl', 'bytes_zip_kml', 'bytes_zip_gpx', 'start_time_run', 'start_time_pkg', 'df_unallocated', 'df_correcao_tatica', 'qtd_coords_autocorrigidas']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -126,7 +233,13 @@ if is_done and not st.session_state.df_routed.empty:
     
     tr = len(dfr_t)
     te = dfr['BASE_ATRIBUIDA'].nunique()
-    tk = f"{dfr['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km"
+    if 'DISTANCIA_RODOVIARIA_KM' in dfr.columns:
+        km_real_s = pd.to_numeric(dfr['DISTANCIA_RODOVIARIA_KM'], errors='coerce')
+        km_fallback_s = pd.to_numeric(dfr['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0)
+        km_total_apurado = km_real_s.fillna(km_fallback_s).fillna(0).sum()
+    else:
+        km_total_apurado = pd.to_numeric(dfr['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0).sum()
+    tk = f"{km_total_apurado:.1f} km"
     
     tsp = sum(1 for _, r in dfr_t.iterrows() if isinstance(r.get('_ORIGINAL_ROWS'), list) and len(r.get('_ORIGINAL_ROWS')) > 1)
 
@@ -141,47 +254,56 @@ if is_done and not st.session_state.df_routed.empty:
     else:
         st.success("✅ 100% das obras foram alocadas com sucesso.")
 
+    # Diagnóstico adicional sem alterar o fluxo original da tela.
+    with st.expander("🧠 Diagnóstico da Roteirização", expanded=False):
+        status_series = dfr.get('STATUS_ROTA', pd.Series(dtype=str)).astype(str) if 'STATUS_ROTA' in dfr.columns else pd.Series(dtype=str)
+        qtd_osrm = int(status_series.str.startswith('OSRM').sum()) if not status_series.empty else 0
+        qtd_falha = int(status_series.str.contains('SEM_ROTA|TIMEOUT|ERRO', regex=True).sum()) if not status_series.empty else 0
+        qtd_estimado = int(status_series.str.contains('ESTIMADA|LINHA_RETA', regex=True).sum()) if not status_series.empty else 0
+        qtd_corr = int(st.session_state.get('qtd_coords_autocorrigidas', 0))
+        cargas = dfr_t.groupby('BASE_ATRIBUIDA').size() if not dfr_t.empty else pd.Series(dtype=float)
+        cdiag1, cdiag2, cdiag3, cdiag4 = st.columns(4)
+        cdiag1.metric("Trechos OSRM", qtd_osrm)
+        cdiag2.metric("Trechos sem rota", qtd_falha)
+        cdiag3.metric("Trechos estimados", qtd_estimado)
+        cdiag4.metric("Coords. autocorrigidas", qtd_corr)
+        if not cargas.empty:
+            st.caption(f"Balanceamento por equipe — mín.: {int(cargas.min())} | média: {cargas.mean():.1f} | máx.: {int(cargas.max())}")
+        if qtd_falha > 0:
+            st.warning("Existem trechos em que o servidor de arruamento não retornou geometria. Eles não são desenhados como linha reta; permanecem sinalizados para conferência.")
+
     st.markdown("### 🗺️ Mapa Operacional")
     mapa = folium.Map(location=[dfr['LATITUDE'].mean(), dfr['LONGITUDE'].mean()], zoom_start=8) if not dfr.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
     co_f = ['#e6194b', '#00bcd4', '#3f51b5', '#009688', '#9c27b0', '#cddc39', '#e91e63', '#ffeb3b', '#795548', '#FF9800']
     
-    m_clust = MarkerCluster(name="📍 Obras").add_to(mapa)
     for bn in dfr['BASE_ATRIBUIDA'].unique().tolist():
         cr = co_f[list(dfr['BASE_ATRIBUIDA'].unique()).index(bn) % len(co_f)]
         db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
         
         bn_safe = str(bn).replace("{", "[").replace("}", "]")
-        fg = folium.FeatureGroup(name=f"Rota: {bn_safe}", show=False)
+        fg = folium.FeatureGroup(name=f"Equipe: {bn_safe}", show=False)
+        m_clust_eq = MarkerCluster(name=f"Obras - {bn_safe}").add_to(fg)
         
         for pe in db['PERIODO'].unique():
             dp = db[db['PERIODO'] == pe]
-
-            # Desenha cada trecho de rota separadamente.
-            # Isso evita que o Folium ligue com uma reta o final de um trecho
-            # ao inicio de outro quando o OSRM falhar em algum segmento.
-            for _, r_seg in dp.iterrows():
-                geom = r_seg.get('ROTA_GEOMETRIA')
-                if not isinstance(geom, list) or len(geom) < 2:
-                    continue
-                pts_seg = []
-                for pt in geom:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        lon, lat = pt[0], pt[1]
-                        pts_seg.append([lat, lon])
-                if len(pts_seg) >= 2:
-                    folium.PolyLine(pts_seg, color='black', weight=7, opacity=0.9).add_to(fg)
-                    folium.PolyLine(pts_seg, color=cr, weight=3, opacity=1.0).add_to(fg)
+            # Cada geometria é desenhada separadamente: uma falha intermediária não liga dois trechos por uma reta artificial.
+            for _, r_linha in dp.iterrows():
+                geom = r_linha.get('ROTA_GEOMETRIA')
+                if isinstance(geom, list) and len(geom) >= 2:
+                    pts = [[pt[1], pt[0]] for pt in geom if isinstance(pt, (list, tuple)) and len(pt) >= 2]
+                    if len(pts) >= 2:
+                        folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
+                        folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
             
             for r in dp.to_dict('records'):
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 c_i = 'red' if str(r.get('PRIORIDADE')) == 'Sim' else 'blue'
                 ic = identificar_icone_folium(r, dfr.columns)
                 er = "".join([f"<tr><td><b>{html.escape(c)}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>" for c in st.session_state.colunas_exibir if c.upper() not in ['NOME_DIA','DIA_MES','SEMANA','BASE_ATRIBUIDA']])
-                
-                pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
+                status_rota = html.escape(str(r.get('STATUS_ROTA', '-')))
+                pop_html = f'<div style="width:250px;"><b>Equipe:</b> {html.escape(str(r.get("BASE_ATRIBUIDA")))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><b>Status rota:</b> {status_rota}<br><table border="1" style="width:100%;font-size:11px;">{er}</table></div>'
                 pop_html = pop_html.replace("{", "&#123;").replace("}", "&#125;")
-                
-                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust)
+                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=300)).add_to(m_clust_eq)
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
@@ -217,6 +339,9 @@ elif status_exec == "IDLE":
                             for m in df_bases[cr].dropna().unique(): mc[m] = obter_coordenadas_municipio_cached(m)
                         df_bases['LATITUDE'], df_bases['LONGITUDE'] = df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[0]), df_bases[cr].map(lambda x: mc.get(x, (np.nan, np.nan))[1])
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                    cr_mun = 'MUNICIPIO' if 'MUNICIPIO' in df_bases.columns else ('RESIDENCIA' if 'RESIDENCIA' in df_bases.columns else None)
+                    if cr_mun:
+                        df_bases['MUN_LIMPO_BASE'] = df_bases[cr_mun].apply(municipio_normalizado)
             else: st.error("❌ A planilha não possui coluna de nome da Equipe/Levantador.")
 
         st.markdown("##### 📍 Regra de Atribuição")
@@ -353,17 +478,35 @@ elif status_exec == "IDLE":
 
     df_tasks['LAT_NUM'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
     df_tasks['LON_NUM'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).replace(',', '.', regex=True), errors='coerce')
-    m_na, m_0 = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna(), (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
+    df_tasks['COORD_CORRIGIDA'] = 'NÃO'
+    m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
+    m_0 = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
+    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
+
+    # Autocorrige somente inversões inequivocamente plausíveis no território brasileiro.
+    m_inv_candidata = (abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])) & ~m_na & ~m_0 & ~m_pos
+    lat_trocada = df_tasks['LON_NUM']
+    lon_trocada = df_tasks['LAT_NUM']
+    m_swap_valido = m_inv_candidata & lat_trocada.between(-35.0, 6.0) & lon_trocada.between(-75.0, -30.0)
+    if m_swap_valido.any():
+        lat_ant = df_tasks.loc[m_swap_valido, 'LAT_NUM'].copy()
+        df_tasks.loc[m_swap_valido, 'LAT_NUM'] = df_tasks.loc[m_swap_valido, 'LON_NUM'].values
+        df_tasks.loc[m_swap_valido, 'LON_NUM'] = lat_ant.values
+        df_tasks.loc[m_swap_valido, 'COORD_CORRIGIDA'] = 'SIM - LAT/LON INVERTIDAS'
+
+    st.session_state.qtd_coords_autocorrigidas = int(m_swap_valido.sum())
+    m_na = df_tasks['LAT_NUM'].isna() | df_tasks['LON_NUM'].isna()
+    m_0 = (df_tasks['LAT_NUM'] == 0.0) | (df_tasks['LON_NUM'] == 0.0)
+    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
+    m_inv = (abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])) & ~m_na & ~m_0 & ~m_pos
     df_tasks.loc[m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Inválida'
     df_tasks.loc[m_0 & ~m_na, 'MOTIVO_REJEICAO'] = 'Coordenada Zerada'
-    m_pos = (df_tasks['LAT_NUM'] > 0) | (df_tasks['LON_NUM'] > 0)
     df_tasks.loc[m_pos & ~m_na & ~m_0, 'MOTIVO_REJEICAO'] = 'Coordenada Positiva'
-    m_inv = abs(df_tasks['LAT_NUM']) > abs(df_tasks['LON_NUM'])
-    df_tasks.loc[m_inv & ~m_na & ~m_0 & ~m_pos, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida'
-    
+    df_tasks.loc[m_inv, 'MOTIVO_REJEICAO'] = 'Coordenada Invertida'
+
     mc = m_na | m_0 | m_pos | m_inv
     if mc.sum() > 0: df_rej = pd.concat([df_rej, df_tasks[mc].copy()], ignore_index=True); df_tasks = df_tasks[~mc].copy()
-    
+
     df_tasks['LATITUDE'], df_tasks['LONGITUDE'] = df_tasks['LAT_NUM'], df_tasks['LON_NUM']; df_tasks.drop(columns=['LAT_NUM', 'LON_NUM'], inplace=True)
     
     st.session_state.df_correcao_tatica = df_rej
@@ -371,31 +514,50 @@ elif status_exec == "IDLE":
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
     tbr = df_bases.to_dict('records')
-    fiscal_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
+    base_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
+    fiscal_anchors = dict(base_anchors)
+    carga_equipes = {b['BASE_NOME']: 0 for b in tbr}
     assigned_tasks, unassigned_tasks = [], []
-    
+
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
 
     for r in df_tasks.to_dict('records'):
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
-        ms = normalizar_municipios(pd.Series([str(r.get('MUNICIPIO', ''))])).iloc[0]
-        
-        if "Município" in ta: vb = [b for b in tbr if ms in str(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))).upper()]
-        else: vb = tbr
-            
-        best_f, best_d = None, float('inf')
-        
+        ms = municipio_normalizado(r.get('MUNICIPIO', ''))
+
+        if "Município" in ta:
+            vb = [b for b in tbr if str(b.get('MUN_LIMPO_BASE', municipio_normalizado(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))))) == ms]
+        else:
+            vb = tbr
+
+        best_f, best_score = None, float('inf')
         if pd.notna(la) and pd.notna(lo) and vb:
+            metricas = []
             for b in vb:
                 f_name = b['BASE_NOME']
-                d = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
-                if d < best_d:
-                    best_d = d; best_f = f_name
-                        
+                d_base = haversine_scalar(la, lo, base_anchors[f_name][0], base_anchors[f_name][1])
+                d_bolsao = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
+                metricas.append((b, d_base, d_bolsao, carga_equipes.get(f_name, 0)))
+            max_db = max([m[1] for m in metricas] + [1.0])
+            max_dbol = max([m[2] for m in metricas] + [1.0])
+            max_carga = max([m[3] for m in metricas] + [1])
+            for b, d_base, d_bolsao, carga in metricas:
+                f_name = b['BASE_NOME']
+                # 40% proximidade da base + 30% balanceamento de carga + 20% continuidade do bolsão + 10% folga de capacidade.
+                n_base = d_base / max_db
+                n_bolsao = d_bolsao / max_dbol
+                n_carga = carga / max(1, max_carga)
+                capacidade_total_eq = max(1, cm)
+                n_cap = min(1.0, carga / capacidade_total_eq)
+                score = (0.40 * n_base) + (0.30 * n_carga) + (0.20 * n_bolsao) + (0.10 * n_cap)
+                if score < best_score:
+                    best_score = score; best_f = f_name
+
         if best_f:
             r['BASE_ATRIBUIDA'], r['MUN_LIMPO'] = best_f, ms
             assigned_tasks.append(r)
             fiscal_anchors[best_f] = (la, lo)
+            carga_equipes[best_f] = carga_equipes.get(best_f, 0) + contar_obras_registro(r)
         else:
             r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Fora de Área (Sem Fiscal)", "NÃO ALOCADO"
             unassigned_tasks.append(r)
@@ -434,7 +596,7 @@ elif status_exec == "IDLE":
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
-        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(set([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(dict.fromkeys([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': [], 'route_cache': {}}
         st.session_state.vrp_status = "RUNNING"; tentar_rerun()
 
 if status_exec == "RUNNING":
@@ -464,21 +626,11 @@ if status_exec == "RUNNING":
             bl, bL = float(br['LATITUDE']), float(br['LONGITUDE'])
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
             
-            if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
-                ot = []
-                if oe:
-                    max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
-                    p_longe = oe.pop(max_idx)
-                    ot.append(p_longe)
-                    cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
-                    while oe:
-                        closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
-                        nx = oe.pop(closest_idx)
-                        ot.append(nx)
-                        cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
-            else:
-                ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base']) if oe else []
-                if not ot: ot = oe
+            # Primeiro forma bolsões compatíveis com a cota diária; depois otimiza a ordem dentro de cada bolsão.
+            ot = ordenar_bolsoes_diarios(
+                oe, bl, bL, cfg['obras_por_dia'], cfg.get('sentido_rota', "Lógica Padrão"), cfg['url_osrm_base']
+            ) if oe else []
+            if not ot: ot = oe
             
             rf, da, sa, dds = [], 1, 1, 1
             dtb = datetime.combine(cfg['data_inicio'], datetime.min.time()).replace(hour=8, minute=0)
@@ -531,64 +683,89 @@ if status_exec == "RUNNING":
                 dr = haversine_vectorized(es['l'], es['L'], bl, bL); vr = (dr/cfg['velocidade_media_kmh'])*60
                 rf.append({'o': None, 'il': False, 'ir': True, 'la': es['l'], 'La': es['L'], 'lt': bl, 'Lt': bL, 's': sa, 'd': da, 'ds': dds, 'dn': ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][es['d'].weekday()], 'dm': es['d'].strftime('%d/%m/%Y'), 'hi': es['t'], 'hf': es['t']+pd.Timedelta(minutes=vr), 'vm': vr, 'dk': dr})
             
-            st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
+            st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st_v['current_meta'] = []; st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            # Com arruamento real, processa menos trechos por ciclo para reduzir
-            # a chance de bloqueio/timeout no servidor publico do OSRM.
+            gm = st_v.get('current_meta', [])
+            cache = st_v.setdefault('route_cache', {})
             ei = min(oi + (10 if cfg['tracado_real'] else len(rf)), len(rf))
-            
+
             for i in range(oi, ei):
                 it = rf[i]
                 if not cfg['tracado_real']:
-                    # Linha reta somente quando o usuario DESATIVOU o arruamento real.
-                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+                    geom = [[it['La'], it['la']], [it['Lt'], it['lt']]]
+                    dur = (it['dk'] / max(cfg['velocidade_media_kmh'], 1.0)) * 3600
+                    gd.append((geom, dur))
+                    gm.append({'status': 'LINHA_RETA_ESTIMADA', 'km_real': np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': dur / 60.0})
                 else:
                     if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
+                    chave = chave_rota_cache(it['la'], it['La'], it['lt'], it['Lt'])
+                    cached = cache.get(chave)
+                    if cached is not None:
+                        rota, meta = cached
+                        gd.append(rota)
+                        gm.append(dict(meta))
+                        continue
 
-                    # Tenta obter a geometria real pelo OSRM.
-                    # Se o servidor falhar, NAO inventa uma linha reta.
                     sucesso_rota = False
+                    ultimo_erro = None
                     for tentativa in range(5):
                         try:
                             time.sleep(0.8 if tentativa == 0 else 1.2)
-                            rota = obter_rota_ruas(
-                                it['la'], it['La'], it['lt'], it['Lt'],
-                                cfg['url_osrm_base'], cfg['velocidade_media_kmh']
-                            )
-                            if rota and len(rota) > 0:
-                                geom_rota = rota[0]
-                                if isinstance(geom_rota, list) and len(geom_rota) >= 2:
-                                    gd.append(rota)
-                                    sucesso_rota = True
-                                    break
-                        except Exception:
-                            time.sleep(2.0 + tentativa)
+                            rota = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                            if rota and len(rota) >= 2 and isinstance(rota[0], list) and len(rota[0]) >= 2:
+                                geom, dur = rota[0], rota[1]
+                                km_real = distancia_geometria_km(geom)
+                                meta = {'status': 'OSRM', 'km_real': km_real if km_real > 0 else np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': float(dur) / 60.0 if pd.notna(dur) else np.nan}
+                                gd.append((geom, dur))
+                                gm.append(meta)
+                                cache[chave] = ((geom, dur), dict(meta))
+                                sucesso_rota = True
+                                break
+                        except Exception as exc:
+                            ultimo_erro = exc
+                            time.sleep(1.5 + tentativa * 0.5)
 
                     if not sucesso_rota:
-                        # Mantem um item vazio para preservar o pareamento rf <-> gd,
-                        # mas nenhum segmento sera desenhado no mapa/KML.
-                        gd.append(([], 0.0))
-            
-            st_v['c_idx'], st_v['current_geoms'] = ei, gd
+                        # Com arruamento real ativado, não inventa uma reta. Mantém o trecho vazio e sinalizado.
+                        rota_vazia = ([], 0.0)
+                        meta = {'status': 'SEM_ROTA_OSRM', 'km_real': np.nan, 'km_estimado': float(it['dk']), 'tempo_real_min': np.nan}
+                        gd.append(rota_vazia)
+                        gm.append(meta)
+                        cache[chave] = (rota_vazia, dict(meta))
+
+            st_v['c_idx'], st_v['current_geoms'], st_v['current_meta'], st_v['route_cache'] = ei, gd, gm, cache
             if ei < len(rf): st.session_state.vrp_state = st_v; tentar_rerun(); st.stop()
             
             bl, bL = float(pd.DataFrame(st.session_state.bases_records)[pd.DataFrame(st.session_state.bases_records)['BASE_NOME']==bn].iloc[0]['LATITUDE']), float(pd.DataFrame(st.session_state.bases_records)[pd.DataFrame(st.session_state.bases_records)['BASE_NOME']==bn].iloc[0]['LONGITUDE'])
             rdf, og, dp = [], 1, ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-            for it, (g, ds) in zip(rf, gd):
+            gm = st_v.get('current_meta', [{} for _ in gd])
+            for idx_seg, (it, (g, ds)) in enumerate(zip(rf, gd)):
+                meta = gm[idx_seg] if idx_seg < len(gm) else {}
+                km_real_meta = meta.get('km_real', np.nan)
+                km_estimado = float(meta.get('km_estimado', it.get('dk', 0.0)) or 0.0)
+                km_rota = float(km_real_meta) if pd.notna(km_real_meta) else km_estimado
+                status_rota = str(meta.get('status', 'ESTIMADA'))
+                tempo_real = meta.get('tempo_real_min', np.nan)
                 pv = it['s'] if cfg['tipo_periodo']=="Semana" else it['d']
                 dn = dp[datetime.strptime(it['dm'], '%d/%m/%Y').weekday()] if cfg['tipo_periodo']=="Semana" else f"Dia {it['d']}"
-                if it['il']: rdf.append({'PROTOCOLO': 'PAUSA_ALMOCO', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
-                elif it['ir']: rdf.append({'PROTOCOLO': 'RETORNO_BASE', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(it['dk'], 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']})
+                comum = {'DISTANCIA_RODOVIARIA_KM': round(float(km_real_meta), 2) if pd.notna(km_real_meta) else np.nan, 'DISTANCIA_ESTIMADA_KM': round(km_estimado, 2), 'STATUS_ROTA': status_rota, 'TEMPO_ROTA_REAL_MIN': round(float(tempo_real), 1) if pd.notna(tempo_real) else np.nan}
+                if it['il']:
+                    linha = {'PROTOCOLO': 'PAUSA_ALMOCO', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': 0.0, 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']}
+                    linha.update(comum); rdf.append(linha)
+                elif it['ir']:
+                    linha = {'PROTOCOLO': 'RETORNO_BASE', 'LATITUDE': it['lt'], 'LONGITUDE': it['Lt'], 'BASE_ATRIBUIDA': bn, 'ORDEM': og, 'NOME_DIA': dn, 'DIA_MES': it['dm'], 'SEMANA': it['s'], 'DIA': it['d'], 'PERIODO': pv, 'DISTANCIA_PONTO_ANTERIOR_KM': round(km_rota, 2), 'ROTA_GEOMETRIA': g, 'PRIORIDADE': 'Não', 'HORA_INICIO': it['hi'].strftime('%H:%M'), 'HORA_FIM': it['hf'].strftime('%H:%M'), '_HORA_INICIO_DT': it['hi'], '_HORA_FIM_DT': it['hf']}
+                    linha.update(comum); rdf.append(linha)
                 else:
-                    ob = it['o']; ob['ORDEM'], ob['NOME_DIA'], ob['DIA_MES'], ob['SEMANA'], ob['DIA'], ob['PERIODO'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, dn, it['dm'], it['s'], it['d'], pv, round(it['dk'], 2)
-                    # Preserva a geometria real inclusive no primeiro deslocamento saindo da base.
+                    ob = it['o']; ob['ORDEM'], ob['NOME_DIA'], ob['DIA_MES'], ob['SEMANA'], ob['DIA'], ob['PERIODO'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, dn, it['dm'], it['s'], it['d'], pv, round(km_rota, 2)
+                    # Preserva o traçado real também no primeiro deslocamento BASE -> primeira obra.
                     ob['ROTA_GEOMETRIA'] = g
+                    ob.update(comum)
                     ob['HORA_INICIO'], ob['HORA_FIM'], ob['_HORA_INICIO_DT'], ob['_HORA_FIM_DT'] = it['hi'].strftime('%H:%M'), it['hf'].strftime('%H:%M'), it['hi'], it['hf']
                     rdf.append(ob)
                 og += 1
-            st_v['routed_data'].extend(rdf); del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
+            st_v['routed_data'].extend(rdf); del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']; st_v.pop('current_meta', None)
             st_v['b_idx'] += 1; st.session_state.vrp_state = st_v; gc.collect(); tentar_rerun()
     else:
         sgt.success("✅ Rotas Finalizadas!"); pb.progress(1.0)
@@ -649,7 +826,9 @@ if status_exec == "PACKAGING":
                     'Postes Total': int(round(qtd_postes)),
                     'Super Pontos': sum(1 for _, r_sp in db.iterrows() if isinstance(r_sp.get('_ORIGINAL_ROWS'), list) and len(r_sp.get('_ORIGINAL_ROWS')) > 1), 
                     'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 
-                    'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
+                    'KM Total Previsto': round((pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_RODOVIARIA_KM'], errors='coerce').fillna(pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce')).fillna(0).sum()) if 'DISTANCIA_RODOVIARIA_KM' in df_routed.columns else pd.to_numeric(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'], errors='coerce').fillna(0).sum(), 2),
+                    'Trechos OSRM': int(df_routed[df_routed['BASE_ATRIBUIDA']==b].get('STATUS_ROTA', pd.Series(dtype=str)).astype(str).str.startswith('OSRM').sum()),
+                    'Trechos sem rota': int(df_routed[df_routed['BASE_ATRIBUIDA']==b].get('STATUS_ROTA', pd.Series(dtype=str)).astype(str).str.contains('SEM_ROTA', regex=False).sum())
                 })
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_tatica(pd.DataFrame(res)))
             
