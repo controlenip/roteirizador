@@ -513,48 +513,120 @@ elif status_exec == "IDLE":
 
     if df_tasks.empty: st.error("🚨 Nenhuma obra válida restou."); st.stop()
 
+    # Normaliza municipios uma unica vez. Evita milhares de chamadas repetidas durante a atribuicao.
+    try:
+        df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'].astype(str)).astype(str).str.strip().str.upper()
+    except Exception:
+        df_tasks['MUN_LIMPO'] = df_tasks['MUNICIPIO'].astype(str).str.strip().str.upper()
+
+    # A parte pesada (balanceamento + Super Pontos) foi movida para depois do clique.
+    # Assim o Streamlit nao recalcula milhares de obras toda vez que um widget muda.
+    with st.expander("🛠️ Configuração de Saída", expanded=True):
+        tc = [c for c in df_tasks.columns if not c.startswith('_') and c != 'MUN_LIMPO']
+        for c_extra in ['BASE_ATRIBUIDA', 'SUPER_PONTO']:
+            if c_extra not in tc:
+                tc.append(c_extra)
+
+        cd = [
+            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME',
+            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE',
+            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
+        ]
+
+        cp = [c for c in cd if c in tc]
+        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
+        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+
+    st.info("⚡ Os cálculos pesados de distribuição e Super Pontos só serão executados após clicar em **Iniciar Motor de Roteirização**.")
+
+    if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
+        st.session_state.prep_tasks_tatica = df_tasks.copy()
+        st.session_state.prep_bases_tatica = df_bases.copy()
+        st.session_state.prep_params_tatica = {
+            'ta': ta, 'raio_sp': raio_sp, 'cm': cm, 'qtd_eq': qtd_eq,
+            'obras_dia': obras_dia, 'tpc': tpc, 'limite_per': limite_per,
+            'dias_sel': list(dias_sel), 'url_osrm': url_osrm, 'usa_osrm': usa_osrm,
+            'data_ini': data_ini, 'sentido_rota': sentido_rota,
+            'colunas_exibir': list(colunas_exibir)
+        }
+        st.session_state.vrp_status = "PREPARING"
+        tentar_rerun()
+
+if status_exec == "PREPARING":
+    st.markdown("## ⚙️ Preparando distribuição das obras")
+    if st.button("⏹️ Abortar Preparação", use_container_width=True):
+        limpar_roteirizador(); st.stop()
+
+    df_tasks = st.session_state.get('prep_tasks_tatica', pd.DataFrame()).copy()
+    df_bases = st.session_state.get('prep_bases_tatica', pd.DataFrame()).copy()
+    pp = st.session_state.get('prep_params_tatica', {})
+
+    if df_tasks.empty or df_bases.empty:
+        st.error("🚨 Dados de preparação não encontrados. Inicie uma nova roteirização.")
+        st.session_state.vrp_status = "IDLE"
+        st.stop()
+
+    ta_p = pp.get('ta', 'Por Município Base')
+    raio_sp_p = pp.get('raio_sp', 50)
+    cm_p = max(1, int(pp.get('cm', 1)))
+    qtd_eq_p = max(1, int(pp.get('qtd_eq', df_bases['BASE_NOME'].nunique())))
+
     tbr = df_bases.to_dict('records')
-    base_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE',0)), float(b.get('LONGITUDE',0))) for b in tbr}
+    base_anchors = {b['BASE_NOME']: (float(b.get('LATITUDE', 0)), float(b.get('LONGITUDE', 0))) for b in tbr}
     fiscal_anchors = dict(base_anchors)
     carga_equipes = {b['BASE_NOME']: 0 for b in tbr}
-    assigned_tasks, unassigned_tasks = [], []
+
+    # Mapa municipio -> equipes, calculado uma unica vez.
+    mun_to_bases = {}
+    if "Município" in ta_p:
+        for b in tbr:
+            mun = str(b.get('MUN_LIMPO_BASE', '')).strip().upper()
+            if not mun:
+                raw_m = b.get('MUNICIPIO', b.get('RESIDENCIA', ''))
+                mun = municipio_normalizado(raw_m)
+            mun_to_bases.setdefault(mun, []).append(b)
 
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
+    registros = df_tasks.to_dict('records')
+    assigned_tasks, unassigned_tasks = [], []
 
-    for r in df_tasks.to_dict('records'):
+    pb_prep = st.progress(0.0)
+    msg_prep = st.empty()
+    total_reg = max(1, len(registros))
+
+    for idx, r in enumerate(registros):
         la, lo = r.get('LATITUDE'), r.get('LONGITUDE')
-        ms = municipio_normalizado(r.get('MUNICIPIO', ''))
-
-        if "Município" in ta:
-            vb = [b for b in tbr if str(b.get('MUN_LIMPO_BASE', municipio_normalizado(b.get('MUNICIPIO', b.get('RESIDENCIA', ''))))) == ms]
-        else:
-            vb = tbr
+        ms = str(r.get('MUN_LIMPO', '')).strip().upper()
+        vb = mun_to_bases.get(ms, []) if "Município" in ta_p else tbr
 
         best_f, best_score = None, float('inf')
         if pd.notna(la) and pd.notna(lo) and vb:
-            metricas = []
-            for b in vb:
-                f_name = b['BASE_NOME']
-                d_base = haversine_scalar(la, lo, base_anchors[f_name][0], base_anchors[f_name][1])
-                d_bolsao = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
-                metricas.append((b, d_base, d_bolsao, carga_equipes.get(f_name, 0)))
-            max_db = max([m[1] for m in metricas] + [1.0])
-            max_dbol = max([m[2] for m in metricas] + [1.0])
-            max_carga = max([m[3] for m in metricas] + [1])
-            for b, d_base, d_bolsao, carga in metricas:
-                f_name = b['BASE_NOME']
-                # 40% proximidade da base + 30% balanceamento de carga + 20% continuidade do bolsão + 10% folga de capacidade.
-                n_base = d_base / max_db
-                n_bolsao = d_bolsao / max_dbol
-                n_carga = carga / max(1, max_carga)
-                capacidade_total_eq = max(1, cm)
-                n_cap = min(1.0, carga / capacidade_total_eq)
-                score = (0.40 * n_base) + (0.30 * n_carga) + (0.20 * n_bolsao) + (0.10 * n_cap)
-                if score < best_score:
-                    best_score = score; best_f = f_name
+            # Caso comum de municipio rigido com uma unica equipe: atribuicao direta.
+            if len(vb) == 1:
+                best_f = vb[0]['BASE_NOME']
+            else:
+                metricas = []
+                for b in vb:
+                    f_name = b['BASE_NOME']
+                    d_base = haversine_scalar(la, lo, base_anchors[f_name][0], base_anchors[f_name][1])
+                    d_bolsao = haversine_scalar(la, lo, fiscal_anchors[f_name][0], fiscal_anchors[f_name][1])
+                    metricas.append((b, d_base, d_bolsao, carga_equipes.get(f_name, 0)))
+                max_db = max([m[1] for m in metricas] + [1.0])
+                max_dbol = max([m[2] for m in metricas] + [1.0])
+                max_carga = max([m[3] for m in metricas] + [1])
+                for b, d_base, d_bolsao, carga in metricas:
+                    f_name = b['BASE_NOME']
+                    n_base = d_base / max_db
+                    n_bolsao = d_bolsao / max_dbol
+                    n_carga = carga / max(1, max_carga)
+                    n_cap = min(1.0, carga / cm_p)
+                    score = (0.40 * n_base) + (0.30 * n_carga) + (0.20 * n_bolsao) + (0.10 * n_cap)
+                    if score < best_score:
+                        best_score = score
+                        best_f = f_name
 
         if best_f:
-            r['BASE_ATRIBUIDA'], r['MUN_LIMPO'] = best_f, ms
+            r['BASE_ATRIBUIDA'] = best_f
             assigned_tasks.append(r)
             fiscal_anchors[best_f] = (la, lo)
             carga_equipes[best_f] = carga_equipes.get(best_f, 0) + contar_obras_registro(r)
@@ -562,42 +634,66 @@ elif status_exec == "IDLE":
             r['MOTIVO_REJEICAO'], r['BASE_ATRIBUIDA'] = "Fora de Área (Sem Fiscal)", "NÃO ALOCADO"
             unassigned_tasks.append(r)
 
+        if idx % 250 == 0 or idx == total_reg - 1:
+            frac = 0.65 * ((idx + 1) / total_reg)
+            pb_prep.progress(min(frac, 0.65))
+            msg_prep.info(f"📍 Distribuindo obras entre as equipes... {idx + 1}/{total_reg}")
+
     df_ta = pd.DataFrame(assigned_tasks)
     df_u = pd.DataFrame(unassigned_tasks)
 
+    # Super Pontos continuam com a mesma funcao original, mas agora so rodam uma vez, apos o clique.
     dfs_fundidos = []
     if not df_ta.empty:
-        for base in df_ta['BASE_ATRIBUIDA'].unique():
+        bases_unicas = list(df_ta['BASE_ATRIBUIDA'].dropna().unique())
+        total_bases = max(1, len(bases_unicas))
+        for i_base, base in enumerate(bases_unicas):
+            msg_prep.info(f"🏢 Consolidando Super Pontos: {base} ({i_base + 1}/{total_bases})")
             df_base = df_ta[df_ta['BASE_ATRIBUIDA'] == base].copy()
-            df_base_f, _ = fundir_super_pontos(df_base, raio_metros=raio_sp, agrupar_por_levantador=True)
+            df_base_f, _ = fundir_super_pontos(df_base, raio_metros=raio_sp_p, agrupar_por_levantador=True)
             dfs_fundidos.append(df_base_f)
-        if dfs_fundidos:
-            df_ta = pd.concat(dfs_fundidos, ignore_index=True)
-        else:
-            df_ta = pd.DataFrame()
+            pb_prep.progress(0.65 + 0.30 * ((i_base + 1) / total_bases))
+        df_ta = pd.concat(dfs_fundidos, ignore_index=True) if dfs_fundidos else pd.DataFrame()
 
-    st.session_state.df_unallocated, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
-    
-    sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq), unsafe_allow_html=True)
-    if df_ta.empty: st.error("Nenhuma obra pôde ser alocada aos Fiscais."); st.stop()
+    if df_ta.empty:
+        st.error("Nenhuma obra pôde ser alocada aos Fiscais.")
+        st.session_state.vrp_status = "IDLE"
+        st.stop()
 
-    with st.expander("🛠️ Configuração de Saída", expanded=True):
-        tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        
-        cd = [
-            'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 
-            'ENDERECO', 'LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 
-            'INFORMACOES EXTRAS', 'TIPO NOTA', 'FASE'
-        ]
-        
-        cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis:", tc, default=cp)
-        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+    st.session_state.df_unallocated = df_u
+    total_alocadas = sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
+    sb_html.markdown(render_sidebar_card(cm_p, total_alocadas, qtd_eq_p, cm_p * qtd_eq_p), unsafe_allow_html=True)
 
-    if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
-        st.session_state.update({'bases_records': tbr, 'colunas_exibir': colunas_exibir})
-        st.session_state.vrp_state = {'config': {'velocidade_media_kmh': 30.0, 'obras_por_dia': obras_dia, 'tipo_periodo': tpc, 'limite_periodos': limite_per, 'dias_selecionados': dias_sel, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'tempo_medio_obra': 45.0 / 60.0, 'sentido_rota': sentido_rota}, 'b_names': list(dict.fromkeys([b['BASE_NOME'] for b in tbr])), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': [], 'route_cache': {}}
-        st.session_state.vrp_status = "RUNNING"; tentar_rerun()
+    st.session_state.update({
+        'bases_records': tbr,
+        'colunas_exibir': pp.get('colunas_exibir', [])
+    })
+    st.session_state.vrp_state = {
+        'config': {
+            'velocidade_media_kmh': 30.0,
+            'obras_por_dia': pp.get('obras_dia', 6),
+            'tipo_periodo': pp.get('tpc', 'Semana'),
+            'limite_periodos': pp.get('limite_per', 1),
+            'dias_selecionados': pp.get('dias_sel', []),
+            'url_osrm_base': pp.get('url_osrm', 'http://router.project-osrm.org'),
+            'tracado_real': pp.get('usa_osrm', True),
+            'data_inicio': pp.get('data_ini', datetime.today().date()),
+            'tempo_medio_obra': 45.0 / 60.0,
+            'sentido_rota': pp.get('sentido_rota', '📍 Lógica Padrão')
+        },
+        'b_names': list(dict.fromkeys([b['BASE_NOME'] for b in tbr])),
+        'b_idx': 0,
+        'unvisited': df_ta.copy(),
+        'routed_data': [],
+        'current_geoms': [],
+        'route_cache': {}
+    }
+
+    pb_prep.progress(1.0)
+    msg_prep.success("✅ Preparação concluída. Iniciando o motor de roteirização...")
+    st.session_state.vrp_status = "RUNNING"
+    time.sleep(0.3)
+    tentar_rerun()
 
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor VRP Tático")
