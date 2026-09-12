@@ -303,9 +303,25 @@ if is_done and not st.session_state.df_routed_fisc.empty:
         
         for pe in db['PERIODO'].unique():
             dp = db[db['PERIODO'] == pe]
-            pts = [p for _, r in dp.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
-            folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
-            folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
+
+            # Desenha cada trecho da rota separadamente.
+            # Isso evita que o Folium una dois trechos distintos com uma linha reta
+            # quando alguma consulta ao OSRM falhar ou retornar geometria vazia.
+            for _, r_seg in dp.iterrows():
+                geom = r_seg.get('ROTA_GEOMETRIA')
+                if not isinstance(geom, list) or len(geom) < 2:
+                    continue
+
+                pts_seg = []
+                for pt in geom:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        lon_pt, lat_pt = pt[0], pt[1]
+                        if pd.notna(lat_pt) and pd.notna(lon_pt):
+                            pts_seg.append([lat_pt, lon_pt])
+
+                if len(pts_seg) >= 2:
+                    folium.PolyLine(pts_seg, color='black', weight=7, opacity=0.9).add_to(fg)
+                    folium.PolyLine(pts_seg, color=cr, weight=3, opacity=1.0).add_to(fg)
             
             for r in dp.to_dict('records'):
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -755,30 +771,61 @@ if status_exec == "RUNNING":
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            ei = min(oi + (30 if cfg['tracado_real'] else len(rf)), len(rf))
+
+            # Com arruamento real ativo, processa menos trechos por ciclo para
+            # reduzir a pressão sobre o servidor público do OSRM.
+            ei = min(oi + (10 if cfg['tracado_real'] else len(rf)), len(rf))
+
             for i in range(oi, ei):
                 it = rf[i]
-                if not cfg['tracado_real']: 
-                    gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
+
+                if not cfg['tracado_real']:
+                    # Modo sem OSRM: mantém a linha direta entre os pontos,
+                    # pois esta é a opção explicitamente escolhida pelo usuário.
+                    gd.append((
+                        [[it['La'], it['la']], [it['Lt'], it['lt']]],
+                        (it['dk'] * 1000 / 1000.0 / cfg['velocidade_media_kmh']) * 3600
+                    ))
                 else:
-                    if i%5==0: sgt.info(f"🛣️ Traçando arruamento real **{bn}**... ({i}/{len(rf)})")
+                    if i % 5 == 0:
+                        sgt.info(f"🛣️ Traçando arruamento real **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
-                    
+
                     sucesso_rota = False
-                    for tentativa in range(3):
+                    rota_valida = None
+
+                    # Reforça as tentativas no OSRM. Se todas falharem, NÃO cria
+                    # uma linha reta artificial: grava geometria vazia para o trecho.
+                    for tentativa in range(5):
                         try:
-                            time.sleep(0.4) 
-                            rota = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
-                            if rota and len(rota) > 0 and len(rota[0]) > 0:
-                                gd.append(rota)
-                                sucesso_rota = True
-                                break
+                            time.sleep(0.8)
+                            rota = obter_rota_ruas(
+                                it['la'], it['La'],
+                                it['lt'], it['Lt'],
+                                cfg['url_osrm_base'],
+                                cfg['velocidade_media_kmh']
+                            )
+
+                            if rota and len(rota) > 0:
+                                geom_rota = rota[0]
+                                if isinstance(geom_rota, list) and len(geom_rota) >= 2:
+                                    rota_valida = rota
+                                    sucesso_rota = True
+                                    break
                         except Exception:
-                            time.sleep(1.5)
-                            
-                    if not sucesso_rota:
-                        gd.append(([[it['La'], it['la']], [it['Lt'], it['lt']]], (it['dk']*1000/1000.0/cfg['velocidade_media_kmh'])*3600))
-                        
+                            pass
+
+                        # Backoff progressivo entre as tentativas.
+                        time.sleep(1.5 + tentativa * 0.5)
+
+                    if sucesso_rota and rota_valida is not None:
+                        gd.append(rota_valida)
+                    else:
+                        # Mantém correspondência 1:1 entre rf e gd sem desenhar
+                        # qualquer reta fictícia. O restante do fluxo aceita a
+                        # geometria vazia e segue normalmente.
+                        gd.append(([], 0.0))
+
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state_fisc = st_v; tentar_rerun(); st.stop()
             
