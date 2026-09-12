@@ -85,7 +85,7 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
         if pd.isna(b) or b == "NÃO ALOCADO": continue
         pasta = [f'<Folder><name>Fiscal: {html.escape(str(b))}</name>']
         
-        # Filtro rígido com a coluna padronizada
+        # O FILTRO TRAVADO CORRETAMENTE NA COLUNA 'FISCAL' (Sem usar variáveis camaleão)
         df_b = df_kml[df_kml['FISCAL'] == b]
         
         for p in df_b['PERIODO'].unique():
@@ -104,6 +104,7 @@ def gerar_kml_fisc(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_fo
             if coords_linha: pasta.append('<Placemark><name>Traçado da Rota</name><styleUrl>#s_line</styleUrl><LineString><tessellate>1</tessellate><coordinates>' + ' '.join(coords_linha) + '</coordinates></LineString></Placemark>')
 
             for _, r in df_p.iterrows():
+                # Leitura travada na coluna 'NOTA' garantida pelo motor da página 3
                 if r.get('NOTA') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                 lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                 if pd.isna(lat) or pd.isna(lon): continue
