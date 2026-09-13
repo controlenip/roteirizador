@@ -125,7 +125,7 @@ def limpar_colunas_saneamento(df_alvo, cols_originais=None, colunas_selecionadas
     obrigatorias = [
         'LEVANTADOR', 'NOME_DIA', 'DIA_MES', 'SEMANA', 'DIA', 'ORDEM',
         'HORA_INICIO', 'HORA_FIM', 'DISTANCIA_PONTO_ANTERIOR_KM',
-        'DISTANCIA_ESTIMADA_KM', 'DISTANCIA_RODOVIARIA_KM', 'TEMPO_ROTA_MIN', 'TEMPO_ATENDIMENTO_MIN',
+        'DISTANCIA_ESTIMADA_KM', 'DISTANCIA_RODOVIARIA_KM', 'DISTANCIA_HIBRIDA_KM', 'TEMPO_ROTA_MIN', 'TEMPO_ATENDIMENTO_MIN',
         'STATUS_ROTA', 'NOTA'
     ]
 
@@ -221,7 +221,7 @@ def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tip
                         <table style="width:100%; border-collapse:collapse;">
                 '''
 
-                extras = ['STATUS_ROTA', 'DISTANCIA_ESTIMADA_KM', 'DISTANCIA_RODOVIARIA_KM', 'TEMPO_ROTA_MIN', 'TEMPO_ATENDIMENTO_MIN', 'HORA_INICIO', 'HORA_FIM']
+                extras = ['STATUS_ROTA', 'DISTANCIA_ESTIMADA_KM', 'DISTANCIA_RODOVIARIA_KM', 'DISTANCIA_HIBRIDA_KM', 'TEMPO_ROTA_MIN', 'TEMPO_ATENDIMENTO_MIN', 'HORA_INICIO', 'HORA_FIM', 'FONTE_COORDENADA', 'CLASSIFICACAO_DUPLICIDADE']
                 cols_popup = list(dict.fromkeys(list(colunas_exibir or []) + extras))
                 for c in cols_popup:
                     if c.upper() in ['PROTOCOLO', 'NOTA']:
