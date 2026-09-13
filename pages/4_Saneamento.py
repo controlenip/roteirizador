@@ -39,7 +39,7 @@ from modules.export_saneamento import (
 _haversine_scalar = haversine_scalar
 _resolver_tsp_ortools = None  # TSP do Saneamento é local; não consulta rede.
 
-VERSAO_REGRAS_SANEAMENTO = "2026.09.5"
+VERSAO_REGRAS_SANEAMENTO = "2026.09.6"
 DIAS_NOMES = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 DIAS_MAP = {nome: i for i, nome in enumerate(DIAS_NOMES)}
 
@@ -134,6 +134,50 @@ def peso_tarefa(registro):
         return len(uids)
     orig = registro.get("_ORIGINAL_ROWS") if hasattr(registro, "get") else None
     return len(orig) if isinstance(orig, list) and orig else 1
+
+
+def coletar_input_uids_df(df, excluir_protocolos=None):
+    """Coleta IDs de entrada únicos representados por um DataFrame.
+
+    A função é imune a linhas duplicadas de auditoria/não alocação e mantém
+    Super Pontos contabilizados pelo número real de obras originais.
+    """
+    if df is None or getattr(df, "empty", True):
+        return set()
+    excluir = {str(x) for x in (excluir_protocolos or [])}
+    encontrados = set()
+    for _, r in df.iterrows():
+        if excluir and str(r.get("PROTOCOLO", "")) in excluir:
+            continue
+        encontrados.update(extrair_input_uids(r))
+    return encontrados
+
+
+def mesclar_nao_alocadas(*dfs):
+    """Concatena não alocadas sem repetir a mesma tarefa operacional.
+
+    `_TASK_UID` identifica o Super Ponto/tarefa operacional. Quando esse campo não
+    existe, a assinatura dos `_INPUT_UIDs` serve de chave. Registros sem qualquer
+    identificador são preservados, evitando descarte silencioso.
+    """
+    validos = [d.copy() for d in dfs if d is not None and not getattr(d, "empty", True)]
+    if not validos:
+        return pd.DataFrame()
+    df = pd.concat(validos, ignore_index=True)
+    manter = []
+    vistos = set()
+    for idx, r in df.iterrows():
+        task_uid = r.get("_TASK_UID")
+        if pd.notna(task_uid) and str(task_uid).strip():
+            chave = ("TASK", str(task_uid).strip())
+        else:
+            uids = tuple(sorted(extrair_input_uids(r)))
+            chave = ("INPUTS", uids) if uids else ("ROW", int(idx))
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        manter.append(idx)
+    return df.loc[manter].reset_index(drop=True)
 
 
 def _to_float_coord(v):
@@ -690,6 +734,22 @@ def construir_plano_rota_equipe(tarefas, base_lat, base_lon, cfg):
     pending = [dict(x) for x in tarefas]
     pending.sort(key=lambda r: (0 if str(r.get("PRIORIDADE", "")).upper() == "SIM" else 1, int(r.get("_ORDEM_ENTRADA", 10**9))))
     rotas, nao_alocadas = [], []
+    nao_alocadas_chaves = set()
+
+    def registrar_nao_alocada(o, motivo):
+        item = dict(o)
+        item["MOTIVO_NAO_ALOCACAO"] = motivo
+        item["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+        task_uid = item.get("_TASK_UID")
+        if task_uid is not None and str(task_uid).strip():
+            chave = ("TASK", str(task_uid).strip())
+        else:
+            uids = tuple(sorted(extrair_input_uids(item)))
+            chave = ("INPUTS", uids) if uids else ("OBJ", id(o))
+        if chave not in nao_alocadas_chaves:
+            nao_alocadas_chaves.add(chave)
+            nao_alocadas.append(item)
+
     dia_idx = 1
     max_dias = max_dias_planejamento(cfg)
     guard = 0
@@ -698,9 +758,7 @@ def construir_plano_rota_equipe(tarefas, base_lat, base_lon, cfg):
         guard += 1
         if max_dias is not None and dia_idx > max_dias:
             for o in pending:
-                o["MOTIVO_NAO_ALOCACAO"] = "LIMITE_DE_PERIODOS_ATINGIDO"
-                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
-                nao_alocadas.append(o)
+                registrar_nao_alocada(o, "LIMITE_DE_PERIODOS_ATINGIDO")
             break
 
         data_dia = data_trabalho_por_indice(cfg["data_inicio"], dia_idx, cfg.get("dias_selecionados", []))
@@ -723,24 +781,31 @@ def construir_plano_rota_equipe(tarefas, base_lat, base_lon, cfg):
 
         # Pré-seleção por cota e tempo de serviço; usa best-fit para aproveitar lacunas.
         bloco, resto = [], []
+        permanentes_uid = set()
         carga, servico = 0, 0.0
         candidatos = sorted(elegiveis, key=lambda r: (0 if str(r.get("PRIORIDADE", "")).upper() == "SIM" else 1, tempo_servico_registro(r, cfg), int(r.get("_ORDEM_ENTRADA", 10**9))))
         for o in candidatos:
             qr, serv = peso_tarefa(o), tempo_servico_registro(o, cfg)
             if qr > int(cfg["obras_por_dia"]):
-                o["MOTIVO_NAO_ALOCACAO"] = "SUPER_PONTO_EXCEDE_COTA_DIARIA"
-                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
-                nao_alocadas.append(o)
+                registrar_nao_alocada(o, "SUPER_PONTO_EXCEDE_COTA_DIARIA")
+                if o.get("_TASK_UID") is not None:
+                    permanentes_uid.add(str(o.get("_TASK_UID")))
                 continue
             if serv > total_min:
-                o["MOTIVO_NAO_ALOCACAO"] = "ATENDIMENTO_EXCEDE_JORNADA_DIARIA"
-                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
-                nao_alocadas.append(o)
+                registrar_nao_alocada(o, "ATENDIMENTO_EXCEDE_JORNADA_DIARIA")
+                if o.get("_TASK_UID") is not None:
+                    permanentes_uid.add(str(o.get("_TASK_UID")))
                 continue
             if carga + qr <= int(cfg["obras_por_dia"]) and servico + serv <= total_min:
                 bloco.append(o); carga += qr; servico += serv
             else:
                 resto.append(o)
+
+        # Tarefas estruturalmente impossíveis (ex.: Super Ponto maior que a cota)
+        # saem de `pending` imediatamente. Antes elas permaneciam no laço, eram
+        # registradas novamente a cada dia e inflavam artificialmente "Não alocadas".
+        if permanentes_uid:
+            pending = [x for x in pending if str(x.get("_TASK_UID")) not in permanentes_uid]
 
         ordem = ordenar_bloco_rota(bloco, base_lat, base_lon, cfg["sentido_rota"], cfg["url_osrm_base"])
         semana, dds, periodo = periodo_do_dia(dia_idx, cfg["tipo_periodo"], cfg.get("dias_selecionados", []))
@@ -780,10 +845,17 @@ def construir_plano_rota_equipe(tarefas, base_lat, base_lon, cfg):
 
         # Se nada couber, retira a primeira tarefa impossível para evitar loop infinito.
         if not aceitos:
-            o = elegiveis[0]
-            o["MOTIVO_NAO_ALOCACAO"] = "TAREFA_NAO_CABE_NA_JORNADA"
-            o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
-            nao_alocadas.append(o)
+            # Se todos os elegíveis já foram classificados como impossíveis acima,
+            # apenas avança o dia; não registra a mesma tarefa uma segunda vez.
+            elegiveis_restantes = [
+                o for o in elegiveis
+                if o.get("_TASK_UID") is None or str(o.get("_TASK_UID")) not in permanentes_uid
+            ]
+            if not elegiveis_restantes:
+                dia_idx += 1
+                continue
+            o = elegiveis_restantes[0]
+            registrar_nao_alocada(o, "TAREFA_NAO_CABE_NA_JORNADA")
             remove_uid = o.get("_TASK_UID")
             pending = [x for x in pending if x.get("_TASK_UID") != remove_uid] if remove_uid is not None else [x for x in pending if x is not o]
             continue
@@ -1481,7 +1553,8 @@ if is_done and not st.session_state.df_routed_san.empty:
 
     df_na = st.session_state.get('df_unallocated_san', pd.DataFrame())
     df_ft = st.session_state.get('df_fora_trava_san', pd.DataFrame())
-    obras_na = sum(peso_tarefa(r) for _, r in df_na.iterrows()) if not df_na.empty else 0
+    uids_na_tela = coletar_input_uids_df(df_na)
+    obras_na = len(uids_na_tela) if uids_na_tela else (sum(peso_tarefa(r) for _, r in df_na.iterrows()) if not df_na.empty else 0)
     obras_ft = len(df_ft)
     dup_rem = len(st.session_state.get('df_duplicadas_removidas_san', pd.DataFrame()))
     dup_div = st.session_state.get('df_duplicadas_divergentes_san', pd.DataFrame())
@@ -2073,9 +2146,9 @@ if status_exec == 'RUNNING':
                 rf, nao_agendadas = construir_plano_rota_equipe(oe, bl, bL, cfg_eq)
                 if nao_agendadas:
                     dfn = pd.DataFrame(nao_agendadas)
-                    st.session_state.df_unallocated_san = pd.concat([
+                    st.session_state.df_unallocated_san = mesclar_nao_alocadas(
                         st.session_state.get('df_unallocated_san', pd.DataFrame()), dfn
-                    ], ignore_index=True)
+                    )
                     uids_nao = set(dfn.get('_TASK_UID', pd.Series(dtype='object')).dropna().astype(str))
                     oe = [x for x in oe if str(x.get('_TASK_UID')) not in uids_nao]
                 st_v['team_tasks'] = oe
@@ -2163,7 +2236,7 @@ if status_exec == 'RUNNING':
                         if '_TASK_UID' in dfn.columns and not antigos.empty and '_TASK_UID' in antigos.columns:
                             dfn = dfn[~dfn['_TASK_UID'].astype(str).isin(antigos['_TASK_UID'].astype(str))]
                         if not dfn.empty:
-                            st.session_state.df_unallocated_san = pd.concat([antigos, dfn], ignore_index=True)
+                            st.session_state.df_unallocated_san = mesclar_nao_alocadas(antigos, dfn)
                         uids_nao = set(dfn.get('_TASK_UID', pd.Series(dtype='object')).dropna().astype(str))
                         tarefas = [x for x in tarefas if str(x.get('_TASK_UID')) not in uids_nao]
                     st_v['team_tasks'] = tarefas
@@ -2256,9 +2329,31 @@ if status_exec == 'RUNNING':
             df_final = pd.DataFrame(st_v['routed_data'])
             st.session_state.df_routed_san = df_final
             cfg_final = st.session_state.get('config_execucao_san', {}).copy()
-            df_na = st.session_state.get('df_unallocated_san', pd.DataFrame())
-            roteadas = sum(peso_tarefa(r) for _, r in df_final[~df_final['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].iterrows()) if not df_final.empty else 0
-            nao_alocadas = sum(peso_tarefa(r) for _, r in df_na.iterrows()) if not df_na.empty else 0
+            df_na = mesclar_nao_alocadas(st.session_state.get('df_unallocated_san', pd.DataFrame()))
+
+            # A reconciliação usa IDs imutáveis e únicos. Isso impede que a mesma tarefa
+            # seja contada várias vezes caso tenha sido marcada como não alocada em mais
+            # de uma passagem/dia do planejador.
+            uids_roteadas = coletar_input_uids_df(df_final, excluir_protocolos=['RETORNO_BASE', 'PAUSA_ALMOCO'])
+            uids_na = coletar_input_uids_df(df_na)
+            conflitos_uids = uids_roteadas.intersection(uids_na)
+
+            # Se um registro operacional já foi efetivamente roteirizado, ele não pode
+            # continuar no relatório de não alocadas. Remove apenas registros inteiros
+            # cujos IDs de entrada estão totalmente cobertos pela rota final.
+            if conflitos_uids and not df_na.empty:
+                manter_idx = []
+                for idx_na, r_na in df_na.iterrows():
+                    ruids = set(extrair_input_uids(r_na))
+                    if ruids and ruids.issubset(uids_roteadas):
+                        continue
+                    manter_idx.append(idx_na)
+                df_na = df_na.loc[manter_idx].reset_index(drop=True) if manter_idx else pd.DataFrame(columns=df_na.columns)
+                uids_na = coletar_input_uids_df(df_na)
+
+            st.session_state.df_unallocated_san = df_na
+            roteadas = len(uids_roteadas) if uids_roteadas else (sum(peso_tarefa(r) for _, r in df_final[~df_final['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].iterrows()) if not df_final.empty else 0)
+            nao_alocadas = len(uids_na) if uids_na else (sum(peso_tarefa(r) for _, r in df_na.iterrows()) if not df_na.empty else 0)
             # Usa as contagens congeladas no momento do clique em Iniciar. DataFrames de
             # auditoria são mantidos para consulta/exportação, mas não podem alterar a conta
             # final caso o Streamlit descarte/reconstrua algum estado entre reruns.
@@ -2275,6 +2370,8 @@ if status_exec == 'RUNNING':
             rec['fonte_contagens_preprocessamento'] = 'CONFIG_CONGELADA'
             rec['qtd_obras_pos_superpontos'] = int(cfg_final.get('qtd_obras_pos_superpontos', 0))
             rec['qtd_pontos_pos_superpontos'] = int(cfg_final.get('qtd_pontos_pos_superpontos', 0))
+            rec['qtd_conflitos_rota_nao_alocada_corrigidos'] = int(len(conflitos_uids))
+            rec['metodo_contagem_operacional'] = 'INPUT_UID_UNICO'
             cfg_final['qtd_nao_alocadas'] = int(nao_alocadas)
             cfg_final['tempo_processamento_s'] = round(time.time() - st_run, 2)
             cfg_final['reconciliacao'] = rec
