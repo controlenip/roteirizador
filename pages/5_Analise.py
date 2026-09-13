@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 import uuid
+import traceback
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -137,27 +138,56 @@ def normalizar_status_fluxo(valor, default='0'):
     return s or default
 
 
-STATUS_LIST_VALIDOS = {'0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'}
-STATUS_SISCO_VALIDOS = {
-    '0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P LEVANTAMENTO'
+# Versão explícita das regras usadas na auditoria. É gravada nas exportações para rastreabilidade.
+VERSAO_REGRAS_ANALISE = '2026.09'
+REGRAS_STATUS_ANALISE = {
+    'STATUS_LIST_VALIDOS': ('0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'),
+    'STATUS_SISCO_VALIDOS': ('0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P LEVANTAMENTO'),
 }
+STATUS_LIST_VALIDOS = set(REGRAS_STATUS_ANALISE['STATUS_LIST_VALIDOS'])
+STATUS_SISCO_VALIDOS = set(REGRAS_STATUS_ANALISE['STATUS_SISCO_VALIDOS'])
+
+
+def _coluna_status_disponivel(linha, aliases, flag_coluna):
+    """Distingue coluna inexistente de valor 0 real, inclusive após concatenação das bases."""
+    flag = linha.get(flag_coluna, None)
+    if pd.notna(flag) and str(flag).strip().upper() in {'SIM', 'NÃO', 'NAO'}:
+        return str(flag).strip().upper() == 'SIM'
+    try:
+        nomes = {_norm_col(c) for c in linha.index}
+        return any(_norm_col(a) in nomes for a in aliases)
+    except Exception:
+        return False
 
 
 def avaliar_validade_fluxo(linha):
-    """Retorna validade e motivo; uma nota APTO só vira inválida quando há regra objetiva descumprida."""
+    """Retorna validade e motivo usando ausência de status como ausência, nunca como 0 implícito."""
     motivos = []
     situacao_sap = str(linha.get('SITUACAO SAP', '')).strip().upper()
     if 'BLOQUEADO' in situacao_sap or 'FINL' in situacao_sap or 'CANC' in situacao_sap:
         motivos.append(f"Status SAP bloqueado: {situacao_sap or '-'}")
 
     origem = str(linha.get('ORIGEM_BASE', '')).strip().upper()
-    st_list = normalizar_status_fluxo(valor_alias(linha, ['STATUS_LIST', 'STATUS LIST'], '0'), '0')
-    st_sisco = normalizar_status_fluxo(valor_alias(linha, ['STATUS_SISCO', 'STATUS SISCO'], '0'), '0')
+    tem_list = _coluna_status_disponivel(linha, ['STATUS_LIST', 'STATUS LIST'], 'COLUNA_STATUS_LIST_LOCALIZADA')
+    tem_sisco = _coluna_status_disponivel(linha, ['STATUS_SISCO', 'STATUS SISCO'], 'COLUNA_STATUS_SISCO_LOCALIZADA')
+
+    if tem_list:
+        st_list = normalizar_status_fluxo(valor_alias(linha, ['STATUS_LIST', 'STATUS LIST'], 'NAO INFORMADO'), 'NAO INFORMADO')
+    else:
+        st_list = 'COLUNA NAO LOCALIZADA'
+    if tem_sisco:
+        st_sisco = normalizar_status_fluxo(valor_alias(linha, ['STATUS_SISCO', 'STATUS SISCO'], 'NAO INFORMADO'), 'NAO INFORMADO')
+    else:
+        st_sisco = 'COLUNA NAO LOCALIZADA'
 
     if origem == 'LEVANTAMENTO':
-        if st_list not in STATUS_LIST_VALIDOS:
+        if not tem_list:
+            motivos.append('Coluna STATUS LIST não localizada')
+        elif st_list not in STATUS_LIST_VALIDOS:
             motivos.append(f"Status LIST não permitido: {st_list}")
-        if st_sisco not in STATUS_SISCO_VALIDOS:
+        if not tem_sisco:
+            motivos.append('Coluna STATUS SISCO não localizada')
+        elif st_sisco not in STATUS_SISCO_VALIDOS:
             motivos.append(f"Status SISCO não permitido: {st_sisco}")
 
     return {
@@ -166,6 +196,28 @@ def avaliar_validade_fluxo(linha):
         'status_list_normalizado': st_list,
         'status_sisco_normalizado': st_sisco,
     }
+
+
+def classificar_situacao_sap(nota, status_dict, status_sap_localizado, notas_lev_cadastradas):
+    """Nunca transforma ausência de informação SAP em APTO."""
+    nota = str(nota).strip()
+    if not status_sap_localizado or nota not in notas_lev_cadastradas:
+        return 'SEM REGISTRO SAP'
+    s_status = str(status_dict.get(nota, '')).strip().upper()
+    if not s_status:
+        return 'SEM STATUS SAP'
+    if 'FINL' in s_status or 'CANC' in s_status:
+        return f"BLOQUEADO ({s_status})"
+    return 'APTO'
+
+
+def fonte_validacao_sap(nota, status_sap_localizado, notas_lev_cadastradas):
+    nota = str(nota).strip()
+    if not status_sap_localizado:
+        return 'Coluna de Status SAP não localizada'
+    if nota not in notas_lev_cadastradas:
+        return 'Nota não encontrada na base Levantamento'
+    return 'Base Levantamento'
 
 
 def determinar_classificacao_analise(linha):
@@ -209,6 +261,7 @@ def montar_config_txt(config, cores=None, filtros=None):
     linhas = [
         "CONFIGURAÇÃO DA ANÁLISE CRUZADA",
         f"ID da análise: {config.get('id_analise', '-')}",
+        f"Versão das regras: {config.get('versao_regras', VERSAO_REGRAS_ANALISE)}",
         f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
         f"Arquivo Saneamento: {config.get('arquivo_saneamento', '-')}",
         f"Arquivo Levantamento: {config.get('arquivo_levantamento', '-')}",
@@ -226,6 +279,7 @@ def montar_config_txt(config, cores=None, filtros=None):
         f"Localidades corrigidas: {config.get('localidades_corrigidas', '-')}",
         f"Localidades com alertas: {config.get('localidades_alertas', '-')}",
         f"Status SAP localizado: {'SIM' if config.get('status_sap_localizado', False) else 'NÃO'}",
+        f"Registros sem confirmação SAP: {config.get('sem_registro_sap', '-')}",
         f"Duplicadas entre bases: {config.get('duplicadas_interbase', '-')}",
         f"Tempo total de processamento: {config.get('tempo_processamento_s', '-')} s",
     ]
@@ -388,7 +442,7 @@ def colaboradores_proximos_em_lote(df, lat_locs, lon_locs, nomes_locs, tipos_loc
 
 
 def auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_metros):
-    """Audita cada ocorrência duplicada e aponta a ocorrência correspondente mais próxima na outra base."""
+    """Audita duplicidades, conta ocorrências e aponta a contraparte mais próxima na outra base."""
     df_valid = df_valid.copy()
     colunas = {
         'DISTANCIA_ENTRE_DUPLICATAS_KM': np.nan,
@@ -402,9 +456,22 @@ def auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_metros):
         'DUPLICATA_LAT_DESTINO': np.nan,
         'DUPLICATA_LON_DESTINO': np.nan,
         'LINK_DUPLICATA_MAPS': '',
+        'QTD_OCORRENCIAS_NOTA': 0,
+        'QTD_OCORRENCIAS_SANEAMENTO': 0,
+        'QTD_OCORRENCIAS_LEVANTAMENTO': 0,
+        'QTD_OCORRENCIAS_OUTRA_BASE': 0,
     }
     for c, default in colunas.items():
         df_valid[c] = default
+
+    # Contagens são úteis mesmo quando existem mais de duas ocorrências da mesma NOTA.
+    notas_validas_mask = df_valid['NOTA'].apply(nota_valida)
+    totais = df_valid.loc[notas_validas_mask].groupby('NOTA').size().to_dict()
+    san_counts = df_valid.loc[notas_validas_mask & df_valid['ORIGEM_BASE'].astype(str).str.upper().eq('SANEAMENTO')].groupby('NOTA').size().to_dict()
+    lev_counts = df_valid.loc[notas_validas_mask & df_valid['ORIGEM_BASE'].astype(str).str.upper().eq('LEVANTAMENTO')].groupby('NOTA').size().to_dict()
+    df_valid['QTD_OCORRENCIAS_NOTA'] = df_valid['NOTA'].map(totais).fillna(0).astype(int)
+    df_valid['QTD_OCORRENCIAS_SANEAMENTO'] = df_valid['NOTA'].map(san_counts).fillna(0).astype(int)
+    df_valid['QTD_OCORRENCIAS_LEVANTAMENTO'] = df_valid['NOTA'].map(lev_counts).fillna(0).astype(int)
 
     raio_km = float(raio_metros) / 1000.0
 
@@ -417,6 +484,7 @@ def auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_metros):
             atual = df_valid.loc[idx]
             origem_atual = str(atual.get('ORIGEM_BASE', '')).strip().upper()
             candidatos = df_valid[(df_valid['NOTA'] == nota) & (df_valid['ORIGEM_BASE'].astype(str).str.upper() != origem_atual)]
+            df_valid.at[idx, 'QTD_OCORRENCIAS_OUTRA_BASE'] = int(len(candidatos))
             if candidatos.empty:
                 continue
 
@@ -460,6 +528,35 @@ def auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_metros):
     return df_valid
 
 
+def _max_distancia_haversine_km(lats, lons, block_size=512):
+    """Maior distância exata do cluster usando NumPy em blocos, sem matriz N x N completa."""
+    lats = np.asarray(lats, dtype=float)
+    lons = np.asarray(lons, dtype=float)
+    n = len(lats)
+    if n <= 1:
+        return 0.0
+    lat_r = np.radians(lats)
+    lon_r = np.radians(lons)
+    maior = 0.0
+    r_terra = 6371.0
+    for i0 in range(0, n, block_size):
+        i1 = min(n, i0 + block_size)
+        la = lat_r[i0:i1][:, None]
+        loa = lon_r[i0:i1][:, None]
+        for j0 in range(i0, n, block_size):
+            j1 = min(n, j0 + block_size)
+            lb = lat_r[j0:j1][None, :]
+            lob = lon_r[j0:j1][None, :]
+            dlat = lb - la
+            dlon = lob - loa
+            a = np.sin(dlat / 2.0) ** 2 + np.cos(la) * np.cos(lb) * np.sin(dlon / 2.0) ** 2
+            a = np.clip(a, 0.0, 1.0)
+            dist = 2.0 * r_terra * np.arcsin(np.sqrt(a))
+            if dist.size:
+                maior = max(maior, float(np.nanmax(dist)))
+    return maior
+
+
 def adicionar_metricas_clusters(df):
     """Acrescenta métricas do cluster sem alterar coordenadas originais das obras."""
     df = df.copy()
@@ -469,12 +566,7 @@ def adicionar_metricas_clusters(df):
     for cid, grp in df.groupby('CLUSTER_ID'):
         lats = grp['LATITUDE'].astype(float).to_numpy()
         lons = grp['LONGITUDE'].astype(float).to_numpy()
-        max_km = 0.0
-        if len(grp) > 1:
-            for i in range(len(grp)):
-                ds = haversine_vectorized(lats[i], lons[i], lats, lons)
-                if len(ds):
-                    max_km = max(max_km, float(np.max(ds)))
+        max_km = _max_distancia_haversine_km(lats, lons)
         origens = sorted(grp['ORIGEM_BASE'].dropna().astype(str).unique().tolist()) if 'ORIGEM_BASE' in grp.columns else []
         metricas[cid] = {
             'QTD_OBRAS_CLUSTER': int(len(grp)),
@@ -493,6 +585,7 @@ def adicionar_metricas_clusters(df):
 def montar_resumo_executivo(df_view, config, rejeitadas_obras=0, rejeitadas_localidades=0):
     itens = [
         ('ID da análise', config.get('id_analise', '-')),
+        ('Versão das regras', config.get('versao_regras', VERSAO_REGRAS_ANALISE)),
         ('Total filtrado', len(df_view)),
         ('Saneamento', int((df_view.get('ORIGEM_BASE', pd.Series(dtype='object')) == 'SANEAMENTO').sum())),
         ('Levantamento', int((df_view.get('ORIGEM_BASE', pd.Series(dtype='object')) == 'LEVANTAMENTO').sum())),
@@ -502,6 +595,7 @@ def montar_resumo_executivo(df_view, config, rejeitadas_obras=0, rejeitadas_loca
         ('Clusters', int(df_view['CLUSTER_ID'].nunique()) if 'CLUSTER_ID' in df_view.columns else len(df_view)),
         ('Municípios', int(df_view['MUNICIPIO'].dropna().nunique()) if 'MUNICIPIO' in df_view.columns else 0),
         ('Alertas equipe distante', int(df_view.get('ALERTA_EQUIPE_DISTANTE', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
+        ('Sem registro SAP', int(df_view.get('SITUACAO SAP', pd.Series(dtype='object')).astype(str).eq('SEM REGISTRO SAP').sum())),
         ('Coordenadas de obras rejeitadas', int(rejeitadas_obras)),
         ('Localidades rejeitadas', int(rejeitadas_localidades)),
         ('Tempo total (s)', config.get('tempo_processamento_s', '-')),
@@ -523,25 +617,29 @@ def executar_autoteste_core_analise():
         erros.append('normalização de NOTA')
 
     try:
-        # Caso real esperado: SAP APTO + SISCO Pré Análise + LIST 0 é válido.
         linha_ok = pd.Series({
             'ORIGEM_BASE': 'LEVANTAMENTO', 'SITUACAO SAP': 'APTO',
-            'STATUS SISCO': 'Pré Análise', 'STATUS LIST': 0
+            'STATUS SISCO': 'Pré Análise', 'STATUS LIST': 0,
+            'COLUNA_STATUS_SISCO_LOCALIZADA': 'SIM', 'COLUNA_STATUS_LIST_LOCALIZADA': 'SIM'
         })
         v = avaliar_validade_fluxo(linha_ok)
         if not v['valida'] or v['status_sisco_normalizado'] != 'PRE ANALISE' or v['status_list_normalizado'] != '0':
             erros.append('validação APTO/Pré Análise/0')
+        linha_sem_sisco = pd.Series({
+            'ORIGEM_BASE': 'LEVANTAMENTO', 'SITUACAO SAP': 'APTO', 'STATUS LIST': 0,
+            'COLUNA_STATUS_SISCO_LOCALIZADA': 'NÃO', 'COLUNA_STATUS_LIST_LOCALIZADA': 'SIM'
+        })
+        vv = avaliar_validade_fluxo(linha_sem_sisco)
+        if vv['valida'] or 'não localizada' not in vv['motivo'].lower():
+            erros.append('ausência de coluna SISCO não pode virar 0')
+        sem_sap = classificar_situacao_sap('999', {}, True, {'1'})
+        if sem_sap != 'SEM REGISTRO SAP':
+            erros.append('SAP inexistente não pode virar APTO')
         cor_t, nome_t = determinar_classificacao_analise(pd.Series({
             'NOTA_VALIDA_FLUXO': 'SIM', 'DUPLICADA': 'SIM', 'PROXIMA': 'NÃO', 'ORIGEM_BASE': 'LEVANTAMENTO'
         }))
         if cor_t != 'red' or 'Duplicadas' not in nome_t:
             erros.append('prioridade válida + duplicada = vermelho')
-        linha_variacao = pd.Series({
-            'ORIGEM_BASE': 'LEVANTAMENTO', 'SITUACAO SAP': 'APTO',
-            'STATUS_SISCO': 'PRÉ--ANÁLISE', 'STATUS_LIST': '0.0'
-        })
-        if not avaliar_validade_fluxo(linha_variacao)['valida']:
-            erros.append('normalização robusta SISCO/LIST')
     except Exception:
         erros.append('validação de fluxo')
 
@@ -555,21 +653,27 @@ def executar_autoteste_core_analise():
 
     try:
         d = pd.DataFrame({
-            'NOTA':['1','1'], 'ORIGEM_BASE':['SANEAMENTO','LEVANTAMENTO'], 'MUNICIPIO':['A','B'],
-            'LATITUDE':[-2.5,-3.5], 'LONGITUDE':[-44.2,-45.2],
-            'COR_NOME':['🔴 Notas Duplicadas']*2, 'COR_MAPA':['red']*2, 'CLUSTER_ID':[0,1],
-            'SITUACAO SAP':['APTO','APTO'], 'NOTA_VALIDA_FLUXO':['SIM','SIM'], 'MOTIVO_INVALIDADE':['-','-'],
-            'DUPLICADA':['SIM','SIM'], 'COLABORADORES MAIS PROXIMOS':['Equipe A','Equipe B'],
-            'ALERTA_EQUIPE_DISTANTE':['NÃO','NÃO']
+            'NOTA':['1','1','1'], 'ORIGEM_BASE':['SANEAMENTO','LEVANTAMENTO','LEVANTAMENTO'], 'MUNICIPIO':['A','A','A'],
+            'LATITUDE':[-2.5,-3.5,-2.5001], 'LONGITUDE':[-44.2,-45.2,-44.2001],
+            'COR_NOME':['🔴 Notas Duplicadas']*3, 'COR_MAPA':['red']*3, 'CLUSTER_ID':[0,1,2],
+            'SITUACAO SAP':['APTO']*3, 'NOTA_VALIDA_FLUXO':['SIM']*3, 'MOTIVO_INVALIDADE':['-']*3,
+            'DUPLICADA':['SIM']*3, 'COLABORADORES MAIS PROXIMOS':['Equipe A','Equipe B','Equipe C'],
+            'ALERTA_EQUIPE_DISTANTE':['NÃO']*3
         })
         a = auditar_duplicidades_geograficas(d, {'1'}, 100)
-        if not (a['CLASSIFICACAO_DUPLICIDADE_GEO'] == 'LOCAIS DIFERENTES').all():
-            erros.append('auditoria geográfica de duplicidade distante')
+        if not (a['QTD_OCORRENCIAS_NOTA'] == 3).all():
+            erros.append('contagem de múltiplas ocorrências')
+        # A ocorrência de Saneamento deve escolher a contraparte mais próxima, não a primeira arbitrária.
+        if a.iloc[0]['DUPLICATA_MESMO_LOCAL'] != 'SIM':
+            erros.append('seleção da contraparte mais próxima')
         if not a['LINK_DUPLICATA_MAPS'].astype(str).str.startswith('https://www.google.com/maps?q=').all():
             erros.append('link bidirecional de duplicidade')
+        mesmo_mun_distante = a[(a['ORIGEM_BASE'] == 'LEVANTAMENTO') & (a['LATITUDE'] == -3.5)].iloc[0]
+        if mesmo_mun_distante['COORDENADA_DIVERGENTE'] != 'SIM' or mesmo_mun_distante['MUNICIPIO_DIVERGENTE'] != 'NÃO':
+            erros.append('município igual com coordenada distante')
         k = gerar_kml_analise(adicionar_metricas_clusters(a))
-        if '<kml' not in k or '<Placemark>' not in k or 'Abrir outra ocorrência no Google Maps' not in k:
-            erros.append('exportação KML/link duplicidade')
+        if '<kml' not in k or '<Placemark>' not in k or 'Abrir outra ocorrência no Google Maps' not in k or 'Ligações de Duplicadas' not in k:
+            erros.append('exportação KML/link/linha duplicidade')
     except Exception:
         erros.append('auditoria/KML')
     return {'ok': not erros, 'erros': erros}
@@ -629,6 +733,7 @@ with st.sidebar:
             st.write(f"Equipes próximas: **{cfg_usada.get('qtd_equipes_proximas', '-')}**")
             st.write(f"Distância adicional: **{cfg_usada.get('distancia_max_equipe_km', '-')} km**")
             st.write(f"Alerta equipe distante: **{cfg_usada.get('distancia_alerta_equipe_km', '-')} km**")
+            st.write(f"Versão das regras: **{cfg_usada.get('versao_regras', VERSAO_REGRAS_ANALISE)}**")
 
     st.markdown("---")
 
@@ -726,6 +831,7 @@ with st.sidebar:
                         'Notas Inválidas': df_view[df_view['COR_NOME'].astype(str).str.contains('Inválidas', na=False)],
                         'Notas Duplicadas': df_view[df_view['DUPLICADA'].astype(str).eq('SIM')] if 'DUPLICADA' in df_view.columns else pd.DataFrame(),
                         'Duplicadas Locais Diferentes': df_view[classe_dup.eq('LOCAIS DIFERENTES')],
+                        'Divergencias Duplicadas': df_view[(df_view.get('COORDENADA_DIVERGENTE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM')) | (df_view.get('MUNICIPIO_DIVERGENTE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SIM'))],
                         'Notas Próximas': df_view[df_view['PROXIMA'].astype(str).eq('SIM')] if 'PROXIMA' in df_view.columns else pd.DataFrame(),
                         'Notas Solitárias': df_view[df_view['PROXIMA'].astype(str).eq('NÃO')] if 'PROXIMA' in df_view.columns else pd.DataFrame(),
                         'Coordenadas Corrigidas': df_corrigidas,
@@ -783,7 +889,7 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     st.caption(f"ID da análise: **{id_analise}**")
 
     if not config_analise.get('status_sap_localizado', True):
-        st.warning("⚠️ A coluna de Status SAP não foi localizada na base de Levantamento. O bloqueio FINL/CANC não pôde ser validado para esta execução.")
+        st.warning("⚠️ A coluna de Status SAP não foi localizada na base de Levantamento. As notas aparecem como SEM REGISTRO SAP; o sistema não presume APTO.")
 
     tempos = config_analise.get('tempos_etapas', {}) or {}
     if tempos:
@@ -824,6 +930,9 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     q6.metric("Coords. corrigidas", corrigidas)
     q7.metric("Coords. rejeitadas", rejeitadas)
     q8.metric("Equipe distante", alertas_equipe)
+    sem_sap = int(df_view.get('SITUACAO SAP', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SEM REGISTRO SAP').sum())
+    if sem_sap > 0:
+        st.info(f"ℹ️ {sem_sap} registro(s) sem confirmação SAP. Eles não são tratados automaticamente como APTO.")
 
     if rejeitadas > 0:
         with st.expander(f"⚠️ {rejeitadas} obras com coordenadas rejeitadas", expanded=False):
@@ -853,6 +962,25 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     if mostrar_mapa:
         mapa = folium.Map(location=[df_view['LATITUDE'].mean(), df_view['LONGITUDE'].mean()], zoom_start=8) if not df_view.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
         layers = {}
+        linhas_dup_layer = folium.FeatureGroup(name="🔗 Ligações de Duplicadas", show=True).add_to(mapa)
+        pares_dup_desenhados = set()
+
+        # Liga visualmente ocorrências duplicadas em locais diferentes, sem duplicar a mesma linha.
+        for _, rr in df_view.iterrows():
+            if str(rr.get("CLASSIFICACAO_DUPLICIDADE_GEO", "")) != "LOCAIS DIFERENTES":
+                continue
+            if pd.isna(rr.get("DUPLICATA_LAT_DESTINO")) or pd.isna(rr.get("DUPLICATA_LON_DESTINO")):
+                continue
+            a = (round(float(rr["LATITUDE"]), 6), round(float(rr["LONGITUDE"]), 6))
+            b = (round(float(rr["DUPLICATA_LAT_DESTINO"]), 6), round(float(rr["DUPLICATA_LON_DESTINO"]), 6))
+            chave_par = (str(rr.get("NOTA", "")), tuple(sorted([a, b])))
+            if chave_par in pares_dup_desenhados:
+                continue
+            pares_dup_desenhados.add(chave_par)
+            folium.PolyLine(
+                [a, b], color="red", weight=2, opacity=0.75, dash_array="6,6",
+                tooltip=f"Duplicata {rr.get('NOTA', '')} - {rr.get('DISTANCIA_ENTRE_DUPLICATAS_KM', '-')} km"
+            ).add_to(linhas_dup_layer)
 
         def obter_layer(nome):
             if nome not in layers:
@@ -891,10 +1019,18 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
             for _, r in grp.iterrows():
                 n = html.escape(str(r.get('NOTA', '')))
                 mun = html.escape(str(r.get('MUNICIPIO', '')))
-                o = html.escape(str(r.get('ORIGEM_BASE', '')))
+                origem_raw = str(r.get('ORIGEM_BASE', ''))
+                o = html.escape(origem_raw)
                 sap = html.escape(str(r.get('SITUACAO SAP', '')))
-                s_sisco = html.escape(valor_alias(r, ['STATUS SISCO', 'STATUS_SISCO']))
-                s_list = html.escape(valor_alias(r, ['STATUS LIST', 'STATUS_LIST']))
+                sap_fonte = html.escape(str(r.get('FONTE_VALIDACAO_SAP', '-')))
+                s_sisco_raw = valor_alias(r, ['STATUS SISCO', 'STATUS_SISCO'], '-')
+                s_list_raw = valor_alias(r, ['STATUS LIST', 'STATUS_LIST'], '-')
+                if origem_raw.strip().upper() == 'LEVANTAMENTO' and s_sisco_raw == '-':
+                    s_sisco_raw = str(r.get('STATUS_SISCO_NORMALIZADO', 'NÃO INFORMADO')).replace('NAO ', 'NÃO ')
+                if origem_raw.strip().upper() == 'LEVANTAMENTO' and s_list_raw == '-':
+                    s_list_raw = str(r.get('STATUS_LIST_NORMALIZADO', 'NÃO INFORMADO')).replace('NAO ', 'NÃO ')
+                s_sisco = html.escape(s_sisco_raw)
+                s_list = html.escape(s_list_raw)
                 col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
                 dup = html.escape(str(r.get('DUPLICADA', '')))
                 dup_geo = html.escape(str(r.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')))
@@ -904,6 +1040,11 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
                 classificacao = html.escape(str(r.get('COR_NOME', '-')))
                 motivo_inval = html.escape(str(r.get('MOTIVO_INVALIDADE', '-')))
                 nota_valida_fluxo = str(r.get('NOTA_VALIDA_FLUXO', 'SIM')).upper()
+                qtd_ocorr = int(r.get('QTD_OCORRENCIAS_NOTA', 0) or 0)
+                qtd_san = int(r.get('QTD_OCORRENCIAS_SANEAMENTO', 0) or 0)
+                qtd_lev = int(r.get('QTD_OCORRENCIAS_LEVANTAMENTO', 0) or 0)
+                link_atual = f"https://www.google.com/maps?q={float(r.get('LATITUDE')):.8f},{float(r.get('LONGITUDE')):.8f}"
+                link_atual_safe = html.escape(link_atual, quote=True)
 
                 link_dup = str(r.get('LINK_DUPLICATA_MAPS', '')).strip()
                 origem_dup = html.escape(str(r.get('DUPLICATA_ORIGEM_DESTINO', '')))
@@ -931,13 +1072,16 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
                     <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                     <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                     <tr><td style="padding:2px;"><b>SAP:</b></td><td style="padding:2px;">{sap}</td></tr>
+                    <tr><td style="padding:2px;"><b>Validação SAP:</b></td><td style="padding:2px;">{sap_fonte}</td></tr>
                     <tr><td style="padding:2px;"><b>SISCO / LIST:</b></td><td style="padding:2px;">{s_sisco} / {s_list}</td></tr>
                     {motivo_html}
                     <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                     <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup} {dup_geo}</td></tr>
+                    <tr><td style="padding:2px;"><b>Ocorrências:</b></td><td style="padding:2px;">{qtd_ocorr} (Saneamento: {qtd_san} | Levantamento: {qtd_lev})</td></tr>
                     <tr><td style="padding:2px;"><b>Dist. duplicata:</b></td><td style="padding:2px;">{dist_dup_txt}</td></tr>
                     <tr><td style="padding:2px;"><b>Equipe distante:</b></td><td style="padding:2px;">{alert_eq}</td></tr>
                 </table>
+                <div style='margin:6px 0;'><a href='{link_atual_safe}' target='_blank' style='color:#0D47A1;font-weight:bold;text-decoration:none;'>📍 Abrir este ponto no Google Maps</a></div>
                 {link_dup_html}
                 <hr style="margin:4px 0; border:0; border-top:1px solid #ccc;">
                 '''
@@ -1013,6 +1157,11 @@ else:
 
             df_san = preparar_base_obras(df_san_raw, 'SANEAMENTO')
             df_lev = preparar_base_obras(df_lev_raw, 'LEVANTAMENTO')
+
+            col_sisco_lev = encontrar_coluna(df_lev, ['STATUS_SISCO', 'STATUS SISCO'])
+            col_list_lev = encontrar_coluna(df_lev, ['STATUS_LIST', 'STATUS LIST'])
+            df_lev['COLUNA_STATUS_SISCO_LOCALIZADA'] = 'SIM' if col_sisco_lev is not None else 'NÃO'
+            df_lev['COLUNA_STATUS_LIST_LOCALIZADA'] = 'SIM' if col_list_lev is not None else 'NÃO'
             tempos_etapas['Leitura/Padronização'] = round(time.time() - t_etapa, 3)
 
             t_etapa = time.time()
@@ -1090,6 +1239,7 @@ else:
             render_t(0.36, "Validando Status SAP (Bloqueios)...")
             status_col = encontrar_coluna(df_lev, ['STATUS_SAP', 'STATUS SAP', 'STATUS'])
             status_sap_localizado = status_col is not None
+            notas_lev_cadastradas = set(df_lev.loc[df_lev['NOTA'].apply(nota_valida), 'NOTA'].astype(str))
             status_dict = {}
             if status_col:
                 tmp_status = df_lev[['NOTA', status_col]].copy()
@@ -1110,14 +1260,10 @@ else:
 
                 status_dict = tmp_status.groupby('NOTA')['_STATUS'].agg(consolidar_status).to_dict()
 
-            def get_situacao(nota):
-                s_status = str(status_dict.get(nota, '')).strip().upper()
-                if 'FINL' in s_status or 'CANC' in s_status:
-                    return f"BLOQUEADO ({s_status})"
-                return "APTO"
-
-            df_san['SITUACAO SAP'] = df_san['NOTA'].apply(get_situacao)
-            df_lev['SITUACAO SAP'] = df_lev['NOTA'].apply(get_situacao)
+            df_san['SITUACAO SAP'] = df_san['NOTA'].apply(lambda n: classificar_situacao_sap(n, status_dict, status_sap_localizado, notas_lev_cadastradas))
+            df_lev['SITUACAO SAP'] = df_lev['NOTA'].apply(lambda n: classificar_situacao_sap(n, status_dict, status_sap_localizado, notas_lev_cadastradas))
+            df_san['FONTE_VALIDACAO_SAP'] = df_san['NOTA'].apply(lambda n: fonte_validacao_sap(n, status_sap_localizado, notas_lev_cadastradas))
+            df_lev['FONTE_VALIDACAO_SAP'] = df_lev['NOTA'].apply(lambda n: fonte_validacao_sap(n, status_sap_localizado, notas_lev_cadastradas))
 
             render_t(0.44, "Verificando duplicidades nas bases...")
             notas_san_validas = df_san.loc[df_san['NOTA'].apply(nota_valida), 'NOTA']
@@ -1243,11 +1389,14 @@ else:
             df_final['ID_ANALISE'] = id_analise
 
             front_cols = [
-                'ID_ANALISE', 'NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'NOTA_VALIDA_FLUXO',
-                'MOTIVO_INVALIDADE', 'STATUS_SISCO_NORMALIZADO', 'STATUS_LIST_NORMALIZADO', 'DUPLICADA',
+                'ID_ANALISE', 'NOTA', 'ORIGEM_BASE', 'SITUACAO SAP', 'FONTE_VALIDACAO_SAP', 'NOTA_VALIDA_FLUXO',
+                'MOTIVO_INVALIDADE', 'STATUS_SISCO_NORMALIZADO', 'STATUS_LIST_NORMALIZADO',
+                'COLUNA_STATUS_SISCO_LOCALIZADA', 'COLUNA_STATUS_LIST_LOCALIZADA', 'DUPLICADA',
                 'DUPLICADA_INTERBASE', 'REPETIDA_NA_ORIGEM', 'CLASSIFICACAO_DUPLICIDADE_GEO',
                 'DISTANCIA_ENTRE_DUPLICATAS_KM', 'DUPLICATA_MESMO_LOCAL', 'COORDENADA_DIVERGENTE',
-                'MUNICIPIO_DIVERGENTE', 'DUPLICATA_NOTA_DESTINO', 'DUPLICATA_ORIGEM_DESTINO',
+                'MUNICIPIO_DIVERGENTE', 'QTD_OCORRENCIAS_NOTA', 'QTD_OCORRENCIAS_SANEAMENTO',
+                'QTD_OCORRENCIAS_LEVANTAMENTO', 'QTD_OCORRENCIAS_OUTRA_BASE',
+                'DUPLICATA_NOTA_DESTINO', 'DUPLICATA_ORIGEM_DESTINO',
                 'DUPLICATA_MUNICIPIO_DESTINO', 'DUPLICATA_LAT_DESTINO', 'DUPLICATA_LON_DESTINO',
                 'LINK_DUPLICATA_MAPS', 'PROXIMA', 'COLABORADORES MAIS PROXIMOS',
                 'EQUIPE_1', 'TIPO_EQUIPE_1', 'DISTANCIA_EQUIPE_1_KM',
@@ -1263,6 +1412,7 @@ else:
 
             config = {
                 'id_analise': id_analise,
+                'versao_regras': VERSAO_REGRAS_ANALISE,
                 'arquivo_saneamento': file_san.name,
                 'arquivo_levantamento': file_lev.name,
                 'arquivo_localidades': file_loc.name,
@@ -1279,6 +1429,7 @@ else:
                 'localidades_corrigidas': int(len(df_loc_corr)),
                 'localidades_alertas': int(len(st.session_state.get('df_loc_alertas_analise', pd.DataFrame()))),
                 'status_sap_localizado': bool(status_sap_localizado),
+                'sem_registro_sap': int(df_final['SITUACAO SAP'].astype(str).eq('SEM REGISTRO SAP').sum()),
                 'duplicadas_interbase': int(len(duplicadas_inter)),
                 'linhas_duplicadas_interbase': int(df_final['DUPLICADA'].astype(str).eq('SIM').sum()),
                 'repetidas_saneamento': int(len(rep_san)),
@@ -1297,4 +1448,12 @@ else:
             st.rerun()
 
         except Exception as e:
-            st.error(f"🚨 Erro durante a análise: {e}")
+            codigo_erro = f"ANLERR-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+            detalhe_erro = traceback.format_exc()
+            st.session_state.ultimo_erro_analise = {
+                'codigo': codigo_erro, 'tipo': type(e).__name__, 'mensagem': str(e),
+                'data_hora': datetime.now().isoformat(timespec='seconds')
+            }
+            print(f"[ANALISE CRUZADA][{codigo_erro}]\n{detalhe_erro}")
+            st.error(f"🚨 Não foi possível concluir a análise. Código de diagnóstico: {codigo_erro}")
+            st.caption("O detalhe técnico foi registrado no log da aplicação para diagnóstico, sem expor informações internas na tela.")
