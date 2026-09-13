@@ -1496,6 +1496,11 @@ else:
             modo_ancora = 'Base fixa'
         else:
             modo_ancora = st.radio('Referência para proximidade:', ['Base fixa', 'Âncora dinâmica', 'Balanceada'], index=2, disabled=is_locked)
+            st.caption(
+                "**Base fixa:** usa sempre a base/residência da equipe como referência de distância.  \n"
+                "**Âncora dinâmica:** após cada atribuição, a última obra recebida passa a ser a nova referência, favorecendo continuidade geográfica.  \n"
+                "**Balanceada:** combina 60% da distância até a base com 40% da distância até a última obra atribuída. Em todos os modos, a capacidade/carga da equipe também é considerada."
+            )
         dist_max_atribuicao = st.number_input('Distância máxima por proximidade (km, 0 = ilimitado):', min_value=0.0, max_value=2000.0, value=0.0, step=10.0, disabled=('Município' in ta or is_continuo))
 
     with c_up2:
@@ -1687,7 +1692,17 @@ else:
         colunas_exibir = st.multiselect('Colunas que vão aparecer no Mapa e Excel:', tc, default=cp)
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
-    if st.button('🚀 Iniciar Motor de Roteirização', type='primary', use_container_width=True):
+    c_iniciar, c_abortar = st.columns([3, 1])
+    with c_iniciar:
+        iniciar_motor = st.button('🚀 Iniciar Motor de Roteirização', type='primary', use_container_width=True)
+    with c_abortar:
+        abortar_preparacao = st.button('⏹️ Abortar', key='abortar_preparacao_san', use_container_width=True)
+
+    if abortar_preparacao:
+        limpar_roteirizador()
+        st.stop()
+
+    if iniciar_motor:
         id_exec = criar_id_execucao()
         tbr = df_bases.to_dict('records')
         b_names = list(dict.fromkeys(df_ta['BASE_ATRIBUIDA'].astype(str).tolist()))
@@ -1731,8 +1746,9 @@ else:
 # ==============================================================
 if status_exec == 'RUNNING':
     st.markdown('## 🚀 Execução do Motor Saneamento')
-    if st.button('⏹️ Abortar Execução', use_container_width=True):
+    if st.button('⏹️ Abortar Execução', key='abortar_execucao_san', use_container_width=True):
         limpar_roteirizador()
+        st.stop()
 
     st_run = st.session_state.get('start_time_run_san', time.time())
     if 'start_time_run_san' not in st.session_state:
