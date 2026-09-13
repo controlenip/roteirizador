@@ -1010,6 +1010,7 @@ def limpar_roteirizador():
     })
     for k in [
         'bytes_zip_xl_san', 'bytes_zip_kml_san', 'bytes_zip_gpx_san', 'start_time_run_san',
+        'timer_execucao_id_san', 'team_started_at_san', 'team_started_idx_san', 'team_durations_san',
         'df_unallocated_san', 'df_correcao_san', 'df_bases_correcao_san', 'df_duplicadas_san',
         'df_duplicadas_removidas_san', 'df_duplicadas_divergentes_san', 'df_fora_filtro_san', 'df_sem_nota_san', 'df_fora_trava_san', 'df_dashboard_equipes_san', 'config_execucao_san', 'mostrar_mapa_san'
     ]:
@@ -1737,6 +1738,14 @@ else:
         }
         for k in ['bytes_zip_xl_san', 'bytes_zip_kml_san', 'bytes_zip_gpx_san']:
             st.session_state.pop(k, None)
+        # Reinicia explicitamente o cronômetro a cada nova execução.
+        # Isso evita reaproveitar um start_time antigo após erro/reload do Streamlit.
+        agora_exec = time.time()
+        st.session_state.start_time_run_san = agora_exec
+        st.session_state.timer_execucao_id_san = id_exec
+        st.session_state.team_started_at_san = agora_exec
+        st.session_state.team_started_idx_san = 0
+        st.session_state.team_durations_san = []
         st.session_state.vrp_status_san = 'RUNNING'
         tentar_rerun()
 
@@ -1750,10 +1759,6 @@ if status_exec == 'RUNNING':
         limpar_roteirizador()
         st.stop()
 
-    st_run = st.session_state.get('start_time_run_san', time.time())
-    if 'start_time_run_san' not in st.session_state:
-        st.session_state.start_time_run_san = st_run
-
     pb = st.progress(0.0)
     tmp = st.empty()
     sgt = st.empty()
@@ -1762,12 +1767,70 @@ if status_exec == 'RUNNING':
     b_n = st_v['b_names']
     b_i = st_v.get('b_idx', 0)
 
+    # O cronômetro pertence ao ID da execução atual. Se houver qualquer estado antigo
+    # deixado por erro/reload, ele é descartado automaticamente.
+    exec_id_atual = cfg.get('id_execucao', '')
+    if st.session_state.get('timer_execucao_id_san') != exec_id_atual:
+        agora_exec = time.time()
+        st.session_state.start_time_run_san = agora_exec
+        st.session_state.timer_execucao_id_san = exec_id_atual
+        st.session_state.team_started_at_san = agora_exec
+        st.session_state.team_started_idx_san = b_i
+        st.session_state.team_durations_san = []
+    st_run = float(st.session_state.get('start_time_run_san', time.time()))
+
+    # Reinicia a medição da equipe somente quando muda o índice da equipe.
+    if st.session_state.get('team_started_idx_san') != b_i:
+        st.session_state.team_started_idx_san = b_i
+        st.session_state.team_started_at_san = time.time()
+
+    def _fmt_duracao(segundos):
+        segundos = max(0, int(segundos))
+        h, resto = divmod(segundos, 3600)
+        m, ss = divmod(resto, 60)
+        return f'{h:02d}h {m:02d}m' if h > 0 else f'{m:02d}m {ss:02d}s'
+
     def render_t(bi, ii, it):
-        e = time.time() - st_run
-        f = (bi + (ii / max(1, it))) / max(1, len(b_n))
-        rs = f"{divmod(int(max(0, (e/f)-e)), 60)[0]:02d}m {divmod(int(max(0, (e/f)-e)), 60)[1]:02d}s" if f > 0.02 else 'Calc...'
-        es = f"{divmod(int(e), 60)[0]:02d}m {divmod(int(e), 60)[1]:02d}s"
-        tmp.markdown(f'<div style="display:flex;gap:15px;margin-bottom:20px;"><div style="flex:1;padding:20px;border-radius:10px;background:#f8f9fa;border:1px solid #dee2e6;text-align:center;"><b>⏱️ Decorrido</b><div style="font-size:2rem;color:#0D256C;font-weight:bold;">{es}</div></div><div style="flex:1;padding:20px;border-radius:10px;background:#e8f5e9;border:1px solid #a5d6a7;text-align:center;"><b>🎯 Restante</b><div style="font-size:2rem;color:#1b5e20;font-weight:bold;">{rs}</div></div></div>', unsafe_allow_html=True)
+        agora = time.time()
+        e = max(0.0, agora - st_run)
+        frac_equipe = min(1.0, max(0.0, float(ii) / max(1.0, float(it))))
+        f = min(1.0, max(0.0, (float(bi) + frac_equipe) / max(1.0, float(len(b_n)))))
+
+        # ETA suavizada pelo tempo real das equipes já concluídas. Durante a primeira
+        # equipe, usa o progresso dos segmentos assim que houver uma amostra útil.
+        historico = [float(x) for x in st.session_state.get('team_durations_san', []) if float(x) > 0]
+        eta_s = None
+        if historico:
+            amostra = historico[-10:]
+            media_equipe = sum(amostra) / len(amostra)
+            restantes_inteiras = max(0, len(b_n) - int(bi) - 1)
+            if frac_equipe > 0.03:
+                dec_equipe = max(0.0, agora - float(st.session_state.get('team_started_at_san', agora)))
+                total_equipe_estimado = dec_equipe / frac_equipe
+                restante_equipe = max(0.0, total_equipe_estimado - dec_equipe)
+            else:
+                restante_equipe = media_equipe
+            eta_s = restante_equipe + (media_equipe * restantes_inteiras)
+        elif frac_equipe > 0.03:
+            dec_equipe = max(0.0, agora - float(st.session_state.get('team_started_at_san', agora)))
+            total_equipe_estimado = dec_equipe / frac_equipe
+            restantes_inteiras = max(0, len(b_n) - int(bi) - 1)
+            eta_s = max(0.0, total_equipe_estimado - dec_equipe) + total_equipe_estimado * restantes_inteiras
+        elif f > 0.02 and e > 1:
+            eta_s = max(0.0, (e / f) - e)
+
+        rs = _fmt_duracao(eta_s) if eta_s is not None else 'Estimando...'
+        es = _fmt_duracao(e)
+        pct = f * 100.0
+        tmp.markdown(
+            f'<div style="display:flex;gap:15px;margin-bottom:10px;">'
+            f'<div style="flex:1;padding:20px;border-radius:10px;background:#f8f9fa;border:1px solid #dee2e6;text-align:center;">'
+            f'<b>⏱️ Decorrido</b><div style="font-size:2rem;color:#0D256C;font-weight:bold;">{es}</div></div>'
+            f'<div style="flex:1;padding:20px;border-radius:10px;background:#e8f5e9;border:1px solid #a5d6a7;text-align:center;">'
+            f'<b>🎯 Restante estimado</b><div style="font-size:2rem;color:#1b5e20;font-weight:bold;">{rs}</div></div></div>'
+            f'<div style="font-size:12px;color:#6c757d;margin-bottom:8px;">Progresso medido: {pct:.1f}% — a estimativa fica mais precisa após a primeira equipe/lote concluído.</div>',
+            unsafe_allow_html=True
+        )
 
     try:
         if b_i < len(b_n):
@@ -1938,6 +2001,13 @@ if status_exec == 'RUNNING':
                 ordem_por_dia[chave_dia] += 1
 
             st_v['routed_data'].extend(rdf)
+            # Registra a duração real da equipe para estabilizar a estimativa restante.
+            inicio_equipe = float(st.session_state.get('team_started_at_san', time.time()))
+            duracao_equipe = max(0.0, time.time() - inicio_equipe)
+            historico_equipes = list(st.session_state.get('team_durations_san', []))
+            if duracao_equipe > 0:
+                historico_equipes.append(duracao_equipe)
+                st.session_state.team_durations_san = historico_equipes[-20:]
             for chave in ['c_rotas', 'c_idx', 'current_geoms', 'team_tasks', 'cfg_equipe_atual', 'base_atual']:
                 st_v.pop(chave, None)
             st_v['b_idx'] += 1
@@ -1972,7 +2042,8 @@ if status_exec == 'RUNNING':
             st.session_state.df_dashboard_equipes_san = montar_dashboard_equipes(df_final, bases_df, cfg_final)
             st.session_state.roteamento_concluido_san = True
             st.session_state.vrp_status_san = 'IDLE'
-            st.session_state.pop('start_time_run_san', None)
+            for chave_timer in ['start_time_run_san', 'timer_execucao_id_san', 'team_started_at_san', 'team_started_idx_san', 'team_durations_san']:
+                st.session_state.pop(chave_timer, None)
             # Libera estruturas intermediárias pesadas; resultados e cache exportável ficam fora do motor.
             st.session_state.vrp_state_san = {'config': cfg_final}
             gc.collect()
@@ -1983,3 +2054,6 @@ if status_exec == 'RUNNING':
         print(f'[{erro_id}] Falha no Roteirizador Saneamento:\n{traceback.format_exc()}')
         st.error(f'🚨 Não foi possível concluir esta etapa. Código para suporte: {erro_id}')
         st.session_state.vrp_status_san = 'IDLE'
+        # Não deixa um cronômetro antigo contaminar a próxima execução.
+        for chave_timer in ['start_time_run_san', 'timer_execucao_id_san', 'team_started_at_san', 'team_started_idx_san', 'team_durations_san']:
+            st.session_state.pop(chave_timer, None)
