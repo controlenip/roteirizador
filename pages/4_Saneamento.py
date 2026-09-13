@@ -11,7 +11,9 @@ import gc
 import uuid
 import unicodedata
 import traceback
+import math
 from datetime import datetime, time as dt_time
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
@@ -29,15 +31,788 @@ from modules.export_saneamento import (
     gerar_excel_generico,
 )
 
-from modules.saneamento_engine import (
-    VERSAO_REGRAS_SANEAMENTO, DIAS_NOMES, DIAS_MAP, remover_acentos_str, normalizar_texto,
-    limpar_protocolo_serie, peso_tarefa, validar_coordenadas_obras, auditar_duplicidades,
-    deduplicar_apenas_exatas, aplicar_trava_global, preparar_ids_equipes, atribuir_tarefas_equipes,
-    aplicar_config_equipe, capacidade_total_equipe, tempo_servico_registro, distancia_geometria_km,
-    estimar_deslocamento, aplicar_intervalo_almoco, data_trabalho_por_indice, periodo_do_dia,
-    ordenar_bloco_rota, construir_plano_rota_equipe, detectar_reagendamento_osrm,
-    calcular_reconciliacao, montar_dashboard_equipes, validar_par_coordenadas,
-)
+# ==============================================================
+# MOTOR SANEAMENTO EMBUTIDO
+# ==============================================================
+# Mantido dentro desta pagina para compatibilidade com Streamlit Cloud.
+# Assim, a pagina nao depende da existencia de modules/saneamento_engine.py.
+_haversine_scalar = haversine_scalar
+_resolver_tsp_ortools = resolver_tsp_ortools
+
+VERSAO_REGRAS_SANEAMENTO = "2026.09.2"
+DIAS_NOMES = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+DIAS_MAP = {nome: i for i, nome in enumerate(DIAS_NOMES)}
+
+
+def haversine_scalar(lat1, lon1, lat2, lon2):
+    if _haversine_scalar is not None:
+        return float(_haversine_scalar(lat1, lon1, lat2, lon2))
+    r = 6371.0
+    p1, p2 = math.radians(float(lat1)), math.radians(float(lat2))
+    dp = math.radians(float(lat2) - float(lat1))
+    dl = math.radians(float(lon2) - float(lon1))
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def remover_acentos_str(texto):
+    if not isinstance(texto, str):
+        texto = str(texto)
+    return "".join(c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c))
+
+
+def normalizar_texto(valor):
+    if pd.isna(valor):
+        return ""
+    s = remover_acentos_str(str(valor)).upper().strip()
+    s = re.sub(r"[^A-Z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def limpar_protocolo_serie(serie):
+    s = serie.astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
+    invalidos = {"", "NAN", "NONE", "NULL", "-"}
+    return s.mask(s.str.upper().isin(invalidos), "")
+
+
+def peso_tarefa(registro):
+    orig = registro.get("_ORIGINAL_ROWS") if hasattr(registro, "get") else None
+    return len(orig) if isinstance(orig, list) and orig else 1
+
+
+def _to_float_coord(v):
+    if pd.isna(v):
+        return np.nan
+    try:
+        return float(str(v).strip().replace(",", "."))
+    except Exception:
+        return np.nan
+
+
+def validar_par_coordenadas(lat, lon, exigir_negativas=True):
+    lat = _to_float_coord(lat)
+    lon = _to_float_coord(lon)
+    if pd.isna(lat) or pd.isna(lon):
+        return False, "Coordenada Inválida"
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        return False, "Coordenada Fora dos Limites Geográficos"
+    if lat == 0.0 or lon == 0.0:
+        return False, "Coordenada Zerada"
+    if exigir_negativas and (lat > 0 or lon > 0):
+        return False, "Coordenada Positiva"
+    if abs(lat) > abs(lon):
+        return False, "Possível Latitude/Longitude Invertida"
+    return True, ""
+
+
+def resolver_coordenadas_obras(df_tasks):
+    """Resolve coordenadas linha a linha, priorizando PROJETO e usando fallback padrão."""
+    df = df_tasks.copy()
+    has_lp = "LATITUDE PROJETO" in df.columns
+    has_lop = "LONGITUDE PROJETO" in df.columns
+    has_l = "LATITUDE" in df.columns
+    has_lo = "LONGITUDE" in df.columns
+
+    lat_out, lon_out, fontes, motivos = [], [], [], []
+    lat_orig, lon_orig = [], []
+    for _, r in df.iterrows():
+        candidatos = []
+        if has_lp and has_lop:
+            candidatos.append(("PROJETO", r.get("LATITUDE PROJETO"), r.get("LONGITUDE PROJETO")))
+        if has_l and has_lo:
+            candidatos.append(("PADRAO", r.get("LATITUDE"), r.get("LONGITUDE")))
+
+        escolhido = None
+        erros = []
+        for fonte, la_raw, lo_raw in candidatos:
+            ok, motivo = validar_par_coordenadas(la_raw, lo_raw)
+            if ok:
+                escolhido = (fonte, _to_float_coord(la_raw), _to_float_coord(lo_raw), la_raw, lo_raw)
+                break
+            erros.append(f"{fonte}: {motivo}")
+
+        if escolhido:
+            fonte, la, lo, la_raw, lo_raw = escolhido
+            lat_out.append(la)
+            lon_out.append(lo)
+            fontes.append(fonte)
+            motivos.append("")
+            lat_orig.append(la_raw)
+            lon_orig.append(lo_raw)
+        else:
+            # Mantém os primeiros valores disponíveis apenas para auditoria.
+            la_raw = candidatos[0][1] if candidatos else np.nan
+            lo_raw = candidatos[0][2] if candidatos else np.nan
+            lat_out.append(_to_float_coord(la_raw))
+            lon_out.append(_to_float_coord(lo_raw))
+            fontes.append("SEM_COORDENADA_VALIDA")
+            motivos.append(" | ".join(erros) if erros else "Colunas de coordenadas ausentes")
+            lat_orig.append(la_raw)
+            lon_orig.append(lo_raw)
+
+    df["LATITUDE_ORIGINAL"] = lat_orig
+    df["LONGITUDE_ORIGINAL"] = lon_orig
+    df["LATITUDE"] = lat_out
+    df["LONGITUDE"] = lon_out
+    df["FONTE_COORDENADA"] = fontes
+    df["MOTIVO_REJEICAO"] = motivos
+    return df
+
+
+def validar_coordenadas_obras(df_tasks):
+    df = resolver_coordenadas_obras(df_tasks)
+    valid_mask = df["FONTE_COORDENADA"].ne("SEM_COORDENADA_VALIDA")
+    return df[valid_mask].copy(), df[~valid_mask].copy()
+
+
+def distancia_geometria_km(geom):
+    if not isinstance(geom, list) or len(geom) < 2:
+        return np.nan
+    total = 0.0
+    anterior = None
+    for pt in geom:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        atual = (float(pt[1]), float(pt[0]))
+        if anterior is not None:
+            total += haversine_scalar(anterior[0], anterior[1], atual[0], atual[1])
+        anterior = atual
+    return total if anterior is not None else np.nan
+
+
+def estimar_deslocamento(lat1, lon1, lat2, lon2, velocidade_media_kmh):
+    d_reta = haversine_scalar(float(lat1), float(lon1), float(lat2), float(lon2))
+    d_est = d_reta * 1.3
+    vel = float(velocidade_media_kmh) * (1.5 if d_est > 20 else 1.0)
+    tempo_min = (d_est / max(1.0, vel)) * 60.0
+    return d_est, tempo_min
+
+
+def aplicar_intervalo_almoco(inicio, duracao_min, cfg):
+    if not cfg.get("usar_intervalo_almoco", True):
+        return inicio
+    data = inicio.date()
+    a_ini = datetime.combine(data, cfg["almoco_inicio"])
+    a_fim = datetime.combine(data, cfg["almoco_fim"])
+    fim_prev = inicio + pd.Timedelta(minutes=float(duracao_min))
+    if a_ini <= inicio < a_fim:
+        return a_fim
+    if inicio < a_ini < fim_prev:
+        return a_fim
+    return inicio
+
+
+def data_trabalho_por_indice(data_inicio, indice, dias_selecionados):
+    dias_ok = [DIAS_MAP[d] for d in dias_selecionados if d in DIAS_MAP] if dias_selecionados else list(range(7))
+    atual = pd.Timestamp(data_inicio).normalize()
+    while atual.weekday() not in dias_ok:
+        atual += pd.Timedelta(days=1)
+    contador = 1
+    while contador < indice:
+        atual += pd.Timedelta(days=1)
+        if atual.weekday() in dias_ok:
+            contador += 1
+    return atual.to_pydatetime()
+
+
+def periodo_do_dia(indice_dia, tipo_periodo, dias_selecionados):
+    qtd_dias_semana = max(1, len(dias_selecionados) if dias_selecionados else 7)
+    semana = ((indice_dia - 1) // qtd_dias_semana) + 1
+    dia_na_semana = ((indice_dia - 1) % qtd_dias_semana) + 1
+    periodo = semana if tipo_periodo == "Semana" else indice_dia
+    return semana, dia_na_semana, periodo
+
+
+def parse_hora(valor, default):
+    if isinstance(valor, dt_time):
+        return valor
+    if isinstance(valor, pd.Timestamp):
+        return valor.time().replace(second=0, microsecond=0)
+    if pd.isna(valor) or str(valor).strip() == "":
+        return default
+    s = str(valor).strip()
+    for fmt in ["%H:%M", "%H:%M:%S"]:
+        try:
+            return datetime.strptime(s, fmt).time()
+        except Exception:
+            pass
+    return default
+
+
+def parse_dias_trabalho(valor, default):
+    if pd.isna(valor) or str(valor).strip() == "":
+        return list(default)
+    partes = re.split(r"[;,|/]+", str(valor))
+    norm_to_day = {normalizar_texto(d): d for d in DIAS_NOMES}
+    out = []
+    for p in partes:
+        n = normalizar_texto(p)
+        # Permite SEGUNDA-FEIRA / SEG etc.
+        cand = None
+        for nd, original in norm_to_day.items():
+            if n == nd or n.startswith(nd[:3]):
+                cand = original
+                break
+        if cand and cand not in out:
+            out.append(cand)
+    return out or list(default)
+
+
+def aplicar_config_equipe(cfg_global, base_row):
+    cfg = dict(cfg_global)
+    cota = pd.to_numeric(base_row.get("COTA_DIA"), errors="coerce")
+    if pd.notna(cota) and float(cota) > 0:
+        cfg["obras_por_dia"] = int(cota)
+    cfg["hora_inicio"] = parse_hora(base_row.get("HORA_INICIO"), cfg_global["hora_inicio"])
+    cfg["hora_fim"] = parse_hora(base_row.get("HORA_FIM"), cfg_global["hora_fim"])
+    cfg["dias_selecionados"] = parse_dias_trabalho(base_row.get("DIAS_TRABALHO"), cfg_global.get("dias_selecionados", []))
+    cfg["config_equipe_aplicada"] = {
+        "COTA_DIA": cfg["obras_por_dia"],
+        "HORA_INICIO": cfg["hora_inicio"].strftime("%H:%M"),
+        "HORA_FIM": cfg["hora_fim"].strftime("%H:%M"),
+        "DIAS_TRABALHO": ", ".join(cfg["dias_selecionados"]),
+    }
+    return cfg
+
+
+def max_dias_planejamento(cfg):
+    if cfg.get("modo_continuo", False):
+        return None
+    if cfg.get("tipo_periodo") == "Dia":
+        return int(cfg.get("limite_periodos", 1))
+    dias_semana = max(1, len(cfg.get("dias_selecionados") or []) or 7)
+    return int(cfg.get("limite_periodos", 1)) * dias_semana
+
+
+def capacidade_total_equipe(cfg):
+    md = max_dias_planejamento(cfg)
+    if md is None:
+        return float("inf")
+    return int(cfg.get("obras_por_dia", 1)) * int(md)
+
+
+def tempo_servico_registro(registro, cfg):
+    """Tempo de atendimento por tipo de demanda; Super Ponto pode somar obra a obra."""
+    tabela = {normalizar_texto(k): float(v) for k, v in (cfg.get("tempos_por_tipo_demanda") or {}).items() if float(v) > 0}
+    padrao = float(cfg.get("tempo_medio_obra_min", 45.0))
+
+    def tempo_um(r):
+        tipo = normalizar_texto(r.get("TIPO DEMANDA", "")) if hasattr(r, "get") else ""
+        melhor = None
+        for chave, minutos in tabela.items():
+            if chave and chave in tipo and (melhor is None or len(chave) > len(melhor[0])):
+                melhor = (chave, minutos)
+        return float(melhor[1]) if melhor else padrao
+
+    orig = registro.get("_ORIGINAL_ROWS") if hasattr(registro, "get") else None
+    if isinstance(orig, list) and orig:
+        if cfg.get("tempo_super_ponto_por_obra", True):
+            return sum(tempo_um(o) for o in orig)
+        return tempo_um(registro)
+    return tempo_um(registro)
+
+
+def _resolver_tsp(grupo, la, lo, url):
+    if _resolver_tsp_ortools is not None:
+        return _resolver_tsp_ortools(grupo, la, lo, url)
+    # Fallback determinístico por vizinho mais próximo.
+    restantes = [dict(x) for x in grupo]
+    ordem = []
+    cl, co = la, lo
+    while restantes:
+        idx = min(range(len(restantes)), key=lambda i: haversine_scalar(cl, co, restantes[i]["LATITUDE"], restantes[i]["LONGITUDE"]))
+        nx = restantes.pop(idx)
+        ordem.append(nx)
+        cl, co = float(nx["LATITUDE"]), float(nx["LONGITUDE"])
+    return ordem
+
+
+def ordenar_bloco_rota(tarefas, lat_inicio, lon_inicio, sentido_rota, url_osrm_base):
+    """Prioridade é preservada: otimiza primeiro alta prioridade, depois as demais."""
+    tarefas = [dict(x) for x in tarefas]
+    if not tarefas:
+        return []
+    altas = [x for x in tarefas if str(x.get("PRIORIDADE", "")).strip().upper() == "SIM"]
+    normais = [x for x in tarefas if str(x.get("PRIORIDADE", "")).strip().upper() != "SIM"]
+    saida = []
+    atual_lat, atual_lon = float(lat_inicio), float(lon_inicio)
+
+    def ordenar_grupo(grupo, la, lo):
+        grupo = [dict(x) for x in grupo]
+        if not grupo:
+            return []
+        if "Varredura Reversa" in str(sentido_rota):
+            primeiro = max(range(len(grupo)), key=lambda i: haversine_scalar(la, lo, grupo[i]["LATITUDE"], grupo[i]["LONGITUDE"]))
+            ordem = [grupo.pop(primeiro)]
+            cl, co = float(ordem[0]["LATITUDE"]), float(ordem[0]["LONGITUDE"])
+            while grupo:
+                idx = min(range(len(grupo)), key=lambda i: haversine_scalar(cl, co, grupo[i]["LATITUDE"], grupo[i]["LONGITUDE"]))
+                nx = grupo.pop(idx)
+                ordem.append(nx)
+                cl, co = float(nx["LATITUDE"]), float(nx["LONGITUDE"])
+            return ordem
+        try:
+            ordem = _resolver_tsp(grupo, la, lo, url_osrm_base)
+            return ordem if ordem else grupo
+        except Exception:
+            return _resolver_tsp(grupo, la, lo, None)
+
+    for grupo in [altas, normais]:
+        ord_g = ordenar_grupo(grupo, atual_lat, atual_lon)
+        if ord_g:
+            saida.extend(ord_g)
+            atual_lat, atual_lon = float(ord_g[-1]["LATITUDE"]), float(ord_g[-1]["LONGITUDE"])
+    return saida
+
+
+def auditar_duplicidades(df, tolerancia_exata_m=30.0, colunas_principais=None):
+    """Classifica duplicidades em EXATA ou DIVERGENTE sem descartar dados."""
+    out = df.copy()
+    if out.empty:
+        return out
+    if colunas_principais is None:
+        colunas_principais = ["MUNICIPIO", "TIPO DEMANDA", "INSTALACAO", "CONTA CONTRATO"]
+
+    out["QTD_OCORRENCIAS_NOTA"] = out.groupby("PROTOCOLO")["PROTOCOLO"].transform("size")
+    out["QTD_ARQUIVOS_NOTA"] = out.groupby("PROTOCOLO")["ARQUIVO_ORIGEM"].transform("nunique") if "ARQUIVO_ORIGEM" in out.columns else 1
+    if "ARQUIVO_ORIGEM" in out.columns:
+        out["QTD_OCORRENCIAS_NA_ORIGEM"] = out.groupby(["PROTOCOLO", "ARQUIVO_ORIGEM"])["PROTOCOLO"].transform("size")
+    else:
+        out["QTD_OCORRENCIAS_NA_ORIGEM"] = out["QTD_OCORRENCIAS_NOTA"]
+    out["DUPLICADA_GERAL"] = np.where(out["QTD_OCORRENCIAS_NOTA"] > 1, "SIM", "NÃO")
+    out["DUPLICADA_ENTRE_ARQUIVOS"] = np.where(out["QTD_ARQUIVOS_NOTA"] > 1, "SIM", "NÃO")
+    out["REPETIDA_NA_ORIGEM"] = np.where(out["QTD_OCORRENCIAS_NA_ORIGEM"] > 1, "SIM", "NÃO")
+    out["CLASSIFICACAO_DUPLICIDADE"] = ""
+    out["DUPLICATA_EXATA"] = "NÃO"
+    out["DUPLICATA_DIVERGENTE"] = "NÃO"
+    out["DISTANCIA_MAX_DUPLICATA_KM"] = np.nan
+    out["MUNICIPIO_DIVERGENTE_DUPLICATA"] = "NÃO"
+    out["CAMPOS_DIVERGENTES_DUPLICATA"] = ""
+
+    for nota, grp in out[out["QTD_OCORRENCIAS_NOTA"] > 1].groupby("PROTOCOLO"):
+        idxs = grp.index.tolist()
+        max_km = 0.0
+        if len(grp) > 1:
+            coords = grp[["LATITUDE", "LONGITUDE"]].astype(float).to_numpy()
+            for i in range(len(coords)):
+                for j in range(i + 1, len(coords)):
+                    max_km = max(max_km, haversine_scalar(coords[i, 0], coords[i, 1], coords[j, 0], coords[j, 1]))
+
+        divergentes = []
+        for c in colunas_principais:
+            if c not in grp.columns:
+                continue
+            vals = {normalizar_texto(v) for v in grp[c].tolist() if normalizar_texto(v)}
+            if len(vals) > 1:
+                divergentes.append(c)
+        mun_div = "SIM" if "MUNICIPIO" in divergentes else "NÃO"
+        exata = max_km <= float(tolerancia_exata_m) / 1000.0 and not divergentes
+        cls = "EXATA" if exata else "DIVERGENTE"
+        out.loc[idxs, "CLASSIFICACAO_DUPLICIDADE"] = cls
+        out.loc[idxs, "DUPLICATA_EXATA"] = "SIM" if exata else "NÃO"
+        out.loc[idxs, "DUPLICATA_DIVERGENTE"] = "NÃO" if exata else "SIM"
+        out.loc[idxs, "DISTANCIA_MAX_DUPLICATA_KM"] = round(max_km, 3)
+        out.loc[idxs, "MUNICIPIO_DIVERGENTE_DUPLICATA"] = mun_div
+        out.loc[idxs, "CAMPOS_DIVERGENTES_DUPLICATA"] = " | ".join(divergentes)
+    return out
+
+
+def deduplicar_apenas_exatas(df, habilitado=True):
+    if not habilitado or df.empty or "DUPLICATA_EXATA" not in df.columns:
+        return df.copy(), pd.DataFrame(columns=df.columns)
+    exatas = df[df["DUPLICATA_EXATA"] == "SIM"].copy()
+    if exatas.empty:
+        return df.copy(), pd.DataFrame(columns=df.columns)
+    prioridade = df.get("PRIORIDADE", pd.Series("Não", index=df.index)).astype(str).str.upper().eq("SIM").astype(int)
+    temp = df.assign(_P=prioridade).sort_values(["PROTOCOLO", "_P", "_ORDEM_ENTRADA"], ascending=[True, False, True])
+    keep_exatas = set(temp[temp["DUPLICATA_EXATA"] == "SIM"].drop_duplicates("PROTOCOLO", keep="first").index)
+    remover_idx = [idx for idx in exatas.index if idx not in keep_exatas]
+    removidas = df.loc[remover_idx].copy()
+    if not removidas.empty:
+        removidas["MOTIVO_NAO_ALOCACAO"] = "DUPLICIDADE_EXATA_REMOVIDA"
+    return df.drop(index=remover_idx).copy(), removidas
+
+
+def aplicar_trava_global(df, limite):
+    if not limite or int(limite) <= 0 or len(df) <= int(limite):
+        return df.copy(), pd.DataFrame(columns=df.columns)
+    ordenado = df.copy()
+    if "_ORDEM_ENTRADA" not in ordenado.columns:
+        ordenado["_ORDEM_ENTRADA"] = np.arange(len(ordenado))
+    prioridade_num = ordenado.get("PRIORIDADE", pd.Series("Não", index=ordenado.index)).astype(str).str.upper().eq("SIM").astype(int)
+    ordenado = ordenado.assign(_PRIORIDADE_NUM=prioridade_num).sort_values(["_PRIORIDADE_NUM", "_ORDEM_ENTRADA"], ascending=[False, True])
+    dentro = ordenado.head(int(limite)).drop(columns=["_PRIORIDADE_NUM"], errors="ignore").copy()
+    fora = ordenado.iloc[int(limite):].drop(columns=["_PRIORIDADE_NUM"], errors="ignore").copy()
+    if not fora.empty:
+        fora["MOTIVO_NAO_ALOCACAO"] = "FORA_DA_TRAVA_GLOBAL"
+        fora["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+    return dentro, fora
+
+
+def preparar_ids_equipes(df_bases, tolerancia_mesma_base_km=2.0):
+    """Cria identidade estável para nomes repetidos; só separa bases geograficamente distintas."""
+    df = df_bases.copy().reset_index(drop=True)
+    df["EQUIPE_NOME_ORIGINAL"] = df["BASE_NOME"].astype(str)
+    df["EQUIPE_ID"] = ""
+    df["BASE_LABEL"] = ""
+    auditoria = []
+
+    for nome, grp in df.groupby("EQUIPE_NOME_ORIGINAL", sort=False):
+        clusters = []
+        for idx in grp.index:
+            la, lo = float(df.at[idx, "LATITUDE"]), float(df.at[idx, "LONGITUDE"])
+            achou = None
+            for ci, c in enumerate(clusters):
+                if haversine_scalar(la, lo, c["lat"], c["lon"]) <= tolerancia_mesma_base_km:
+                    achou = ci
+                    break
+            if achou is None:
+                clusters.append({"lat": la, "lon": lo, "idxs": [idx]})
+            else:
+                clusters[achou]["idxs"].append(idx)
+        multi = len(clusters) > 1
+        for pos, c in enumerate(clusters, start=1):
+            eid = f"{normalizar_texto(nome).replace(' ', '_') or 'EQUIPE'}__{pos}"
+            label = f"{nome} [{pos}]" if multi else str(nome)
+            for idx in c["idxs"]:
+                df.at[idx, "EQUIPE_ID"] = eid
+                df.at[idx, "BASE_LABEL"] = label
+                df.at[idx, "BASE_NOME"] = label
+                if multi:
+                    rr = df.loc[idx].copy()
+                    rr["MOTIVO_AUDITORIA_BASE"] = "Mesmo nome cadastrado em bases geograficamente distintas; identidade separada automaticamente"
+                    auditoria.append(rr)
+    return df, pd.DataFrame(auditoria)
+
+
+def _agrupar_equipes(df_bases):
+    equipes = []
+    id_col = "EQUIPE_ID" if "EQUIPE_ID" in df_bases.columns else "BASE_NOME"
+    for eid, grp in df_bases.groupby(id_col, sort=False):
+        first = grp.iloc[0].to_dict()
+        first["EQUIPE_ID"] = eid
+        first["BASE_NOME"] = first.get("BASE_NOME", eid)
+        first["MUNICIPIOS_EQUIPE"] = set(grp.get("MUN_LIMPO_BASE", pd.Series(dtype="object")).dropna().astype(str).tolist())
+        equipes.append(first)
+    return equipes
+
+
+def atribuir_tarefas_equipes(df_tasks, df_bases, regra_atribuicao, modo_ancora, distancia_max_km, cfg_global, peso_balanceamento_km=5.0):
+    """Atribuição por município/proximidade com capacidade e modo de âncora explícitos."""
+    equipes = _agrupar_equipes(df_bases)
+    anchors = {e["EQUIPE_ID"]: (float(e["LATITUDE"]), float(e["LONGITUDE"])) for e in equipes}
+    loads = {e["EQUIPE_ID"]: 0 for e in equipes}
+    caps = {e["EQUIPE_ID"]: capacidade_total_equipe(aplicar_config_equipe(cfg_global, e)) for e in equipes}
+    assigned, unassigned = [], []
+
+    ordered = df_tasks.assign(_P=df_tasks.get("PRIORIDADE", pd.Series("Não", index=df_tasks.index)).astype(str).str.upper().eq("SIM").astype(int))
+    ordered = ordered.sort_values(["_P", "LATITUDE", "LONGITUDE", "_ORDEM_ENTRADA"], ascending=[False, True, True, True]).drop(columns=["_P"])
+
+    for r in ordered.to_dict("records"):
+        la, lo = float(r["LATITUDE"]), float(r["LONGITUDE"])
+        ms = str(r.get("MUN_LIMPO", ""))
+        qr = peso_tarefa(r)
+        candidatos = equipes
+        if "Município" in str(regra_atribuicao):
+            candidatos = [e for e in equipes if ms in e.get("MUNICIPIOS_EQUIPE", set())]
+
+        scored = []
+        for e in candidatos:
+            eid = e["EQUIPE_ID"]
+            base = (float(e["LATITUDE"]), float(e["LONGITUDE"]))
+            anchor = anchors[eid]
+            dist_base = haversine_scalar(la, lo, base[0], base[1])
+            dist_anchor = haversine_scalar(la, lo, anchor[0], anchor[1])
+            if modo_ancora == "Âncora dinâmica":
+                dist_ref = dist_anchor
+            elif modo_ancora == "Balanceada":
+                dist_ref = 0.6 * dist_base + 0.4 * dist_anchor
+            else:
+                dist_ref = dist_base
+
+            cap = caps[eid]
+            proj = loads[eid] + qr
+            overflow = 0 if math.isinf(cap) or proj <= cap else 1
+            load_ratio = (proj / cap) if (not math.isinf(cap) and cap > 0) else float(proj)
+            if "Município" in str(regra_atribuicao):
+                score = (overflow, load_ratio, dist_ref, str(eid))
+            else:
+                score_val = dist_ref + (load_ratio * float(peso_balanceamento_km))
+                score = (overflow, score_val, dist_ref, str(eid))
+            scored.append((score, e, dist_ref))
+
+        if not scored:
+            r["MOTIVO_NAO_ALOCACAO"] = "SEM_EQUIPE_COMPATIVEL"
+            r["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+            unassigned.append(r)
+            continue
+
+        scored.sort(key=lambda x: x[0])
+        _, best, best_d = scored[0]
+        best_id = best["EQUIPE_ID"]
+        if "Município" not in str(regra_atribuicao) and float(distancia_max_km or 0) > 0 and best_d > float(distancia_max_km):
+            r["MOTIVO_NAO_ALOCACAO"] = f"DISTANCIA_ACIMA_LIMITE ({best_d:.1f} km)"
+            r["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+            unassigned.append(r)
+            continue
+        if not math.isinf(caps[best_id]) and loads[best_id] + qr > caps[best_id]:
+            r["MOTIVO_NAO_ALOCACAO"] = "SEM_CAPACIDADE_DISPONIVEL"
+            r["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+            unassigned.append(r)
+            continue
+
+        r["BASE_ATRIBUIDA"] = best["BASE_NOME"]
+        r["EQUIPE_ID"] = best_id
+        r["DISTANCIA_ATRIBUICAO_KM"] = round(best_d, 3)
+        assigned.append(r)
+        loads[best_id] += qr
+        if modo_ancora in ["Âncora dinâmica", "Balanceada"]:
+            anchors[best_id] = (la, lo)
+
+    return pd.DataFrame(assigned), pd.DataFrame(unassigned)
+
+
+def _simular_insercao(atual_lat, atual_lon, relogio, o, base_lat, base_lon, cfg):
+    qr = peso_tarefa(o)
+    d_est, t_est = estimar_deslocamento(atual_lat, atual_lon, o["LATITUDE"], o["LONGITUDE"], cfg["velocidade_media_kmh"])
+    serv = tempo_servico_registro(o, cfg)
+    chegada = relogio + pd.Timedelta(minutes=t_est)
+    ini = aplicar_intervalo_almoco(chegada, serv, cfg)
+    fim = ini + pd.Timedelta(minutes=serv)
+    _, t_ret = estimar_deslocamento(o["LATITUDE"], o["LONGITUDE"], base_lat, base_lon, cfg["velocidade_media_kmh"])
+    return qr, d_est, t_est, serv, ini, fim, t_ret
+
+
+def construir_plano_rota_equipe(tarefas, base_lat, base_lon, cfg):
+    """Divide por dia, preenche lacunas e só então otimiza cada rota diária."""
+    pending = [dict(x) for x in tarefas]
+    pending.sort(key=lambda r: (0 if str(r.get("PRIORIDADE", "")).upper() == "SIM" else 1, int(r.get("_ORDEM_ENTRADA", 10**9))))
+    rotas, nao_alocadas = [], []
+    dia_idx = 1
+    max_dias = max_dias_planejamento(cfg)
+    guard = 0
+
+    while pending and guard < 10000:
+        guard += 1
+        if max_dias is not None and dia_idx > max_dias:
+            for o in pending:
+                o["MOTIVO_NAO_ALOCACAO"] = "LIMITE_DE_PERIODOS_ATINGIDO"
+                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+                nao_alocadas.append(o)
+            break
+
+        data_dia = data_trabalho_por_indice(cfg["data_inicio"], dia_idx, cfg.get("dias_selecionados", []))
+        inicio_jornada = datetime.combine(data_dia.date(), cfg["hora_inicio"])
+        fim_jornada = datetime.combine(data_dia.date(), cfg["hora_fim"])
+        total_min = max(1.0, (fim_jornada - inicio_jornada).total_seconds() / 60.0)
+        if cfg.get("usar_intervalo_almoco", True):
+            total_min -= max(0.0, (datetime.combine(data_dia.date(), cfg["almoco_fim"]) - datetime.combine(data_dia.date(), cfg["almoco_inicio"])).total_seconds() / 60.0)
+
+        elegiveis, futuros = [], []
+        for o in pending:
+            if int(o.get("_DIA_MINIMO", 1) or 1) <= dia_idx:
+                elegiveis.append(o)
+            else:
+                futuros.append(o)
+        if not elegiveis:
+            pending = futuros
+            dia_idx += 1
+            continue
+
+        # Pré-seleção por cota e tempo de serviço; usa best-fit para aproveitar lacunas.
+        bloco, resto = [], []
+        carga, servico = 0, 0.0
+        candidatos = sorted(elegiveis, key=lambda r: (0 if str(r.get("PRIORIDADE", "")).upper() == "SIM" else 1, tempo_servico_registro(r, cfg), int(r.get("_ORDEM_ENTRADA", 10**9))))
+        for o in candidatos:
+            qr, serv = peso_tarefa(o), tempo_servico_registro(o, cfg)
+            if qr > int(cfg["obras_por_dia"]):
+                o["MOTIVO_NAO_ALOCACAO"] = "SUPER_PONTO_EXCEDE_COTA_DIARIA"
+                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+                nao_alocadas.append(o)
+                continue
+            if serv > total_min:
+                o["MOTIVO_NAO_ALOCACAO"] = "ATENDIMENTO_EXCEDE_JORNADA_DIARIA"
+                o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+                nao_alocadas.append(o)
+                continue
+            if carga + qr <= int(cfg["obras_por_dia"]) and servico + serv <= total_min:
+                bloco.append(o); carga += qr; servico += serv
+            else:
+                resto.append(o)
+
+        ordem = ordenar_bloco_rota(bloco, base_lat, base_lon, cfg["sentido_rota"], cfg["url_osrm_base"])
+        semana, dds, periodo = periodo_do_dia(dia_idx, cfg["tipo_periodo"], cfg.get("dias_selecionados", []))
+        atual_lat, atual_lon = float(base_lat), float(base_lon)
+        relogio = inicio_jornada
+        usados = 0
+        aceitos = []
+        rejeitados_dia = []
+
+        # Não para no primeiro que não cabe: tenta os seguintes e preenche a lacuna restante.
+        for o in ordem:
+            qr, d_est, t_est, serv, ini, fim, t_ret = _simular_insercao(atual_lat, atual_lon, relogio, o, base_lat, base_lon, cfg)
+            cabe = (usados + qr <= int(cfg["obras_por_dia"])) and (fim + pd.Timedelta(minutes=t_ret) <= fim_jornada)
+            if not cabe:
+                rejeitados_dia.append(o)
+                continue
+            aceitos.append((o, d_est, t_est, serv, ini, fim))
+            usados += qr
+            atual_lat, atual_lon, relogio = float(o["LATITUDE"]), float(o["LONGITUDE"]), fim
+
+        # Segunda tentativa com os itens que ficaram fora da pré-seleção ou não couberam na primeira ordem.
+        sobra = rejeitados_dia + resto
+        if sobra and usados < int(cfg["obras_por_dia"]):
+            # Mais próximos primeiro a partir da posição atual, mantendo prioridade.
+            sobra = sorted(sobra, key=lambda o: (0 if str(o.get("PRIORIDADE", "")).upper() == "SIM" else 1, haversine_scalar(atual_lat, atual_lon, o["LATITUDE"], o["LONGITUDE"])))
+            still = []
+            for o in sobra:
+                qr, d_est, t_est, serv, ini, fim, t_ret = _simular_insercao(atual_lat, atual_lon, relogio, o, base_lat, base_lon, cfg)
+                cabe = (usados + qr <= int(cfg["obras_por_dia"])) and (fim + pd.Timedelta(minutes=t_ret) <= fim_jornada)
+                if cabe:
+                    aceitos.append((o, d_est, t_est, serv, ini, fim))
+                    usados += qr
+                    atual_lat, atual_lon, relogio = float(o["LATITUDE"]), float(o["LONGITUDE"]), fim
+                else:
+                    still.append(o)
+            sobra = still
+
+        # Se nada couber, retira a primeira tarefa impossível para evitar loop infinito.
+        if not aceitos:
+            o = elegiveis[0]
+            o["MOTIVO_NAO_ALOCACAO"] = "TAREFA_NAO_CABE_NA_JORNADA"
+            o["BASE_ATRIBUIDA"] = "NÃO ALOCADO"
+            nao_alocadas.append(o)
+            remove_uid = o.get("_TASK_UID")
+            pending = [x for x in pending if x.get("_TASK_UID") != remove_uid] if remove_uid is not None else [x for x in pending if x is not o]
+            continue
+
+        # Reotimiza somente o conjunto efetivamente aceito e gera os segmentos do dia.
+        aceitos_regs = [x[0] for x in aceitos]
+        ordem_final = ordenar_bloco_rota(aceitos_regs, base_lat, base_lon, cfg["sentido_rota"], cfg["url_osrm_base"])
+        atual_lat, atual_lon, relogio = float(base_lat), float(base_lon), inicio_jornada
+        final_regs = []
+        for o in ordem_final:
+            qr, d_est, t_est, serv, ini, fim, t_ret = _simular_insercao(atual_lat, atual_lon, relogio, o, base_lat, base_lon, cfg)
+            if fim + pd.Timedelta(minutes=t_ret) > fim_jornada:
+                sobra.append(o)
+                continue
+            rotas.append({
+                "o": o, "ir": False,
+                "la": atual_lat, "La": atual_lon, "lt": float(o["LATITUDE"]), "Lt": float(o["LONGITUDE"]),
+                "s": semana, "d": dia_idx, "ds": dds, "periodo": periodo,
+                "dn": DIAS_NOMES[data_dia.weekday()], "dm": data_dia.strftime("%d/%m/%Y"),
+                "hi_est": ini, "hf_est": fim, "servico_min": serv,
+                "tempo_estimado_min": t_est, "distancia_estimada_km": d_est,
+            })
+            final_regs.append(o)
+            atual_lat, atual_lon, relogio = float(o["LATITUDE"]), float(o["LONGITUDE"]), fim
+
+        if final_regs:
+            d_ret, t_ret = estimar_deslocamento(atual_lat, atual_lon, base_lat, base_lon, cfg["velocidade_media_kmh"])
+            rotas.append({
+                "o": None, "ir": True,
+                "la": atual_lat, "La": atual_lon, "lt": float(base_lat), "Lt": float(base_lon),
+                "s": semana, "d": dia_idx, "ds": dds, "periodo": periodo,
+                "dn": DIAS_NOMES[data_dia.weekday()], "dm": data_dia.strftime("%d/%m/%Y"),
+                "hi_est": relogio, "hf_est": relogio + pd.Timedelta(minutes=t_ret), "servico_min": 0.0,
+                "tempo_estimado_min": t_ret, "distancia_estimada_km": d_ret,
+            })
+
+        usados_uid = {x.get("_TASK_UID") for x in final_regs if x.get("_TASK_UID") is not None}
+        if usados_uid:
+            pending = [x for x in pending if x.get("_TASK_UID") not in usados_uid]
+        else:
+            final_ids = {id(x) for x in final_regs}
+            pending = [x for x in pending if id(x) not in final_ids]
+        dia_idx += 1
+
+    return rotas, nao_alocadas
+
+
+def detectar_reagendamento_osrm(rotas, geometrias, cfg):
+    """Se o tempo OSRM real estourar a jornada, adia a última tarefa do dia e força novo planejamento."""
+    por_dia: Dict[Tuple[int, str], List[Tuple[dict, dict]]] = {}
+    for it, geo in zip(rotas, geometrias):
+        por_dia.setdefault((it["d"], it["dm"]), []).append((it, geo))
+    ajustes = []
+    for (dia, dm), itens in por_dia.items():
+        data_dt = datetime.strptime(dm, "%d/%m/%Y").date()
+        relogio = datetime.combine(data_dt, cfg["hora_inicio"])
+        fim_jornada = datetime.combine(data_dt, cfg["hora_fim"])
+        visitas = []
+        for it, geo in itens:
+            dur_min = float(geo.get("duracao_s", float(it.get("tempo_estimado_min", 0)) * 60.0)) / 60.0
+            chegada = relogio + pd.Timedelta(minutes=dur_min)
+            if it.get("ir", False):
+                relogio = chegada
+                continue
+            serv = float(it.get("servico_min", 0.0))
+            ini = aplicar_intervalo_almoco(chegada, serv, cfg)
+            relogio = ini + pd.Timedelta(minutes=serv)
+            visitas.append(it)
+        if relogio > fim_jornada and visitas:
+            alvo = visitas[-1].get("o") or {}
+            ajustes.append({"task_uid": alvo.get("_TASK_UID"), "novo_dia_min": int(dia) + 1, "motivo": "OSRM_EXCEDE_JORNADA"})
+    return [a for a in ajustes if a.get("task_uid")]
+
+
+def calcular_reconciliacao(total_entrada, roteirizadas, sem_nota, fora_filtro, rejeitadas_coord, duplicadas_removidas, fora_trava, nao_alocadas):
+    componentes = {
+        "ROTEIRIZADAS": int(roteirizadas),
+        "SEM_NOTA": int(sem_nota),
+        "FORA_FILTRO": int(fora_filtro),
+        "COORD_REJEITADAS": int(rejeitadas_coord),
+        "DUPLICADAS_EXATAS_REMOVIDAS": int(duplicadas_removidas),
+        "FORA_TRAVA": int(fora_trava),
+        "NAO_ALOCADAS": int(nao_alocadas),
+    }
+    soma = sum(componentes.values())
+    return {
+        "ok": soma == int(total_entrada),
+        "total_entrada": int(total_entrada),
+        "soma_saidas": soma,
+        "diferenca": int(total_entrada) - soma,
+        "componentes": componentes,
+    }
+
+
+def montar_dashboard_equipes(df_routed, df_bases, cfg_global):
+    if df_routed is None or df_routed.empty:
+        return pd.DataFrame()
+    rows = []
+    br = df_bases.copy() if df_bases is not None else pd.DataFrame()
+    for equipe, grp in df_routed.groupby("BASE_ATRIBUIDA", sort=False):
+        if equipe == "NÃO ALOCADO":
+            continue
+        obras = grp[~grp["PROTOCOLO"].isin(["RETORNO_BASE", "PAUSA_ALMOCO"])]
+        base_row = br[br["BASE_NOME"].astype(str) == str(equipe)].iloc[0].to_dict() if not br.empty and (br["BASE_NOME"].astype(str) == str(equipe)).any() else {}
+        cfg_eq = aplicar_config_equipe(cfg_global, base_row) if base_row else cfg_global
+        cap = capacidade_total_equipe(cfg_eq)
+        qtd = sum(peso_tarefa(r) for _, r in obras.iterrows())
+        km_h = pd.to_numeric(grp.get("DISTANCIA_HIBRIDA_KM", pd.Series(index=grp.index, dtype=float)), errors="coerce").fillna(0).sum()
+        t_rota = pd.to_numeric(grp.get("TEMPO_ROTA_MIN", pd.Series(index=grp.index, dtype=float)), errors="coerce").fillna(0).sum() / 60.0
+        t_serv = pd.to_numeric(obras.get("TEMPO_ATENDIMENTO_MIN", pd.Series(index=obras.index, dtype=float)), errors="coerce").fillna(0).sum() / 60.0
+        seg = len(grp)
+        ok_osrm = int((grp.get("STATUS_ROTA", pd.Series(index=grp.index, dtype="object")).astype(str) == "OK_OSRM").sum())
+        cobertura = 100.0 * ok_osrm / seg if seg else 0.0
+        prioridades = sum(peso_tarefa(r) for _, r in obras[obras.get("PRIORIDADE", pd.Series(index=obras.index, dtype="object")).astype(str).str.upper().eq("SIM")].iterrows()) if not obras.empty else 0
+        dias = obras["DIA_MES"].nunique() if "DIA_MES" in obras.columns else 0
+        ult = max(obras.get("_HORA_FIM_DT", pd.Series(dtype="datetime64[ns]")), default=pd.NaT)
+        rows.append({
+            "Equipe": equipe,
+            "Obras": int(qtd),
+            "Capacidade Horizonte": "Ilimitada" if math.isinf(cap) else int(cap),
+            "% Capacidade": np.nan if math.isinf(cap) or cap <= 0 else round(100.0 * qtd / cap, 1),
+            "Dias Utilizados": int(dias),
+            "Horas Atendimento": round(t_serv, 2),
+            "Horas Deslocamento": round(t_rota, 2),
+            "KM Híbrido": round(float(km_h), 2),
+            "Prioridades": int(prioridades),
+            "Último Fim": ult.strftime("%d/%m %H:%M") if pd.notna(ult) else "-",
+            "% Cobertura OSRM": round(cobertura, 1),
+        })
+    return pd.DataFrame(rows)
+
 
 st.set_page_config(page_title="Saneamento", page_icon="🧹", layout="wide")
 injetar_logo()
