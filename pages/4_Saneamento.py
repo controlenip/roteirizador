@@ -39,7 +39,7 @@ from modules.export_saneamento import (
 _haversine_scalar = haversine_scalar
 _resolver_tsp_ortools = None  # TSP do Saneamento é local; não consulta rede.
 
-VERSAO_REGRAS_SANEAMENTO = "2026.09.4"
+VERSAO_REGRAS_SANEAMENTO = "2026.09.5"
 DIAS_NOMES = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 DIAS_MAP = {nome: i for i, nome in enumerate(DIAS_NOMES)}
 
@@ -75,7 +75,63 @@ def limpar_protocolo_serie(serie):
     return s.mask(s.str.upper().isin(invalidos), "")
 
 
+def extrair_input_uids(registro):
+    """Retorna os IDs imutáveis de entrada representados por um registro/Super Ponto.
+
+    A contagem não depende da quantidade de linhas físicas depois do agrupamento. Isso
+    evita perder obras na auditoria quando um Super Ponto representa várias entradas.
+    """
+    encontrados = []
+    vistos = set()
+
+    def adicionar(uid):
+        if uid is None:
+            return
+        txt = str(uid).strip()
+        if not txt or txt.upper() in {"NAN", "NONE", "NULL", "<NA>"}:
+            return
+        if txt not in vistos:
+            vistos.add(txt)
+            encontrados.append(txt)
+
+    def visitar(obj):
+        if hasattr(obj, "get"):
+            try:
+                orig = obj.get("_ORIGINAL_ROWS")
+            except Exception:
+                orig = None
+            # Em Super Pontos, os originais são a fonte de verdade. O campo _INPUT_UID
+            # da linha agregada pode ter sido concatenado pelo agrupador e não deve contar
+            # como uma obra adicional.
+            antes = len(encontrados)
+            if isinstance(orig, (list, tuple)) and orig:
+                for sub in orig:
+                    visitar(sub)
+                if len(encontrados) > antes:
+                    return
+            try:
+                uid = obj.get("_INPUT_UID")
+            except Exception:
+                uid = None
+            if isinstance(uid, str) and '|' in uid:
+                for parte in uid.split('|'):
+                    adicionar(parte)
+            else:
+                adicionar(uid)
+        elif isinstance(obj, (list, tuple)):
+            for sub in obj:
+                visitar(sub)
+
+    visitar(registro)
+    return encontrados
+
+
 def peso_tarefa(registro):
+    # Preferência absoluta pelo identificador imutável criado logo após o explode.
+    # O fallback mantém compatibilidade com execuções/arquivos antigos.
+    uids = extrair_input_uids(registro)
+    if uids:
+        return len(uids)
     orig = registro.get("_ORIGINAL_ROWS") if hasattr(registro, "get") else None
     return len(orig) if isinstance(orig, list) and orig else 1
 
@@ -803,6 +859,7 @@ def detectar_reagendamento_osrm(rotas, geometrias, cfg):
 
 
 def calcular_reconciliacao(total_entrada, roteirizadas, sem_nota, fora_filtro, rejeitadas_coord, duplicadas_removidas, fora_trava, nao_alocadas):
+    total_entrada = int(total_entrada)
     componentes = {
         "ROTEIRIZADAS": int(roteirizadas),
         "SEM_NOTA": int(sem_nota),
@@ -813,11 +870,23 @@ def calcular_reconciliacao(total_entrada, roteirizadas, sem_nota, fora_filtro, r
         "NAO_ALOCADAS": int(nao_alocadas),
     }
     soma = sum(componentes.values())
+    pre_excluidas = (
+        componentes["SEM_NOTA"] + componentes["FORA_FILTRO"] +
+        componentes["COORD_REJEITADAS"] + componentes["DUPLICADAS_EXATAS_REMOVIDAS"] +
+        componentes["FORA_TRAVA"]
+    )
+    operacional_esperado = max(0, total_entrada - pre_excluidas)
+    operacional_observado = componentes["ROTEIRIZADAS"] + componentes["NAO_ALOCADAS"]
+    diferenca = total_entrada - soma
+    diferenca_operacional = operacional_esperado - operacional_observado
     return {
-        "ok": soma == int(total_entrada),
-        "total_entrada": int(total_entrada),
+        "ok": diferenca == 0 and diferenca_operacional == 0,
+        "total_entrada": total_entrada,
         "soma_saidas": soma,
-        "diferenca": int(total_entrada) - soma,
+        "diferenca": diferenca,
+        "operacional_esperado": operacional_esperado,
+        "operacional_observado": operacional_observado,
+        "diferenca_operacional": diferenca_operacional,
         "componentes": componentes,
     }
 
@@ -1029,6 +1098,10 @@ def montar_manifesto(config, df_routed=None):
         f"Não alocadas operacionais: {config.get('qtd_nao_alocadas', '-')}",
         f"Status de elegibilidade localizado: {'SIM' if config.get('status_col_localizada', False) else 'NÃO'}",
         f"Reconciliação: {'OK' if rec.get('ok') else 'ERRO'} | diferença={rec.get('diferenca', '-')}",
+        f"Operacional esperado: {rec.get('operacional_esperado', '-')}",
+        f"Operacional observado: {rec.get('operacional_observado', '-')}",
+        f"Pontos após Super Pontos: {rec.get('qtd_pontos_pos_superpontos', config.get('qtd_pontos_pos_superpontos', '-'))}",
+        f"Obras representadas após Super Pontos: {rec.get('qtd_obras_pos_superpontos', config.get('qtd_obras_pos_superpontos', '-'))}",
     ]
     if df_routed is not None and not df_routed.empty:
         obras = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -1351,6 +1424,30 @@ if is_done and not st.session_state.df_routed_san.empty:
     else:
         st.error(f"🚨 ERRO DE RECONCILIAÇÃO: diferença de {rec.get('diferenca', '?')} registro(s). As exportações ficam bloqueadas até uma nova execução consistente.")
 
+    # Mostra a composição da conta para que qualquer divergência seja auditável na tela.
+    with st.expander('🔎 Detalhamento da Reconciliação', expanded=not bool(rec.get('ok'))):
+        comp = rec.get('componentes', {}) or {}
+        linhas_rec = [
+            {'Etapa': 'Entrada total', 'Quantidade': int(rec.get('total_entrada', 0))},
+            {'Etapa': 'Fora do filtro', 'Quantidade': int(comp.get('FORA_FILTRO', 0))},
+            {'Etapa': 'Sem nota/protocolo', 'Quantidade': int(comp.get('SEM_NOTA', 0))},
+            {'Etapa': 'Coordenadas rejeitadas', 'Quantidade': int(comp.get('COORD_REJEITADAS', 0))},
+            {'Etapa': 'Duplicatas exatas removidas', 'Quantidade': int(comp.get('DUPLICADAS_EXATAS_REMOVIDAS', 0))},
+            {'Etapa': 'Fora da trava', 'Quantidade': int(comp.get('FORA_TRAVA', 0))},
+            {'Etapa': 'Operacional esperado', 'Quantidade': int(rec.get('operacional_esperado', 0))},
+            {'Etapa': 'Roteirizadas', 'Quantidade': int(comp.get('ROTEIRIZADAS', 0))},
+            {'Etapa': 'Não alocadas', 'Quantidade': int(comp.get('NAO_ALOCADAS', 0))},
+            {'Etapa': 'Operacional observado', 'Quantidade': int(rec.get('operacional_observado', 0))},
+            {'Etapa': 'Diferença final', 'Quantidade': int(rec.get('diferenca', 0))},
+        ]
+        st.dataframe(pd.DataFrame(linhas_rec), use_container_width=True, hide_index=True)
+        if rec.get('qtd_pontos_pos_superpontos') is not None:
+            st.caption(
+                f"Super Pontos: {int(rec.get('qtd_pontos_pos_superpontos', 0))} pontos representam "
+                f"{int(rec.get('qtd_obras_pos_superpontos', 0))} obras. "
+                f"Fonte das contagens de pré-processamento: {rec.get('fonte_contagens_preprocessamento', '-')}."
+            )
+
     df_c = st.session_state.get('df_correcao_san', pd.DataFrame())
     df_bases_c = st.session_state.get('df_bases_correcao_san', pd.DataFrame())
     if not df_c.empty:
@@ -1621,6 +1718,9 @@ elif status_exec == 'IDLE':
     df_tasks['PROTOCOLO'] = df_tasks[col_id].astype(str).str.split(r'\s*\|\s*')
     df_tasks = df_tasks.explode('PROTOCOLO').reset_index(drop=True)
     df_tasks['_ORDEM_ENTRADA'] = np.arange(len(df_tasks))
+    # ID imutável por ocorrência após a explosão de protocolos. Ele acompanha a obra
+    # mesmo dentro de Super Pontos e torna a reconciliação independente do nº de linhas.
+    df_tasks['_INPUT_UID'] = [f'IN-{i:09d}' for i in range(len(df_tasks))]
     qtd_entrada_total = len(df_tasks)
     df_tasks['PROTOCOLO'] = limpar_protocolo_serie(df_tasks['PROTOCOLO'])
     df_sem_nota = df_tasks[df_tasks['PROTOCOLO'] == ''].copy()
@@ -1723,6 +1823,27 @@ elif status_exec == 'IDLE':
                 ords = [float(x) for x in ords if pd.notna(x)]
                 if ords:
                     df_tasks.at[idx, '_ORDEM_ENTRADA'] = min(ords)
+
+    # Confere a conservação das obras antes da atribuição. Um Super Ponto pode ser uma
+    # única linha visual, mas deve continuar representando todos os _INPUT_UIDs originais.
+    qtd_sem_nota_pre = int(len(df_sem_nota))
+    qtd_fora_filtro_pre = int(len(df_fora_filtro))
+    qtd_coord_rej_pre = int(len(df_rej))
+    qtd_dup_rem_pre = int(len(df_dup_rem))
+    qtd_fora_trava_pre = int(len(df_fora_trava))
+    qtd_operacional_esperado_pre = int(
+        qtd_entrada_total - qtd_sem_nota_pre - qtd_fora_filtro_pre -
+        qtd_coord_rej_pre - qtd_dup_rem_pre - qtd_fora_trava_pre
+    )
+    qtd_pos_superpontos = int(sum(peso_tarefa(r) for _, r in df_tasks.iterrows())) if not df_tasks.empty else 0
+    if qtd_pos_superpontos != qtd_operacional_esperado_pre:
+        st.error(
+            '🚨 Inconsistência detectada antes da roteirização: os Super Pontos não preservaram '
+            f'todas as obras ({qtd_pos_superpontos} representadas de {qtd_operacional_esperado_pre} esperadas). '
+            'A execução foi interrompida para evitar perda de dados.'
+        )
+        st.stop()
+
     df_tasks['_TASK_UID'] = [f'TASK-{i:07d}' for i in range(len(df_tasks))]
 
     tempos_demanda = parse_tempos_demanda_texto(tempos_demanda_txt)
@@ -1760,7 +1881,14 @@ elif status_exec == 'IDLE':
     # 5) Atribuição considera capacidade restante e o modo de âncora escolhido.
     df_ta, df_u = atribuir_tarefas_equipes(df_tasks, df_bases, ta, modo_ancora, dist_max_atribuicao, config_pre)
     st.session_state.df_unallocated_san = df_u
-    total_alocadas = sum(peso_tarefa(r) for _, r in df_ta.iterrows()) if not df_ta.empty else 0
+    total_alocadas = int(sum(peso_tarefa(r) for _, r in df_ta.iterrows())) if not df_ta.empty else 0
+    total_nao_alocadas_pre = int(sum(peso_tarefa(r) for _, r in df_u.iterrows())) if not df_u.empty else 0
+    if total_alocadas + total_nao_alocadas_pre != qtd_pos_superpontos:
+        st.error(
+            '🚨 Inconsistência na atribuição de equipes: a soma de alocadas e não alocadas '
+            'não corresponde ao volume operacional de entrada. A execução foi interrompida.'
+        )
+        st.stop()
     sb_html.markdown(render_sidebar_card(cm, total_alocadas, qtd_eq, cm * qtd_eq, is_continuo), unsafe_allow_html=True)
     if df_ta.empty:
         st.error('Nenhuma obra pôde ser alocada às equipes. Verifique municípios, coordenadas, capacidade e limite de distância.')
@@ -1793,16 +1921,23 @@ elif status_exec == 'IDLE':
             'arquivo_equipes': bf.name if bf else '-',
             'arquivos_demanda': [f.name for f in task_files],
             'qtd_entrada_total': int(qtd_entrada_total),
-            'qtd_sem_nota': int(len(df_sem_nota)),
-            'qtd_fora_filtro': int(len(df_fora_filtro)),
-            'qtd_entrada_filtrada': int(len(df_tasks)),
+            # Contagens de pré-processamento ficam congeladas na configuração da execução.
+            # A reconciliação final não depende mais de DataFrames transitórios do session_state.
+            'qtd_sem_nota': qtd_sem_nota_pre,
+            'qtd_fora_filtro': qtd_fora_filtro_pre,
+            'qtd_correcao_obras': qtd_coord_rej_pre,
+            'qtd_duplicidades_removidas': qtd_dup_rem_pre,
+            'qtd_fora_trava': qtd_fora_trava_pre,
+            'qtd_operacional_esperado': qtd_operacional_esperado_pre,
+            'qtd_obras_pos_superpontos': qtd_pos_superpontos,
+            'qtd_pontos_pos_superpontos': int(len(df_tasks)),
+            'qtd_alocadas_pre_motor': total_alocadas,
+            'qtd_nao_alocadas_pre_motor': total_nao_alocadas_pre,
+            'qtd_entrada_filtrada': qtd_pos_superpontos,
             'qtd_duplicidades': int(df_dup_audit['PROTOCOLO'].nunique()) if not df_dup_audit.empty else 0,
             'qtd_linhas_duplicadas': int(len(df_dup_audit)),
             'qtd_duplicidades_divergentes': int(df_dup_div['PROTOCOLO'].nunique()) if not df_dup_div.empty else 0,
-            'qtd_duplicidades_removidas': int(len(df_dup_rem)),
-            'qtd_correcao_obras': int(len(df_rej)),
             'qtd_correcao_bases': int(len(st.session_state.get('df_bases_correcao_san', pd.DataFrame()))),
-            'qtd_fora_trava': int(len(df_fora_trava)),
             'status_col_localizada': bool(status_col_localizada),
         })
         st.session_state.config_execucao_san = config_exec
@@ -2124,16 +2259,22 @@ if status_exec == 'RUNNING':
             df_na = st.session_state.get('df_unallocated_san', pd.DataFrame())
             roteadas = sum(peso_tarefa(r) for _, r in df_final[~df_final['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].iterrows()) if not df_final.empty else 0
             nao_alocadas = sum(peso_tarefa(r) for _, r in df_na.iterrows()) if not df_na.empty else 0
+            # Usa as contagens congeladas no momento do clique em Iniciar. DataFrames de
+            # auditoria são mantidos para consulta/exportação, mas não podem alterar a conta
+            # final caso o Streamlit descarte/reconstrua algum estado entre reruns.
             rec = calcular_reconciliacao(
                 cfg_final.get('qtd_entrada_total', 0),
                 roteadas,
-                len(st.session_state.get('df_sem_nota_san', pd.DataFrame())),
-                len(st.session_state.get('df_fora_filtro_san', pd.DataFrame())),
-                len(st.session_state.get('df_correcao_san', pd.DataFrame())),
-                len(st.session_state.get('df_duplicadas_removidas_san', pd.DataFrame())),
-                len(st.session_state.get('df_fora_trava_san', pd.DataFrame())),
+                cfg_final.get('qtd_sem_nota', len(st.session_state.get('df_sem_nota_san', pd.DataFrame()))),
+                cfg_final.get('qtd_fora_filtro', len(st.session_state.get('df_fora_filtro_san', pd.DataFrame()))),
+                cfg_final.get('qtd_correcao_obras', len(st.session_state.get('df_correcao_san', pd.DataFrame()))),
+                cfg_final.get('qtd_duplicidades_removidas', len(st.session_state.get('df_duplicadas_removidas_san', pd.DataFrame()))),
+                cfg_final.get('qtd_fora_trava', len(st.session_state.get('df_fora_trava_san', pd.DataFrame()))),
                 nao_alocadas,
             )
+            rec['fonte_contagens_preprocessamento'] = 'CONFIG_CONGELADA'
+            rec['qtd_obras_pos_superpontos'] = int(cfg_final.get('qtd_obras_pos_superpontos', 0))
+            rec['qtd_pontos_pos_superpontos'] = int(cfg_final.get('qtd_pontos_pos_superpontos', 0))
             cfg_final['qtd_nao_alocadas'] = int(nao_alocadas)
             cfg_final['tempo_processamento_s'] = round(time.time() - st_run, 2)
             cfg_final['reconciliacao'] = rec
