@@ -215,10 +215,10 @@ def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tip
                 text_color = '#000000' if is_sp else '#ffffff'
 
                 desc = f'''<![CDATA[
-                <div style="font-family:sans-serif; width:300px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
-                    <div style="background:{bg_color}; color:{text_color}; padding:8px 10px; font-size:13px; font-weight:bold;">{html.escape(nome_ponto)}</div>
-                    <div style="padding:10px; background:#fafafa; font-size:12px;">
-                        <table style="width:100%; border-collapse:collapse;">
+                <div style="font-family:Arial,sans-serif; width:auto; max-width:520px; box-sizing:border-box; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.15); white-space:normal; overflow-wrap:anywhere; word-break:break-word;">
+                    <div style="background:{bg_color}; color:{text_color}; padding:8px 10px; font-size:13px; font-weight:bold; white-space:normal; overflow-wrap:anywhere; word-break:break-word;">{html.escape(nome_ponto)}</div>
+                    <div style="padding:10px; background:#fafafa; font-size:12px; box-sizing:border-box; overflow-x:hidden;">
+                        <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
                 '''
 
                 extras = ['STATUS_ROTA', 'DISTANCIA_ESTIMADA_KM', 'DISTANCIA_RODOVIARIA_KM', 'TEMPO_ROTA_MIN', 'TEMPO_ATENDIMENTO_MIN', 'HORA_INICIO', 'HORA_FIM']
@@ -230,13 +230,22 @@ def gerar_kml_saneamento(df_kml, nome_arquivo, colunas_exibir, bases_ativas, tip
                         continue
                     if is_sp and c.upper() not in ['LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'ZONA', 'REGIONAL'] and c in (colunas_exibir or []):
                         vals = [orig.get(c, '') for orig in r.get('_ORIGINAL_ROWS', [])]
-                        val_html = "<div style='max-height:80px; overflow-y:auto; border:1px solid #ccc; padding:4px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0; list-style-type:none; font-size:11px; color:#333;'>" + ''.join([f"<li style='margin-bottom:2px;'><b>[{i+1}]</b> {funcao_formatadora(c, v)}</li>" for i, v in enumerate(vals)]) + '</ul></div>'
+                        val_html = "<div style='max-height:180px; overflow-y:auto; overflow-x:hidden; border:1px solid #ccc; padding:4px; background:#fff; border-radius:4px; white-space:normal; overflow-wrap:anywhere; word-break:break-word;'><ul style='margin:0; padding-left:0; list-style-type:none; font-size:11px; color:#333;'>" + ''.join([f"<li style='margin-bottom:2px; white-space:normal; overflow-wrap:anywhere; word-break:break-word;'><b>[{i+1}]</b> {funcao_formatadora(c, v)}</li>" for i, v in enumerate(vals)]) + '</ul></div>'
                     else:
                         val_html = funcao_formatadora(c, r.get(c, ''))
-                    desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:44%;'>{html.escape(str(c))}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
+                    desc += (
+                        f"<tr>"
+                        f"<td style='padding:4px 6px; font-weight:bold; color:#555; vertical-align:top; width:42%; white-space:normal; overflow-wrap:anywhere; word-break:break-word;'>{html.escape(str(c))}:</td>"
+                        f"<td style='padding:4px 6px; color:#333; vertical-align:top; width:58%; white-space:normal; overflow-wrap:anywhere; word-break:break-word;'>{val_html}</td>"
+                        f"</tr>"
+                    )
 
                 link = f'https://www.google.com/maps?q={float(lat):.8f},{float(lon):.8f}'
-                desc += f"</table><div style='margin-top:7px;'><a href='{html.escape(link, quote=True)}' target='_blank'>📍 Abrir no Google Maps</a></div></div></div>]]>"
+                desc += (
+                    f"</table><div style='margin-top:9px; white-space:normal;'>"
+                    f"<a href='{html.escape(link, quote=True)}' target='_blank'>📍 Abrir no Google Maps</a>"
+                    f"</div></div></div>]]>"
+                )
                 pasta.append(
                     f'<Placemark><name>{html.escape(nome_ponto)}</name><styleUrl>#{cor}</styleUrl>'
                     f'<description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>'
