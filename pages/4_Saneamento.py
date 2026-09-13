@@ -749,14 +749,29 @@ if is_done and not st.session_state.df_routed_san.empty:
                     continue
                 c_i = 'orange' if str(r.get('SUPER_PONTO', '')).startswith('SIM') else ('gray' if r.get('STATUS_ROTA') == 'SEM_ROTA_OSRM' else 'blue')
                 ic = identificar_icone_folium(r, dfr.columns)
+                cell_label = "padding:4px 6px;font-weight:bold;color:#555;vertical-align:top;width:42%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;"
+                cell_value = "padding:4px 6px;color:#222;vertical-align:top;width:58%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;"
                 er = ''.join([
-                    f"<tr><td><b>{html.escape(str(c))}</b></td><td>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>"
+                    f"<tr><td style='{cell_label}'>{html.escape(str(c))}</td><td style='{cell_value}'>{formatar_valor_coluna(c, r.get(c, ''))}</td></tr>"
                     for c in st.session_state.get('colunas_exibir_san', [])
                     if c.upper() not in ['NOME_DIA', 'DIA_MES', 'SEMANA', 'BASE_ATRIBUIDA']
                 ])
-                extras = f"<tr><td><b>Status rota</b></td><td>{html.escape(str(r.get('STATUS_ROTA','-')))}</td></tr><tr><td><b>Hora</b></td><td>{r.get('HORA_INICIO','-')} - {r.get('HORA_FIM','-')}</td></tr>"
-                pop_html = f'<div style="width:280px;"><b>Equipe:</b> {html.escape(str(bn))}<br><b>Ordem:</b> {r.get("ORDEM")}<br><table border="1" style="width:100%;font-size:11px;">{extras}{er}</table></div>'
-                folium.Marker([r['LATITUDE'], r['LONGITUDE']], icon=folium.Icon(color=c_i, icon=ic), popup=folium.Popup(pop_html, max_width=330)).add_to(markers)
+                extras = (
+                    f"<tr><td style='{cell_label}'>Status rota</td><td style='{cell_value}'>{html.escape(str(r.get('STATUS_ROTA','-')))}</td></tr>"
+                    f"<tr><td style='{cell_label}'>Hora</td><td style='{cell_value}'>{html.escape(str(r.get('HORA_INICIO','-')))} - {html.escape(str(r.get('HORA_FIM','-')))}</td></tr>"
+                )
+                pop_html = (
+                    f'<div style="font-family:Arial,sans-serif;width:460px;max-width:80vw;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;word-break:break-word;">'
+                    f'<div style="margin-bottom:6px;"><b>Equipe:</b> {html.escape(str(bn))}<br><b>Ordem:</b> {r.get("ORDEM")}</div>'
+                    f'<div style="max-height:420px;overflow-y:auto;overflow-x:hidden;">'
+                    f'<table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;">{extras}{er}</table>'
+                    f'</div></div>'
+                )
+                folium.Marker(
+                    [r['LATITUDE'], r['LONGITUDE']],
+                    icon=folium.Icon(color=c_i, icon=ic),
+                    popup=folium.Popup(pop_html, max_width=560),
+                ).add_to(markers)
             fg.add_to(mapa)
         folium.LayerControl(collapsed=False).add_to(mapa)
         st_folium(mapa, use_container_width=True, height=550)
