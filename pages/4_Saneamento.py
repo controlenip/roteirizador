@@ -39,7 +39,7 @@ from modules.export_saneamento import (
 _haversine_scalar = haversine_scalar
 _resolver_tsp_ortools = None  # TSP do Saneamento é local; não consulta rede.
 
-VERSAO_REGRAS_SANEAMENTO = "2026.09.3"
+VERSAO_REGRAS_SANEAMENTO = "2026.09.4"
 DIAS_NOMES = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 DIAS_MAP = {nome: i for i, nome in enumerate(DIAS_NOMES)}
 
@@ -1472,7 +1472,10 @@ if is_done and not st.session_state.df_routed_san.empty:
 # ==============================================================
 # ENTRADA / PRÉ-PROCESSAMENTO
 # ==============================================================
-else:
+# IMPORTANTE: o pré-processamento só deve rodar quando a aplicação está ociosa.
+# Durante RUNNING, repetir leitura, auditoria, Super Pontos e atribuição a cada rerun
+# fazia o motor gastar dezenas de segundos por equipe e distorcia completamente o ETA.
+elif status_exec == 'IDLE':
     c_up1, c_up2 = st.columns(2)
     with c_up1:
         st.markdown('### 👥 1. Bases de Equipes')
@@ -1875,28 +1878,30 @@ if status_exec == 'RUNNING':
         frac_equipe = min(1.0, max(0.0, float(ii) / max(1.0, float(it))))
         f = min(1.0, max(0.0, (float(bi) + frac_equipe) / max(1.0, float(len(b_n)))))
 
-        # ETA suavizada pelo tempo real das equipes já concluídas. Durante a primeira
-        # equipe, usa o progresso dos segmentos assim que houver uma amostra útil.
-        historico = [float(x) for x in st.session_state.get('team_durations_san', []) if float(x) > 0]
+        # A barra usa o mesmo progresso mostrado no texto. Antes ela considerava apenas
+        # equipes concluídas, por isso parecia parada em bases com muitas equipes.
+        try:
+            pb.progress(f)
+        except Exception:
+            pb.progress(min(100, max(0, int(round(f * 100)))))
+
+        # ETA baseada no progresso global real da execução. Essa forma inclui o custo
+        # efetivo dos reruns e evita estimativas absurdamente pequenas quando uma etapa
+        # interna termina rápido, mas a execução completa ainda está demorando.
         eta_s = None
-        if historico:
-            amostra = historico[-10:]
-            media_equipe = sum(amostra) / len(amostra)
-            restantes_inteiras = max(0, len(b_n) - int(bi) - 1)
-            if frac_equipe > 0.03:
-                dec_equipe = max(0.0, agora - float(st.session_state.get('team_started_at_san', agora)))
-                total_equipe_estimado = dec_equipe / frac_equipe
-                restante_equipe = max(0.0, total_equipe_estimado - dec_equipe)
-            else:
-                restante_equipe = media_equipe
-            eta_s = restante_equipe + (media_equipe * restantes_inteiras)
-        elif frac_equipe > 0.03:
-            dec_equipe = max(0.0, agora - float(st.session_state.get('team_started_at_san', agora)))
-            total_equipe_estimado = dec_equipe / frac_equipe
-            restantes_inteiras = max(0, len(b_n) - int(bi) - 1)
-            eta_s = max(0.0, total_equipe_estimado - dec_equipe) + total_equipe_estimado * restantes_inteiras
-        elif f > 0.02 and e > 1:
-            eta_s = max(0.0, (e / f) - e)
+        if f >= 0.01 and e >= 2.0:
+            eta_global = max(0.0, (e / f) - e)
+            eta_s = eta_global
+
+            # Após algumas equipes, usa também a duração recente como segunda referência.
+            # A combinação suaviza oscilações sem ignorar o tempo de parede observado.
+            historico = [float(x) for x in st.session_state.get('team_durations_san', []) if float(x) > 0]
+            if len(historico) >= 3:
+                amostra = historico[-10:]
+                media_equipe = sum(amostra) / len(amostra)
+                restantes_equiv = max(0.0, float(len(b_n)) - float(bi) - frac_equipe)
+                eta_hist = media_equipe * restantes_equiv
+                eta_s = (0.75 * eta_global) + (0.25 * eta_hist)
 
         rs = _fmt_duracao(eta_s) if eta_s is not None else 'Estimando...'
         es = _fmt_duracao(e)
@@ -1907,7 +1912,7 @@ if status_exec == 'RUNNING':
             f'<b>⏱️ Decorrido</b><div style="font-size:2rem;color:#0D256C;font-weight:bold;">{es}</div></div>'
             f'<div style="flex:1;padding:20px;border-radius:10px;background:#e8f5e9;border:1px solid #a5d6a7;text-align:center;">'
             f'<b>🎯 Restante estimado</b><div style="font-size:2rem;color:#1b5e20;font-weight:bold;">{rs}</div></div></div>'
-            f'<div style="font-size:12px;color:#6c757d;margin-bottom:8px;">Progresso medido: {pct:.1f}% — a estimativa fica mais precisa após a primeira equipe/lote concluído.</div>',
+            f'<div style="font-size:12px;color:#6c757d;margin-bottom:8px;">Progresso medido: {pct:.1f}% • Equipes concluídas: {int(bi)}/{len(b_n)} — ETA calculada pelo tempo real da execução.</div>',
             unsafe_allow_html=True
         )
 
