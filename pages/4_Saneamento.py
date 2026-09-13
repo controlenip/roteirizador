@@ -12,6 +12,7 @@ import uuid
 import unicodedata
 import traceback
 import math
+import requests
 from datetime import datetime, time as dt_time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from folium.plugins import MarkerCluster
@@ -19,7 +20,6 @@ from streamlit_folium import st_folium
 
 from modules.data_processing import ler_planilha_cached, formata_campo_html, normalize_cols, normalizar_municipios
 from modules.geospatial import haversine_vectorized, haversine_scalar, obter_coordenadas_municipio_cached, fundir_super_pontos
-from modules.routing_engine import resolver_tsp_ortools, obter_rota_ruas
 from modules.export_saneamento import (
     injetar_logo,
     identificar_icone_folium,
@@ -37,9 +37,9 @@ from modules.export_saneamento import (
 # Mantido dentro desta pagina para compatibilidade com Streamlit Cloud.
 # Assim, a pagina nao depende da existencia de modules/saneamento_engine.py.
 _haversine_scalar = haversine_scalar
-_resolver_tsp_ortools = resolver_tsp_ortools
+_resolver_tsp_ortools = None  # TSP do Saneamento é local; não consulta rede.
 
-VERSAO_REGRAS_SANEAMENTO = "2026.09.2"
+VERSAO_REGRAS_SANEAMENTO = "2026.09.3"
 DIAS_NOMES = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 DIAS_MAP = {nome: i for i, nome in enumerate(DIAS_NOMES)}
 
@@ -312,19 +312,65 @@ def tempo_servico_registro(registro, cfg):
     return tempo_um(registro)
 
 
-def _resolver_tsp(grupo, la, lo, url):
-    if _resolver_tsp_ortools is not None:
-        return _resolver_tsp_ortools(grupo, la, lo, url)
-    # Fallback determinístico por vizinho mais próximo.
-    restantes = [dict(x) for x in grupo]
-    ordem = []
-    cl, co = la, lo
+def _resolver_tsp_local(grupo, la, lo):
+    """Ordena localmente sem consultar OSRM.
+
+    Usa vizinho mais próximo sobre uma matriz Haversine vetorizada e aplica até
+    duas passadas de 2-opt para reduzir cruzamentos. A rota considera saída e
+    retorno à base. Isso evita que a etapa de planejamento fique bloqueada por
+    chamadas HTTP do ``resolver_tsp_ortools`` quando o OSRM está lento/indisponível.
+    """
+    registros = [dict(x) for x in grupo]
+    n = len(registros)
+    if n <= 1:
+        return registros
+
+    coords = np.array(
+        [(float(la), float(lo))] +
+        [(float(r["LATITUDE"]), float(r["LONGITUDE"])) for r in registros],
+        dtype=float,
+    )
+    lats = np.radians(coords[:, 0])
+    lons = np.radians(coords[:, 1])
+    dlat = lats[:, None] - lats[None, :]
+    dlon = lons[:, None] - lons[None, :]
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2.0) ** 2
+    matriz = 6371.0 * (2.0 * np.arcsin(np.minimum(1.0, np.sqrt(a))))
+
+    restantes = list(range(1, n + 1))
+    rota = []
+    atual = 0
     while restantes:
-        idx = min(range(len(restantes)), key=lambda i: haversine_scalar(cl, co, restantes[i]["LATITUDE"], restantes[i]["LONGITUDE"]))
-        nx = restantes.pop(idx)
-        ordem.append(nx)
-        cl, co = float(nx["LATITUDE"]), float(nx["LONGITUDE"])
-    return ordem
+        pos = int(np.argmin([matriz[atual, idx] for idx in restantes]))
+        prox = restantes.pop(pos)
+        rota.append(prox)
+        atual = prox
+
+    # 2-opt é barato para os blocos diários usuais. Para blocos muito grandes,
+    # mantém o vizinho mais próximo para garantir tempo previsível.
+    if 3 <= n <= 40:
+        for _ in range(2):
+            melhorou = False
+            for i in range(0, n - 1):
+                anterior = 0 if i == 0 else rota[i - 1]
+                a_idx = rota[i]
+                for j in range(i + 1, n):
+                    b_idx = rota[j]
+                    seguinte = 0 if j == n - 1 else rota[j + 1]
+                    atual_custo = matriz[anterior, a_idx] + matriz[b_idx, seguinte]
+                    novo_custo = matriz[anterior, b_idx] + matriz[a_idx, seguinte]
+                    if novo_custo + 1e-9 < atual_custo:
+                        rota[i:j + 1] = reversed(rota[i:j + 1])
+                        melhorou = True
+            if not melhorou:
+                break
+
+    return [registros[idx - 1] for idx in rota]
+
+
+def _resolver_tsp(grupo, la, lo, url=None):
+    """Compatibilidade: a ordenação não faz rede; OSRM fica só no traçado final."""
+    return _resolver_tsp_local(grupo, la, lo)
 
 
 def ordenar_bloco_rota(tarefas, lat_inicio, lon_inicio, sentido_rota, url_osrm_base):
@@ -853,6 +899,37 @@ def ler_csv_resiliente(file_bytes):
         except Exception as exc:
             ultimo = exc
     raise ultimo if ultimo else ValueError('Não foi possível ler o CSV.')
+
+
+def obter_rota_osrm_controlada(lat1, lon1, lat2, lon2, url_osrm_base, timeout_s=5.0):
+    """Consulta OSRM sem a política global de retries do routing_engine.
+
+    O motor compartilhado do projeto pode usar múltiplos retries; quando o servidor
+    público está lento, uma única chamada pode bloquear por muito tempo. Aqui cada
+    tentativa tem timeout explícito e falha de rede é devolvida ao
+    motor, que pode acionar o circuit breaker da execução.
+    """
+    lat1, lon1, lat2, lon2 = map(float, (lat1, lon1, lat2, lon2))
+    if lat1 == lat2 and lon1 == lon2:
+        return [[lon1, lat1], [lon2, lat2]], 0.0
+    base = str(url_osrm_base or '').strip().rstrip('/')
+    if not base:
+        raise RuntimeError('Endpoint OSRM vazio')
+    url = (
+        f"{base}/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}"
+        '?overview=full&geometries=geojson&radiuses=10000;10000'
+    )
+    resposta = requests.get(url, timeout=(2.5, float(timeout_s)))
+    if resposta.status_code != 200:
+        raise RuntimeError(f'OSRM HTTP {resposta.status_code}')
+    data = resposta.json()
+    if data.get('code') != 'Ok' or not data.get('routes'):
+        raise RuntimeError(f"OSRM sem rota: {data.get('code', 'SEM_CODIGO')}")
+    rota = data['routes'][0]
+    geom = rota.get('geometry', {}).get('coordinates', [])
+    if not isinstance(geom, list) or len(geom) < 2:
+        raise RuntimeError('OSRM retornou geometria inválida')
+    return geom, float(rota.get('duration', 0.0))
 
 
 def criar_id_execucao():
@@ -1734,6 +1811,8 @@ else:
             'unvisited': df_ta.copy(),
             'routed_data': [],
             'osrm_cache': {},
+            'osrm_falhas_consecutivas': 0,
+            'osrm_desativado_execucao': False,
             'replan_osrm_iter': 0,
         }
         for k in ['bytes_zip_xl_san', 'bytes_zip_kml_san', 'bytes_zip_gpx_san']:
@@ -1865,8 +1944,12 @@ if status_exec == 'RUNNING':
                 st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []
                 st_v['replan_osrm_iter'] = 0
                 st.session_state.vrp_state_san = st_v
-                tentar_rerun()
-                st.stop()
+                # Com traçado real desligado, não há motivo para fazer um rerun só
+                # entre o planejamento e a criação das geometrias estimadas. Isso
+                # corta aproximadamente pela metade os reruns em cenários com muitas equipes.
+                if cfg_eq.get('tracado_real', False):
+                    tentar_rerun()
+                    st.stop()
 
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
             cfg_eq = st_v.get('cfg_equipe_atual', cfg)
@@ -1888,19 +1971,31 @@ if status_exec == 'RUNNING':
                     continue
 
                 resultado = None
-                for tentativa in range(int(cfg_eq.get('tentativas_osrm', 2))):
-                    try:
-                        geom, dur_s = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg_eq['url_osrm_base'], cfg_eq['velocidade_media_kmh'])
-                        if isinstance(geom, list) and len(geom) >= 2:
+                # Circuit breaker: se o servidor falhar repetidamente, o restante da
+                # execução usa estimativa e não fica esperando timeout em centenas de trechos.
+                if st_v.get('osrm_desativado_execucao', False):
+                    resultado = {'geom': [], 'duracao_s': float(it['tempo_estimado_min']) * 60.0, 'dist_rod_km': np.nan, 'status': 'SEM_ROTA_OSRM'}
+                else:
+                    for tentativa in range(int(cfg_eq.get('tentativas_osrm', 2))):
+                        try:
+                            geom, dur_s = obter_rota_osrm_controlada(
+                                it['la'], it['La'], it['lt'], it['Lt'], cfg_eq['url_osrm_base'], timeout_s=5.0
+                            )
                             dist_rod = distancia_geometria_km(geom)
                             resultado = {'geom': geom, 'duracao_s': float(dur_s), 'dist_rod_km': dist_rod, 'status': 'OK_OSRM'}
                             cache[chave] = resultado
+                            st_v['osrm_falhas_consecutivas'] = 0
                             break
-                    except Exception:
-                        if tentativa + 1 < int(cfg_eq.get('tentativas_osrm', 2)):
-                            time.sleep(0.15)
-                if resultado is None:
-                    resultado = {'geom': [], 'duracao_s': float(it['tempo_estimado_min']) * 60.0, 'dist_rod_km': np.nan, 'status': 'SEM_ROTA_OSRM'}
+                        except Exception:
+                            if tentativa + 1 < int(cfg_eq.get('tentativas_osrm', 2)):
+                                time.sleep(0.10)
+                    if resultado is None:
+                        falhas = int(st_v.get('osrm_falhas_consecutivas', 0)) + 1
+                        st_v['osrm_falhas_consecutivas'] = falhas
+                        if falhas >= 3:
+                            st_v['osrm_desativado_execucao'] = True
+                            sgt.warning('⚠️ OSRM apresentou falhas consecutivas. Traçado real foi suspenso nesta execução para evitar travamento; os trechos restantes usarão estimativa.')
+                        resultado = {'geom': [], 'duracao_s': float(it['tempo_estimado_min']) * 60.0, 'dist_rod_km': np.nan, 'status': 'SEM_ROTA_OSRM'}
                 gd.append(resultado)
 
             st_v['c_idx'], st_v['current_geoms'], st_v['osrm_cache'] = ei, gd, cache
