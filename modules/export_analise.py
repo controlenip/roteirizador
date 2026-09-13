@@ -14,6 +14,22 @@ def _valor_alias(row, aliases, default='-'):
     return default
 
 
+
+def _sanitizar_valor_excel(valor):
+    """Evita que texto vindo das bases seja interpretado como fórmula pelo Excel."""
+    if isinstance(valor, str) and valor and valor[0] in ('=', '+', '-', '@'):
+        return "'" + valor
+    return valor
+
+
+def _sanitizar_dataframe_excel(df):
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
+            df[col] = df[col].map(_sanitizar_valor_excel)
+    return df
+
+
 def gerar_excel_analise(dict_dfs):
     """Gera um arquivo Excel com múltiplas abas, preservando os dados e otimizando a formatação."""
     output = io.BytesIO()
@@ -29,6 +45,7 @@ def gerar_excel_analise(dict_dfs):
                 errors='ignore'
             ).copy()
 
+            df_saida = _sanitizar_dataframe_excel(df_saida)
             safe_sheet_name = str(sheet_name)[:31]
             df_saida.to_excel(writer, index=False, sheet_name=safe_sheet_name)
 
@@ -98,6 +115,8 @@ def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
         '<LabelStyle><scale>0</scale></LabelStyle></Style>'
     )
 
+    kml.append('<Style id="style_dup_line"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>')
+
     if 'CLUSTER_ID' not in df.columns:
         df['CLUSTER_ID'] = range(len(df))
 
@@ -147,10 +166,18 @@ def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
             n = html.escape(str(r.get('NOTA', '')))
             nomes_notas.append(n)
             mun = html.escape(str(r.get('MUNICIPIO', '')))
-            o = html.escape(str(r.get('ORIGEM_BASE', '')))
+            origem_raw = str(r.get('ORIGEM_BASE', ''))
+            o = html.escape(origem_raw)
             s = html.escape(str(r.get('SITUACAO SAP', '')))
-            s_sisco = html.escape(_valor_alias(r, ['STATUS SISCO', 'STATUS_SISCO']))
-            s_list = html.escape(_valor_alias(r, ['STATUS LIST', 'STATUS_LIST']))
+            sap_fonte = html.escape(str(r.get('FONTE_VALIDACAO_SAP', '-')))
+            s_sisco_raw = _valor_alias(r, ['STATUS SISCO', 'STATUS_SISCO'], '-')
+            s_list_raw = _valor_alias(r, ['STATUS LIST', 'STATUS_LIST'], '-')
+            if origem_raw.strip().upper() == 'LEVANTAMENTO' and s_sisco_raw == '-':
+                s_sisco_raw = str(r.get('STATUS_SISCO_NORMALIZADO', 'NÃO INFORMADO')).replace('NAO ', 'NÃO ')
+            if origem_raw.strip().upper() == 'LEVANTAMENTO' and s_list_raw == '-':
+                s_list_raw = str(r.get('STATUS_LIST_NORMALIZADO', 'NÃO INFORMADO')).replace('NAO ', 'NÃO ')
+            s_sisco = html.escape(s_sisco_raw)
+            s_list = html.escape(s_list_raw)
             col = html.escape(str(r.get('COLABORADORES MAIS PROXIMOS', '')))
             dup = html.escape(str(r.get('DUPLICADA', '')))
             dup_geo = html.escape(str(r.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')))
@@ -161,6 +188,11 @@ def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
             classificacao = html.escape(str(r.get('COR_NOME', '-')))
             motivo_inval = html.escape(str(r.get('MOTIVO_INVALIDADE', '-')))
             nota_valida_fluxo = str(r.get('NOTA_VALIDA_FLUXO', 'SIM')).upper()
+            qtd_ocorr = int(r.get('QTD_OCORRENCIAS_NOTA', 0) or 0)
+            qtd_san = int(r.get('QTD_OCORRENCIAS_SANEAMENTO', 0) or 0)
+            qtd_lev = int(r.get('QTD_OCORRENCIAS_LEVANTAMENTO', 0) or 0)
+            link_atual = f"https://www.google.com/maps?q={float(r.get('LATITUDE')):.8f},{float(r.get('LONGITUDE')):.8f}"
+            link_atual_safe = html.escape(link_atual, quote=True)
 
             link_dup = str(r.get('LINK_DUPLICATA_MAPS', '')).strip()
             origem_dup = html.escape(str(r.get('DUPLICATA_ORIGEM_DESTINO', '')))
@@ -188,14 +220,17 @@ def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
                 <tr><td style="padding:2px;"><b>Município:</b></td><td style="padding:2px;">{mun}</td></tr>
                 <tr><td style="padding:2px;"><b>Origem:</b></td><td style="padding:2px;">{o}</td></tr>
                 <tr><td style="padding:2px;"><b>Status SAP:</b></td><td style="padding:2px;">{s}</td></tr>
+                <tr><td style="padding:2px;"><b>Validação SAP:</b></td><td style="padding:2px;">{sap_fonte}</td></tr>
                 <tr><td style="padding:2px;"><b>SISCO / LIST:</b></td><td style="padding:2px;">{s_sisco} / {s_list}</td></tr>
                 {motivo_html}
                 <tr><td style="padding:2px;"><b>Equipes Perto:</b></td><td style="padding:2px;">{col}</td></tr>
                 <tr><td style="padding:2px;"><b>Duplicada:</b></td><td style="padding:2px;">{dup} {dup_geo}</td></tr>
+                <tr><td style="padding:2px;"><b>Ocorrências:</b></td><td style="padding:2px;">{qtd_ocorr} (Saneamento: {qtd_san} | Levantamento: {qtd_lev})</td></tr>
                 <tr><td style="padding:2px;"><b>Dist. duplicata:</b></td><td style="padding:2px;">{dist_dup_txt}</td></tr>
                 <tr><td style="padding:2px;"><b>Município divergente:</b></td><td style="padding:2px;">{mun_div or '-'}</td></tr>
                 <tr><td style="padding:2px;"><b>Equipe distante:</b></td><td style="padding:2px;">{alerta_eq}</td></tr>
             </table>
+            <div style='margin:6px 0;'><a href='{link_atual_safe}' target='_blank' style='color:#0D47A1;font-weight:bold;text-decoration:none;'>📍 Abrir este ponto no Google Maps</a></div>
             {link_dup_html}
             <hr style="margin:4px 0; border:0; border-top:1px solid #ddd;">
             '''
@@ -219,6 +254,34 @@ def gerar_kml_analise(df, nome_documento='Análise Cruzada NIP'):
         })
 
     df_clusters = pd.DataFrame(clusters)
+
+    # Ligações entre ocorrências duplicadas em locais diferentes. O KML padrão não
+    # possui linha tracejada portátil; usa-se uma linha vermelha fina e uma pasta própria.
+    pares = set()
+    linhas = []
+    for _, rr in df.iterrows():
+        if str(rr.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')) != 'LOCAIS DIFERENTES':
+            continue
+        if pd.isna(rr.get('DUPLICATA_LAT_DESTINO')) or pd.isna(rr.get('DUPLICATA_LON_DESTINO')):
+            continue
+        a = (round(float(rr['LATITUDE']), 6), round(float(rr['LONGITUDE']), 6))
+        b = (round(float(rr['DUPLICATA_LAT_DESTINO']), 6), round(float(rr['DUPLICATA_LON_DESTINO']), 6))
+        chave = (str(rr.get('NOTA', '')), tuple(sorted([a, b])))
+        if chave in pares:
+            continue
+        pares.add(chave)
+        linhas.append((str(rr.get('NOTA', '')), a, b, rr.get('DISTANCIA_ENTRE_DUPLICATAS_KM', '')))
+    if linhas:
+        kml.append('<Folder><name>🔗 Ligações de Duplicadas</name>')
+        for nota, a, b, dist in linhas:
+            nome = html.escape(f'Duplicata {nota}')
+            desc_linha = html.escape(f'Distância aproximada entre ocorrências: {dist} km')
+            kml.append(
+                f'<Placemark><name>{nome}</name><styleUrl>#style_dup_line</styleUrl>'
+                f'<description>{desc_linha}</description><LineString><tessellate>1</tessellate>'
+                f'<coordinates>{a[1]},{a[0]},0 {b[1]},{b[0]},0</coordinates></LineString></Placemark>'
+            )
+        kml.append('</Folder>')
 
     if not df_clusters.empty:
         for nome_grupo, df_grupo in df_clusters.groupby('COR_NOME', sort=True):
