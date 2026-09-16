@@ -8,6 +8,7 @@ import html
 import re
 import time
 import gc
+import requests
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -61,6 +62,71 @@ def render_metric_card(title, value, icon, border_color, bg_color):
     </div>
     """
 
+
+
+def ordenar_rota_rapida(obras, lat_inicial, lon_inicial, reversa=False):
+    """Ordenação gulosa vetorizada, sem chamadas externas e sem risco de travar no solver."""
+    if not obras:
+        return []
+
+    coords = np.array([[float(o['LATITUDE']), float(o['LONGITUDE'])] for o in obras], dtype=float)
+    restantes = np.ones(len(obras), dtype=bool)
+    ordem = []
+
+    lat_atual, lon_atual = float(lat_inicial), float(lon_inicial)
+
+    if reversa and len(obras) > 1:
+        # Começa pelo ponto mais distante do centro e depois segue sempre ao mais próximo.
+        d0 = (coords[:, 0] - lat_atual) ** 2 + ((coords[:, 1] - lon_atual) * np.cos(np.radians(lat_atual))) ** 2
+        idx = int(np.argmax(d0))
+        ordem.append(obras[idx])
+        restantes[idx] = False
+        lat_atual, lon_atual = coords[idx]
+
+    while restantes.any():
+        idxs = np.flatnonzero(restantes)
+        cand = coords[idxs]
+        cos_lat = np.cos(np.radians(lat_atual))
+        dist2 = (cand[:, 0] - lat_atual) ** 2 + ((cand[:, 1] - lon_atual) * cos_lat) ** 2
+        idx = int(idxs[int(np.argmin(dist2))])
+        ordem.append(obras[idx])
+        restantes[idx] = False
+        lat_atual, lon_atual = coords[idx]
+
+    return ordem
+
+
+def obter_rota_ruas_segura(lat1, lon1, lat2, lon2, url_osrm_base, velocidade_media_kmh, timeout_s=5):
+    """Consulta OSRM com timeout curto; em qualquer falha retorna linha reta e tempo estimado."""
+    dist_km = haversine_scalar(lat1, lon1, lat2, lon2) * 1.3
+    fallback = ([[lon1, lat1], [lon2, lat2]], (dist_km / max(float(velocidade_media_kmh), 1.0)) * 3600.0)
+
+    if not url_osrm_base:
+        return fallback
+
+    try:
+        base = str(url_osrm_base).rstrip('/')
+        url = f"{base}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+        resp = requests.get(
+            url,
+            params={'overview': 'full', 'geometries': 'geojson', 'steps': 'false'},
+            timeout=timeout_s,
+            headers={'User-Agent': 'ListaContinua/1.0'}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rotas = data.get('routes') or []
+        if not rotas:
+            return fallback
+        rota = rotas[0]
+        geom = ((rota.get('geometry') or {}).get('coordinates')) or []
+        if len(geom) < 2:
+            return fallback
+        duracao = float(rota.get('duration') or fallback[1])
+        return geom, duracao
+    except Exception:
+        return fallback
+
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
     else: st.experimental_rerun()
@@ -96,7 +162,7 @@ with st.sidebar:
         
     with st.expander("📡 Conexão de Rede", expanded=False):
         url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
-        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=True, disabled=is_locked)
+        usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked, help="Ative apenas quando precisar do traçado viário real. Desativado, o motor usa distância geográfica e fica muito mais rápido.")
 
     sb_html = st.empty()
 
@@ -325,24 +391,21 @@ if status_exec == "RUNNING":
         
         if 'c_rotas' not in st_v:
             oe = st_v['unvisited'][st_v['unvisited']['BASE_ATRIBUIDA'] == bn].to_dict('records')
+            if not oe:
+                st_v['b_idx'] += 1
+                st.session_state.vrp_state_lista = st_v
+                tentar_rerun()
+                st.stop()
+
             bl = sum(float(x['LATITUDE']) for x in oe) / len(oe)
             bL = sum(float(x['LONGITUDE']) for x in oe) / len(oe)
-            
-            if "Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"):
-                ot = []
-                if oe:
-                    max_idx = max(range(len(oe)), key=lambda i: haversine_scalar(bl, bL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
-                    p_longe = oe.pop(max_idx)
-                    ot.append(p_longe)
-                    cl, cL = float(p_longe['LATITUDE']), float(p_longe['LONGITUDE'])
-                    while oe:
-                        closest_idx = min(range(len(oe)), key=lambda i: haversine_scalar(cl, cL, float(oe[i]['LATITUDE']), float(oe[i]['LONGITUDE'])))
-                        nx = oe.pop(closest_idx)
-                        ot.append(nx)
-                        cl, cL = float(nx['LATITUDE']), float(nx['LONGITUDE'])
-            else:
-                ot = resolver_tsp_ortools(oe, bl, bL, cfg['url_osrm_base'] if cfg.get('tracado_real') else "") if oe else []
-                if not ot: ot = oe
+
+            # O solver antigo podia ficar preso aguardando matriz/OSRM.
+            # A ordenação abaixo é local, determinística e não depende de rede.
+            ot = ordenar_rota_rapida(
+                oe, bl, bL,
+                reversa=("Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"))
+            )
             
             rf = []
             c_l, c_L = bl, bL
@@ -355,7 +418,7 @@ if status_exec == "RUNNING":
             st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
-            ei = min(oi + (30 if cfg.get('tracado_real') else len(rf)), len(rf)) 
+            ei = min(oi + (8 if cfg.get('tracado_real') else len(rf)), len(rf)) 
             
             for i in range(oi, ei):
                 it = rf[i]
@@ -366,9 +429,9 @@ if status_exec == "RUNNING":
                 else:
                     if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
-                    time.sleep(0.15)
-                    try: 
-                        res = obter_rota_ruas(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'])
+                    time.sleep(0.02)
+                    try:
+                        res = obter_rota_ruas_segura(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'], timeout_s=5)
                         if not res or len(res) == 0 or len(res[0]) == 0: gd.append(fallback)
                         else: gd.append(res)
                     except: gd.append(fallback)
