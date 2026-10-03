@@ -1,5 +1,6 @@
 import io
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -31,6 +32,25 @@ def _to_excel_bytes(df):
     return buf.getvalue()
 
 
+APP_DIR = Path(__file__).resolve().parent
+
+
+def _carregar_modelo(nome_arquivo, fallback_df):
+    """Carrega o modelo oficial completo quando ele estiver no projeto.
+    Procura primeiro ao lado desta página e depois na pasta /modelos.
+    Se o arquivo não existir no servidor, gera um modelo estrutural simples
+    com as colunas essenciais para que o botão nunca fique quebrado.
+    """
+    candidatos = [
+        APP_DIR / nome_arquivo,
+        APP_DIR / "modelos" / nome_arquivo,
+    ]
+    for caminho in candidatos:
+        if caminho.exists() and caminho.is_file():
+            return caminho.read_bytes(), True
+    return _to_excel_bytes(fallback_df), False
+
+
 def render_faq(items, busca=""):
     termo = _norm(busca)
     exibidos = 0
@@ -50,18 +70,38 @@ def render_faq(items, busca=""):
 st.markdown("---")
 st.markdown("## 📥 1. Central de Downloads — Planilhas Modelo")
 st.markdown(
-    "Use os modelos abaixo como ponto de partida. Os módulos possuem alguma tolerância a nomes alternativos "
-    "de colunas, mas seguir o padrão reduz erros de leitura, filtros e exportações."
+    "Para Levantamento, os modelos oficiais abaixo substituem os antigos modelos genéricos de Equipes e Obras. "
+    "O Planejamento Tático usa duas planilhas (demanda + levantadores), enquanto a Lista Contínua usa uma única base já atribuída."
 )
 
-cols_equipes = ["EQUIPE", "MUNICIPIO", "RESIDENCIA", "LATITUDE", "LONGITUDE", "ATIVO"]
-df_equipes = pd.DataFrame(columns=cols_equipes)
-
-cols_obras = [
-    "PROTOCOLO", "MUNICIPIO", "LATITUDE", "LONGITUDE", "STATUS DA FISCALIZACAO",
-    "TIPO NOTA", "VALOR DA OBRA", "PRIORIDADE", "LEVANTADOR"
+# Modelos oficiais de Levantamento definidos para a operação.
+# Quando os arquivos completos estiverem no repositório, o FAQ entrega exatamente esses arquivos.
+cols_base_levantamento = [
+    "ÁREA DE ATUAÇÃO (LEVANTADOR)", "LEVANTADOR", "DATA DESPACHO", "ID SISCO", "PROTOCOLO",
+    "TIPO NOTA", "DATA ABERTURA", "PRIORIDADE", "STATUS SAP", "STATUS SISCO", "STATUS LIST",
+    "ORÇAMENTO MODULAR (NÃO ENVIAR A CAMPO)", "PLA ALVOS LEVANTAMENTOS (NÃO ENVIAR A CAMPO)",
+    "FASE", "PAT", "REGIONAL", "MUNICIPIO", "DISTANCIA BT", "DISTANCIA MT", "DISTANCIA TRAFO",
+    "POSTE PREVISTO BT", "POSTE PREVISTO MT", "NOME", "CONTA CONTRATO", "INSTALAÇÃO", "ENDEREÇO",
+    "LOCALIDADE", "LATITUDE", "LONGITUDE", "INFORMAÇÕES", "INFORMAÇÕES EXTRAS", "INCLUIR_DASH",
+    "POSTES PREVISTOS TOTAL", "DIAS ABERTURA-DESPACHO", "FILA OPERACIONAL", "ETAPA OPERACIONAL",
+    "DIAS EM LEVANTAMENTO", "FAIXA AGING", "SEM LEVANTADOR ATIVO", "PRIORIDADE FORA LIST",
+    "DIVERGENCIA SISCO-LIST", "AÇÃO NECESSÁRIA", "SEVERIDADE", "INCLUIR_DASH_SEM_DATA", "PRONTO_PARA_LIST"
 ]
-df_obras = pd.DataFrame(columns=cols_obras)
+df_base_levantamento = pd.DataFrame(columns=cols_base_levantamento)
+
+cols_levantadores_principais = [
+    "MunicIpio", "Estado", "Levantador", "Regional", "Longitude", "Latitude", "Equipe"
+]
+df_levantadores_principais = pd.DataFrame(columns=cols_levantadores_principais)
+
+cols_lista_continua_levantamento = [
+    "LEVANTADOR", "DATA DESPACHO", "ID SISCO", "PROTOCOLO", "TIPO NOTA", "DATA ABERTURA",
+    "PRIORIDADE", "STATUS SAP", "STATUS SISCO", "STATUS LIST", "FASE", "PAT", "REGIONAL",
+    "MUNICIPIO", "DISTANCIA BT", "DISTANCIA MT", "DISTANCIA TRAFO", "POSTE PREVISTO BT",
+    "POSTE PREVISTO MT", "NOME", "CONTA CONTRATO", "INSTALAÇÃO", "ENDEREÇO", "LOCALIDADE",
+    "LATITUDE", "LONGITUDE", "INFORMAÇÕES"
+]
+df_lista_continua_levantamento = pd.DataFrame(columns=cols_lista_continua_levantamento)
 
 cols_fisc = [
     "NOTA", "VALOR DA OBRA", "QTD PREVISTA DE POSTES", "REGIONAL", "MUNICIPIO",
@@ -85,30 +125,55 @@ df_lev_analise = pd.DataFrame(columns=cols_lev_analise)
 cols_localidades = ["NOME_COLAB", "LAT_LOC", "LON_LOC", "MUNICIPIO"]
 df_localidades = pd.DataFrame(columns=cols_localidades)
 
+bytes_base_tatico, oficial_base_tatico = _carregar_modelo("BASE_LEVANTAMENTO_ATUALIZADA.xlsx", df_base_levantamento)
+bytes_levantadores, oficial_levantadores = _carregar_modelo("LEVANTADORES_PRINCIPAIS.xlsx", df_levantadores_principais)
+bytes_lista_continua, oficial_lista_continua = _carregar_modelo("BASE_LISTA_CONTINUA_LEVANTAMENTO.xlsx", df_lista_continua_levantamento)
+
 r1c1, r1c2, r1c3 = st.columns(3)
 with r1c1:
-    st.markdown("#### 👥 Equipes / Bases")
+    st.markdown("#### 🗺️ Tático — Base de Levantamento")
     st.download_button(
-        "📥 Baixar Modelo: Equipes",
-        data=_to_excel_bytes(df_equipes),
-        file_name="Modelo_Equipes.xlsx",
+        "📥 BASE_LEVANTAMENTO_ATUALIZADA",
+        data=bytes_base_tatico,
+        file_name="BASE_LEVANTAMENTO_ATUALIZADA.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    st.caption("Nome da equipe + município/residência. Latitude/longitude da base melhoram a precisão da origem da rota.")
+    st.caption(
+        "Planilha de demandas do Planejamento Tático. O arquivo oficial possui a aba NOTAS e também painéis/abas auxiliares de gestão."
+        + ("" if oficial_base_tatico else " ⚠️ Arquivo completo não localizado no servidor; foi gerado um modelo estrutural simplificado.")
+    )
 
 with r1c2:
-    st.markdown("#### 🗺️ Tático / Lista Contínua")
+    st.markdown("#### 👥 Tático — Levantadores")
     st.download_button(
-        "📥 Baixar Modelo: Obras",
-        data=_to_excel_bytes(df_obras),
-        file_name="Modelo_Obras.xlsx",
+        "📥 LEVANTADORES_PRINCIPAIS",
+        data=bytes_levantadores,
+        file_name="LEVANTADORES_PRINCIPAIS.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    st.caption("Para Lista Contínua, informe o responsável na própria demanda em LEVANTADOR/FISCAL/EQUIPE equivalente.")
+    st.caption(
+        "Base oficial de equipes do Planejamento Tático: município, levantador, regional, longitude, latitude e equipe."
+        + ("" if oficial_levantadores else " ⚠️ Arquivo completo não localizado no servidor; foi gerado um modelo estrutural simplificado.")
+    )
 
 with r1c3:
+    st.markdown("#### 📜 Lista Contínua — Levantamento")
+    st.download_button(
+        "📥 BASE_LISTA_CONTINUA_LEVANTAMENTO",
+        data=bytes_lista_continua,
+        file_name="BASE_LISTA_CONTINUA_LEVANTAMENTO.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    st.caption(
+        "Modelo oficial da Lista Contínua. A coluna LEVANTADOR já define quem receberá cada nota antes da roteirização."
+        + ("" if oficial_lista_continua else " ⚠️ Arquivo completo não localizado no servidor; foi gerado um modelo estrutural simplificado.")
+    )
+
+r2c1, r2c2, r2c3 = st.columns(3)
+with r2c1:
     st.markdown("#### 📋 Fiscalização")
     st.download_button(
         "📥 Baixar Modelo: Fiscalização",
@@ -119,8 +184,7 @@ with r1c3:
     )
     st.caption("A coluna QTD PREVISTA DE POSTES alimenta a Regra do Bolsão e os indicadores do módulo.")
 
-r2c1, r2c2, r2c3 = st.columns(3)
-with r2c1:
+with r2c2:
     st.markdown("#### 🧹 Saneamento")
     st.download_button(
         "📥 Baixar Modelo: Saneamento",
@@ -131,8 +195,8 @@ with r2c1:
     )
     st.caption("O motor aceita LATITUDE/LONGITUDE e prioriza LATITUDE PROJETO/LONGITUDE PROJETO quando presentes.")
 
-with r2c2:
-    st.markdown("#### 🔍 Levantamento — Análise Cruzada")
+with r2c3:
+    st.markdown("#### 🔍 Análise Cruzada — Levantamento")
     st.download_button(
         "📥 Baixar Modelo: Levantamento",
         data=_to_excel_bytes(df_lev_analise),
@@ -142,8 +206,9 @@ with r2c2:
     )
     st.caption("Inclui STATUS SAP, STATUS SISCO e STATUS LIST para a auditoria de fluxo da Análise Cruzada.")
 
-with r2c3:
-    st.markdown("#### 📍 Localidades — Análise Cruzada")
+r3c1, r3c2, r3c3 = st.columns(3)
+with r3c1:
+    st.markdown("#### 📍 Análise Cruzada — Localidades")
     st.download_button(
         "📥 Baixar Modelo: Localidades",
         data=_to_excel_bytes(df_localidades),
@@ -152,6 +217,12 @@ with r2c3:
         use_container_width=True,
     )
     st.caption("Use uma linha por colaborador/localidade, com nome e coordenadas válidas da referência operacional.")
+
+with r3c2:
+    st.info("**Planejamento Tático:** use sempre os dois arquivos oficiais acima: BASE_LEVANTAMENTO_ATUALIZADA + LEVANTADORES_PRINCIPAIS.")
+
+with r3c3:
+    st.info("**Lista Contínua:** use BASE_LISTA_CONTINUA_LEVANTAMENTO; não é necessário carregar uma base separada de levantadores.")
 
 
 # ==============================================================
@@ -180,9 +251,9 @@ faq_geral = [
         "titulo": "🧭 1. Qual módulo devo usar?",
         "tags": ["módulos", "tático", "lista", "fiscalização", "saneamento", "análise"],
         "texto": """
-**Planejamento Tático:** distribui demandas entre equipes e organiza a capacidade por dia/semana. É indicado quando o responsável ainda será definido pelo sistema.
+**Planejamento Tático:** distribui demandas entre equipes e organiza a capacidade por dia/semana. Para o fluxo padrão de Levantamento, utilize **BASE_LEVANTAMENTO_ATUALIZADA.xlsx** como demanda e **LEVANTADORES_PRINCIPAIS.xlsx** como base dos levantadores/equipes.
 
-**Lista Contínua:** usa o responsável já existente na própria planilha e cria uma sequência contínua de execução, sem divisão operacional por cota diária.
+**Lista Contínua:** usa o responsável já existente na própria planilha. Para Levantamento, o modelo oficial é **BASE_LISTA_CONTINUA_LEVANTAMENTO.xlsx**, que já possui a coluna **LEVANTADOR** e permite criar a sequência contínua sem uma planilha separada de equipes.
 
 **Fiscalização:** trabalha com obras de fiscalização e utiliza a **Regra do Bolsão**, considerando a quantidade prevista de postes. Pode operar em modo Tático ou Contínuo.
 
@@ -237,9 +308,12 @@ faq_arquivos = [
         "titulo": "📄 5. Quais colunas são realmente essenciais?",
         "tags": ["colunas", "obrigatórias", "protocolo"],
         "texto": """
-Para os módulos de rota, as colunas mais recorrentes são **MUNICIPIO, LATITUDE, LONGITUDE e PROTOCOLO/NOTA/OS**.
+No fluxo oficial de **Planejamento Tático de Levantamento**, use:
 
-A Lista Contínua também precisa identificar um responsável, normalmente por uma coluna como **LEVANTADOR, FISCAL, EQUIPE** ou equivalente aceito pelo módulo.
+- **BASE_LEVANTAMENTO_ATUALIZADA.xlsx** para as demandas. A aba principal é **NOTAS** e contém, entre outros campos, PROTOCOLO, TIPO NOTA, PRIORIDADE, STATUS SAP, STATUS SISCO, STATUS LIST, REGIONAL, MUNICIPIO, LATITUDE e LONGITUDE.
+- **LEVANTADORES_PRINCIPAIS.xlsx** para a distribuição entre equipes. O arquivo utiliza **MunicIpio, Estado, Levantador, Regional, Longitude, Latitude e Equipe**.
+
+Na **Lista Contínua de Levantamento**, use **BASE_LISTA_CONTINUA_LEVANTAMENTO.xlsx**. Ela já contém **LEVANTADOR** junto com PROTOCOLO, status, regional, município e coordenadas; por isso não precisa de uma segunda planilha de levantadores.
 
 A Fiscalização usa **QTD PREVISTA DE POSTES** para a lógica de bolsão.
 
@@ -299,7 +373,7 @@ faq_planejamento = [
         "titulo": "📆 10. O que significa Cota Diária por Equipe?",
         "tags": ["cota", "obras por dia", "capacidade"],
         "texto": """
-É a quantidade de obras que o Planejamento Tático tenta reservar para cada equipe em cada dia de trabalho.
+É a quantidade de obras que o Planejamento Tático tenta reservar para cada equipe em cada dia de trabalho. No fluxo de Levantamento, a demanda vem de **BASE_LEVANTAMENTO_ATUALIZADA.xlsx** e as origens/equipes vêm de **LEVANTADORES_PRINCIPAIS.xlsx**.
 
 A capacidade total depende também da quantidade de equipes, dos dias selecionados e da quantidade de períodos configurados. Se a demanda exceder essa capacidade, o excedente pode aparecer separado como **Fora da Capacidade de Dias/Equipes**.
 """,
@@ -427,7 +501,9 @@ faq_lista = [
         "texto": """
 A Lista Contínua não distribui a demanda entre pessoas. Ela parte da atribuição já existente na própria planilha e cria uma sequência contínua de execução para cada responsável.
 
-Por isso, é essencial existir uma coluna reconhecível de responsável, como **LEVANTADOR, FISCAL, EQUIPE, LEVANTADOR_RESPONSAVEL ou NOME_FISCAL**, conforme o conjunto de aliases aceitos pelo módulo.
+Para o fluxo de Levantamento, utilize **BASE_LISTA_CONTINUA_LEVANTAMENTO.xlsx**. O modelo oficial já possui a coluna **LEVANTADOR**, além de PROTOCOLO, status, regional, município, latitude e longitude. Portanto, **não é necessário carregar LEVANTADORES_PRINCIPAIS nesse módulo**.
+
+Em bases alternativas, o código também reconhece aliases de responsável como **FISCAL, EQUIPE, LEVANTADOR_RESPONSAVEL ou NOME_FISCAL**.
 """,
     },
     {
@@ -884,8 +960,8 @@ else:
 st.markdown("---")
 st.markdown("## 📌 4. Resumo das regras mais importantes")
 resumo = pd.DataFrame([
-    ["Planejamento Tático", "Distribui entre equipes", "Cota + dias/períodos", "Proximidade ou município", "Excel/KML/GPX"],
-    ["Lista Contínua", "Usa responsável da planilha", "Sequência contínua", "Responsável já atribuído", "Excel/TXT/KML/GPX"],
+    ["Planejamento Tático", "BASE_LEVANTAMENTO_ATUALIZADA + LEVANTADORES_PRINCIPAIS", "Cota + dias/períodos", "Proximidade ou município", "Excel/KML/GPX"],
+    ["Lista Contínua", "BASE_LISTA_CONTINUA_LEVANTAMENTO", "Sequência contínua", "Responsável já atribuído", "Excel/TXT/KML/GPX"],
     ["Fiscalização", "Tático ou Contínuo", "Bolsão por postes", "Proximidade/município ou fiscal informado", "Excel/TXT/KML/GPX"],
     ["Saneamento", "Padrão ou Contínuo", "Cota + jornada + atendimento", "Proximidade/município", "Excel/KML/GPX + manifesto"],
     ["Análise Cruzada", "Auditoria", "Não se aplica", "Equipes mais próximas", "Excel/KML + configuração"],
