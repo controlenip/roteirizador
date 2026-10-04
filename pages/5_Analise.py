@@ -139,11 +139,19 @@ def normalizar_status_fluxo(valor, default='0'):
 
 
 # Versão explícita das regras usadas na auditoria. É gravada nas exportações para rastreabilidade.
-VERSAO_REGRAS_ANALISE = '2026.09'
+VERSAO_REGRAS_ANALISE = '2026.10'
 REGRAS_STATUS_ANALISE = {
     'STATUS_LIST_VALIDOS': ('0', 'EM LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO'),
     'STATUS_SISCO_VALIDOS': ('0', 'PRE ANALISE', 'LIBERADO PARA LEVANTAMENTO', 'LIBERADO P LEVANTAMENTO'),
+    # SAP: somente os bloqueios explicitamente conhecidos ficam codificados aqui.
+    # Outros status continuam auditáveis no resultado, sem serem silenciosamente convertidos.
+    'STATUS_SAP_BLOQUEADOS': ('FINL', 'CANC'),
 }
+STATUS_SAP_BLOQUEADOS = set(REGRAS_STATUS_ANALISE['STATUS_SAP_BLOQUEADOS'])
+
+# Faixa ampla do território brasileiro usada apenas para saneamento geográfico.
+BR_LAT_MIN, BR_LAT_MAX = -35.0, 6.0
+BR_LON_MIN, BR_LON_MAX = -75.0, -30.0
 STATUS_LIST_VALIDOS = set(REGRAS_STATUS_ANALISE['STATUS_LIST_VALIDOS'])
 STATUS_SISCO_VALIDOS = set(REGRAS_STATUS_ANALISE['STATUS_SISCO_VALIDOS'])
 
@@ -199,16 +207,16 @@ def avaliar_validade_fluxo(linha):
 
 
 def classificar_situacao_sap(nota, status_dict, status_sap_localizado, notas_lev_cadastradas):
-    """Nunca transforma ausência de informação SAP em APTO."""
+    """Classifica SAP sem presumir informação inexistente e preserva o status encontrado."""
     nota = str(nota).strip()
     if not status_sap_localizado or nota not in notas_lev_cadastradas:
         return 'SEM REGISTRO SAP'
-    s_status = str(status_dict.get(nota, '')).strip().upper()
+    s_status = normalizar_status_fluxo(status_dict.get(nota, ''), '')
     if not s_status:
         return 'SEM STATUS SAP'
-    if 'FINL' in s_status or 'CANC' in s_status:
+    if any(b in s_status for b in STATUS_SAP_BLOQUEADOS):
         return f"BLOQUEADO ({s_status})"
-    return 'APTO'
+    return f"APTO ({s_status})"
 
 
 def fonte_validacao_sap(nota, status_sap_localizado, notas_lev_cadastradas):
@@ -221,11 +229,18 @@ def fonte_validacao_sap(nota, status_sap_localizado, notas_lev_cadastradas):
 
 
 def determinar_classificacao_analise(linha):
-    """Classificação única da análise, usando a validade já auditada como fonte de verdade."""
+    """Classificação única priorizando criticidade operacional."""
     if str(linha.get('NOTA_VALIDA_FLUXO', 'SIM')).strip().upper() == 'NÃO':
         return 'black', '⚫ Notas Inválidas'
     if str(linha.get('DUPLICADA', '')).strip().upper() == 'SIM':
+        geo = str(linha.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')).strip().upper()
+        if geo == 'LOCAIS DIFERENTES':
+            return 'red', '🔴 Duplicadas em Locais Diferentes'
+        if geo == 'MESMO LOCAL':
+            return 'pink', '🌸 Duplicadas no Mesmo Local'
         return 'red', '🔴 Notas Duplicadas'
+    if str(linha.get('REPETIDA_NA_ORIGEM', '')).strip().upper() == 'SIM':
+        return 'cadetblue', '🔷 Repetidas na Mesma Base'
     if str(linha.get('PROXIMA', '')).strip().upper() == 'SIM':
         return 'orange', '🟠 Notas Próximas'
     origem = str(linha.get('ORIGEM_BASE', '')).strip().upper()
@@ -234,6 +249,64 @@ def determinar_classificacao_analise(linha):
     if origem == 'SANEAMENTO':
         return 'purple', '🟣 Notas Saneamento Solitárias'
     return 'blue', '🔵 Outras'
+
+
+def calcular_risco_analise(linha):
+    """Pontuação simples e auditável para priorizar conferências, sem alterar a classificação original."""
+    score = 0
+    motivos = []
+    if str(linha.get('NOTA_VALIDA_FLUXO', 'SIM')).strip().upper() == 'NÃO':
+        score += 5; motivos.append('Fluxo inválido')
+    if str(linha.get('CLASSIFICACAO_DUPLICIDADE_GEO', '')).strip().upper() == 'LOCAIS DIFERENTES':
+        score += 4; motivos.append('Duplicada em local diferente')
+    if str(linha.get('SITUACAO SAP', '')).strip().upper() in {'SEM REGISTRO SAP', 'SEM STATUS SAP'}:
+        score += 3; motivos.append('SAP sem confirmação')
+    if str(linha.get('ALERTA_EQUIPE_DISTANTE', 'NÃO')).strip().upper() == 'SIM':
+        score += 2; motivos.append('Equipe distante')
+    if str(linha.get('COORDENADA_ALERTA', '')).strip():
+        score += 1; motivos.append('Alerta geográfico')
+    if score >= 8:
+        nivel = 'CRÍTICO'
+    elif score >= 5:
+        nivel = 'ALTO'
+    elif score >= 2:
+        nivel = 'MÉDIO'
+    else:
+        nivel = 'BAIXO'
+    return score, nivel, ' | '.join(motivos) if motivos else '-'
+
+
+def sanear_coordenadas_brasil(df, lat_col, lon_col, prefixo=''):
+    """Corrige decimal deslocado e inversão LAT/LON somente quando plausível no Brasil."""
+    d = df.copy()
+    lat_orig = pd.to_numeric(d[lat_col].astype(str).str.replace(',', '.', regex=False), errors='coerce')
+    lon_orig = pd.to_numeric(d[lon_col].astype(str).str.replace(',', '.', regex=False), errors='coerce')
+    lat = lat_orig.apply(lambda x: corrigir_coord(x, 90))
+    lon = lon_orig.apply(lambda x: corrigir_coord(x, 180))
+    corr = pd.Series('', index=d.index, dtype='object')
+    m_dec = lat_orig.notna() & lat.notna() & ((lat_orig-lat).abs() > 1e-10) | lon_orig.notna() & lon.notna() & ((lon_orig-lon).abs() > 1e-10)
+    corr.loc[m_dec] = 'CASA_DECIMAL'
+    m_swap = lat.notna() & lon.notna() & lat.abs().gt(lon.abs())
+    lat_swap, lon_swap = lon.copy(), lat.copy()
+    m_swap &= lat_swap.between(BR_LAT_MIN, BR_LAT_MAX) & lon_swap.between(BR_LON_MIN, BR_LON_MAX)
+    if m_swap.any():
+        tmp = lat.loc[m_swap].copy()
+        lat.loc[m_swap] = lon.loc[m_swap].values
+        lon.loc[m_swap] = tmp.values
+        corr.loc[m_swap] = np.where(corr.loc[m_swap].eq(''), 'LAT_LON_INVERTIDAS', corr.loc[m_swap] + ' + LAT_LON_INVERTIDAS')
+    motivo = pd.Series('', index=d.index, dtype='object')
+    motivo.loc[lat.isna() & lon.isna()] = 'Latitude e Longitude inválidas'
+    motivo.loc[lat.isna() & lon.notna()] = 'Latitude inválida'
+    motivo.loc[lat.notna() & lon.isna()] = 'Longitude inválida'
+    motivo.loc[lat.eq(0) | lon.eq(0)] = 'Coordenada zerada'
+    motivo.loc[lat.gt(0) | lon.gt(0)] = 'Coordenada positiva'
+    fora = lat.notna() & lon.notna() & ~(lat.between(BR_LAT_MIN, BR_LAT_MAX) & lon.between(BR_LON_MIN, BR_LON_MAX))
+    motivo.loc[fora & motivo.eq('')] = 'Coordenada fora da faixa Brasil'
+    d[lat_col] = lat; d[lon_col] = lon
+    d[f'{prefixo}COORDENADA_CORRECAO_TIPO'] = corr
+    d[f'{prefixo}COORDENADA_CORRIGIDA'] = np.where(corr.ne(''), 'SIM', 'NÃO')
+    d[f'{prefixo}MOTIVO_REJEICAO'] = motivo
+    return d, lat_orig, lon_orig
 
 
 def ler_csv_resiliente(file_bytes):
@@ -282,6 +355,9 @@ def montar_config_txt(config, cores=None, filtros=None):
         f"Registros sem confirmação SAP: {config.get('sem_registro_sap', '-')}",
         f"Duplicadas entre bases: {config.get('duplicadas_interbase', '-')}",
         f"Tempo total de processamento: {config.get('tempo_processamento_s', '-')} s",
+        f"Total de entrada: {config.get('total_entrada', '-')}",
+        f"Total reconciliado: {config.get('total_reconciliado', '-')}",
+        f"Reconciliação: {'OK' if config.get('reconciliacao_ok', False) else 'DIVERGENTE'}",
     ]
     tempos = config.get('tempos_etapas', {}) or {}
     if tempos:
@@ -591,11 +667,17 @@ def montar_resumo_executivo(df_view, config, rejeitadas_obras=0, rejeitadas_loca
         ('Levantamento', int((df_view.get('ORIGEM_BASE', pd.Series(dtype='object')) == 'LEVANTAMENTO').sum())),
         ('Notas inválidas', int(df_view.get('COR_NOME', pd.Series(dtype='object')).astype(str).str.contains('Inválidas', na=False).sum())),
         ('Notas duplicadas', int(df_view.get('DUPLICADA', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
+        ('Duplicadas no mesmo local', int(df_view.get('CLASSIFICACAO_DUPLICIDADE_GEO', pd.Series(dtype='object')).astype(str).eq('MESMO LOCAL').sum())),
+        ('Duplicadas em locais diferentes', int(df_view.get('CLASSIFICACAO_DUPLICIDADE_GEO', pd.Series(dtype='object')).astype(str).eq('LOCAIS DIFERENTES').sum())),
+        ('Repetidas na mesma base', int(df_view.get('REPETIDA_NA_ORIGEM', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
         ('Notas próximas', int(df_view.get('PROXIMA', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
         ('Clusters', int(df_view['CLUSTER_ID'].nunique()) if 'CLUSTER_ID' in df_view.columns else len(df_view)),
+        ('Clusters mistos', int(df_view.loc[df_view.get('ORIGENS_CLUSTER', pd.Series(index=df_view.index, dtype='object')).astype(str).str.contains('SANEAMENTO', na=False) & df_view.get('ORIGENS_CLUSTER', pd.Series(index=df_view.index, dtype='object')).astype(str).str.contains('LEVANTAMENTO', na=False), 'CLUSTER_ID'].nunique()) if 'CLUSTER_ID' in df_view.columns and 'ORIGENS_CLUSTER' in df_view.columns else 0),
         ('Municípios', int(df_view['MUNICIPIO'].dropna().nunique()) if 'MUNICIPIO' in df_view.columns else 0),
         ('Alertas equipe distante', int(df_view.get('ALERTA_EQUIPE_DISTANTE', pd.Series(dtype='object')).astype(str).eq('SIM').sum())),
-        ('Sem registro SAP', int(df_view.get('SITUACAO SAP', pd.Series(dtype='object')).astype(str).eq('SEM REGISTRO SAP').sum())),
+        ('Sem confirmação SAP', int(df_view.get('SITUACAO SAP', pd.Series(dtype='object')).astype(str).isin(['SEM REGISTRO SAP','SEM STATUS SAP']).sum())),
+        ('Risco crítico', int(df_view.get('NIVEL_RISCO_ANALISE', pd.Series(dtype='object')).astype(str).eq('CRÍTICO').sum())),
+        ('Risco alto', int(df_view.get('NIVEL_RISCO_ANALISE', pd.Series(dtype='object')).astype(str).eq('ALTO').sum())),
         ('Coordenadas de obras rejeitadas', int(rejeitadas_obras)),
         ('Localidades rejeitadas', int(rejeitadas_localidades)),
         ('Tempo total (s)', config.get('tempo_processamento_s', '-')),
@@ -686,7 +768,7 @@ def limpar_estado_analise():
         'bytes_kml_analise', 'export_sig_excel_analise', 'export_sig_kml_analise',
         'df_loc_rejeitadas_analise', 'df_loc_corrigidas_analise', 'df_loc_alertas_analise', 'autoteste_core_analise',
         'filtro_cores_analise', 'filtro_origem_analise', 'filtro_municipio_analise',
-        'filtro_nota_analise', 'filtro_colab_analise', 'mostrar_mapa_analise'
+        'filtro_nota_analise', 'filtro_colab_analise', 'filtro_problemas_analise', 'filtro_dist_eq_analise', 'mostrar_mapa_analise'
     ]:
         st.session_state.pop(chave, None)
     st.session_state.df_final_analise = pd.DataFrame()
@@ -767,6 +849,8 @@ with st.sidebar:
         municipios_selecionados = st.multiselect("Municípios (vazio = todos):", opcoes_mun, default=[], key='filtro_municipio_analise')
         busca_nota = st.text_input("Pesquisar NOTA:", value='', key='filtro_nota_analise').strip()
         busca_colaborador = st.text_input("Pesquisar colaborador próximo:", value='', key='filtro_colab_analise').strip()
+        somente_problemas = st.checkbox("🚨 Mostrar somente registros com problema/alerta", value=False, key='filtro_problemas_analise')
+        limite_dist_eq = st.number_input("Distância mínima da equipe para filtrar (km, 0 = ignorar)", min_value=0.0, max_value=2000.0, value=0.0, step=10.0, key='filtro_dist_eq_analise')
 
         df_view = df_fin[df_fin['COR_NOME'].isin(cores_selecionadas)].copy()
         if opcoes_origem:
@@ -778,6 +862,19 @@ with st.sidebar:
         if busca_colaborador:
             serie_colab = df_view.get('COLABORADORES MAIS PROXIMOS', pd.Series(index=df_view.index, dtype='object'))
             df_view = df_view[serie_colab.astype(str).str.contains(re.escape(busca_colaborador), case=False, na=False)].copy()
+        if limite_dist_eq > 0 and 'DISTANCIA_EQUIPE_MAIS_PROXIMA_KM' in df_view.columns:
+            dist_eq = pd.to_numeric(df_view['DISTANCIA_EQUIPE_MAIS_PROXIMA_KM'], errors='coerce')
+            df_view = df_view[dist_eq.ge(float(limite_dist_eq))].copy()
+        if somente_problemas:
+            m_prob = (
+                df_view.get('NOTA_VALIDA_FLUXO', pd.Series('SIM', index=df_view.index)).astype(str).eq('NÃO') |
+                df_view.get('DUPLICADA', pd.Series('NÃO', index=df_view.index)).astype(str).eq('SIM') |
+                df_view.get('REPETIDA_NA_ORIGEM', pd.Series('NÃO', index=df_view.index)).astype(str).eq('SIM') |
+                df_view.get('ALERTA_EQUIPE_DISTANTE', pd.Series('NÃO', index=df_view.index)).astype(str).eq('SIM') |
+                df_view.get('COORDENADA_ALERTA', pd.Series('', index=df_view.index)).astype(str).str.strip().ne('') |
+                df_view.get('SITUACAO SAP', pd.Series('', index=df_view.index)).astype(str).isin(['SEM REGISTRO SAP','SEM STATUS SAP'])
+            )
+            df_view = df_view[m_prob].copy()
 
         st.caption(f"Registros após filtros: **{len(df_view)}** de **{len(df_fin)}**")
 
@@ -787,10 +884,12 @@ with st.sidebar:
             'Municípios': ', '.join(municipios_selecionados) if municipios_selecionados else 'TODOS',
             'Busca NOTA': busca_nota or '-',
             'Busca colaborador': busca_colaborador or '-',
+            'Somente problemas': 'SIM' if somente_problemas else 'NÃO',
+            'Distância mínima equipe': limite_dist_eq,
         }
         filtro_sig = (
             tuple(sorted(cores_selecionadas)), tuple(sorted(origens_selecionadas)),
-            tuple(sorted(municipios_selecionados)), busca_nota.upper(), busca_colaborador.upper()
+            tuple(sorted(municipios_selecionados)), busca_nota.upper(), busca_colaborador.upper(), bool(somente_problemas), float(limite_dist_eq)
         )
 
         if st.session_state.get('export_sig_excel_analise') != filtro_sig:
@@ -839,6 +938,8 @@ with st.sidebar:
                         'Localidades Corrigidas': df_loc_corrigidas,
                         'Localidades Rejeitadas': df_loc_rejeitadas,
                         'Alertas Localidades': df_loc_alertas,
+                        'Somente Problemas': df_view[df_view.get('SCORE_RISCO_ANALISE', pd.Series(index=df_view.index, dtype=float)).fillna(0).gt(0)] if 'SCORE_RISCO_ANALISE' in df_view.columns else pd.DataFrame(),
+                        'Notas Criticas': df_view[df_view.get('NIVEL_RISCO_ANALISE', pd.Series(index=df_view.index, dtype='object')).astype(str).isin(['CRÍTICO','ALTO'])] if 'NIVEL_RISCO_ANALISE' in df_view.columns else pd.DataFrame(),
                     }
                     excel_bytes = gerar_excel_analise(dict_dfs)
                     bu_xl = io.BytesIO()
@@ -930,9 +1031,17 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
     q6.metric("Coords. corrigidas", corrigidas)
     q7.metric("Coords. rejeitadas", rejeitadas)
     q8.metric("Equipe distante", alertas_equipe)
-    sem_sap = int(df_view.get('SITUACAO SAP', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('SEM REGISTRO SAP').sum())
+    sem_sap = int(df_view.get('SITUACAO SAP', pd.Series(index=df_view.index, dtype='object')).astype(str).isin(['SEM REGISTRO SAP','SEM STATUS SAP']).sum())
+    criticas = int(df_view.get('NIVEL_RISCO_ANALISE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('CRÍTICO').sum())
+    altas = int(df_view.get('NIVEL_RISCO_ANALISE', pd.Series(index=df_view.index, dtype='object')).astype(str).eq('ALTO').sum())
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Risco crítico", criticas); r2.metric("Risco alto", altas); r3.metric("Sem confirmação SAP", sem_sap)
     if sem_sap > 0:
         st.info(f"ℹ️ {sem_sap} registro(s) sem confirmação SAP. Eles não são tratados automaticamente como APTO.")
+    if config_analise.get('reconciliacao_ok', False):
+        st.success(f"✅ Reconciliação de entrada: {config_analise.get('total_reconciliado', '-')} de {config_analise.get('total_entrada', '-')} registros contabilizados.")
+    else:
+        st.error(f"🚨 Reconciliação divergente: entrada {config_analise.get('total_entrada', '-')} x contabilizado {config_analise.get('total_reconciliado', '-')}.")
 
     if rejeitadas > 0:
         with st.expander(f"⚠️ {rejeitadas} obras com coordenadas rejeitadas", expanded=False):
@@ -997,6 +1106,12 @@ if st.session_state.is_done_analise and not st.session_state.df_final_analise.em
 
             if any('Inválidas' in c or 'Preto' in c for c in c_names):
                 c_i, layer_nome = 'black', '⚫ Notas Inválidas'
+            elif any('Locais Diferentes' in c for c in c_names):
+                c_i, layer_nome = 'red', '🔴 Duplicadas em Locais Diferentes'
+            elif any('Mesmo Local' in c for c in c_names):
+                c_i, layer_nome = 'pink', '🌸 Duplicadas no Mesmo Local'
+            elif any('Repetidas' in c for c in c_names):
+                c_i, layer_nome = 'cadetblue', '🔷 Repetidas na Mesma Base'
             elif any('Duplicadas' in c or 'Vermelho' in c for c in c_names):
                 c_i, layer_nome = 'red', '🔴 Notas Duplicadas'
             elif len(grp) > 1 or any('Próximas' in c for c in c_names):
@@ -1120,6 +1235,29 @@ else:
     if not (file_san and file_lev and file_loc):
         st.stop()
 
+    # Prévia rápida: confirma os arquivos e os principais campos detectados antes de iniciar o processamento pesado.
+    try:
+        _san_prev = ler_csv_resiliente(file_san.getvalue()) if file_san.name.lower().endswith('.csv') else ler_planilha_cached(file_san.getvalue())
+        _lev_prev = ler_csv_resiliente(file_lev.getvalue()) if file_lev.name.lower().endswith('.csv') else ler_planilha_cached(file_lev.getvalue())
+        _san_prev = preparar_base_obras(_san_prev, 'SANEAMENTO')
+        _lev_prev = preparar_base_obras(_lev_prev, 'LEVANTAMENTO')
+        _sap_prev = encontrar_coluna(_lev_prev, ['STATUS_SAP', 'STATUS SAP'])
+        _sisco_prev = encontrar_coluna(_lev_prev, ['STATUS_SISCO', 'STATUS SISCO'])
+        _list_prev = encontrar_coluna(_lev_prev, ['STATUS_LIST', 'STATUS LIST'])
+        with st.expander("🔎 Prévia e reconhecimento dos arquivos", expanded=True):
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Linhas Saneamento", len(_san_prev)); p1.caption(file_san.name)
+            p2.metric("Linhas Levantamento", len(_lev_prev)); p2.caption(file_lev.name)
+            p3.caption(f"Localidades: **{file_loc.name}**")
+            st.write(f"**Saneamento:** NOTA={'SIM' if 'NOTA' in _san_prev else 'NÃO'} | MUNICÍPIO={'SIM' if 'MUNICIPIO' in _san_prev else 'NÃO'} | LAT/LON={'SIM' if {'LATITUDE','LONGITUDE'}.issubset(_san_prev.columns) else 'NÃO'}")
+            st.write(f"**Levantamento:** SAP={_sap_prev or 'NÃO LOCALIZADO'} | SISCO={_sisco_prev or 'NÃO LOCALIZADO'} | LIST={_list_prev or 'NÃO LOCALIZADO'}")
+            if _sisco_prev is None or _list_prev is None:
+                st.warning("STATUS SISCO e/ou STATUS LIST não foram localizados. Registros de Levantamento poderão ser classificados como inválidos.")
+            if _sap_prev is None:
+                st.warning("STATUS SAP não foi localizado. O sistema não presumirá APTO.")
+    except Exception as exc:
+        st.warning(f"Não foi possível montar a prévia completa: {type(exc).__name__}. A validação formal ocorrerá ao processar.")
+
     if st.button("🚀 Processar Análise Cruzada", type="primary", use_container_width=True):
         st_run = time.time()
         pb = st.progress(0.0)
@@ -1180,17 +1318,12 @@ else:
             # Mesma auditoria/correção aplicada às coordenadas das obras.
             df_loc['LAT_LOC_ORIGINAL'] = df_loc['LAT_LOC']
             df_loc['LON_LOC_ORIGINAL'] = df_loc['LON_LOC']
-            lat_loc_orig = pd.to_numeric(df_loc['LAT_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            lon_loc_orig = pd.to_numeric(df_loc['LON_LOC'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            df_loc['LAT_LOC'] = lat_loc_orig.apply(lambda x: corrigir_coord(x, 90))
-            df_loc['LON_LOC'] = lon_loc_orig.apply(lambda x: corrigir_coord(x, 180))
-            mudou_lat_loc = lat_loc_orig.notna() & df_loc['LAT_LOC'].notna() & ((lat_loc_orig - df_loc['LAT_LOC']).abs() > 1e-10)
-            mudou_lon_loc = lon_loc_orig.notna() & df_loc['LON_LOC'].notna() & ((lon_loc_orig - df_loc['LON_LOC']).abs() > 1e-10)
-            df_loc['COORDENADA_LOCALIDADE_CORRIGIDA'] = np.where(mudou_lat_loc | mudou_lon_loc, 'SIM', 'NÃO')
+            df_loc, lat_loc_orig, lon_loc_orig = sanear_coordenadas_brasil(df_loc, 'LAT_LOC', 'LON_LOC', prefixo='LOCALIDADE_')
+            df_loc['COORDENADA_LOCALIDADE_CORRIGIDA'] = df_loc['LOCALIDADE_COORDENADA_CORRIGIDA']
 
             nomes_limpos = df_loc['NOME_COLAB'].astype(str).str.strip()
             m_nome_invalido = nomes_limpos.str.upper().isin(['', 'NAN', 'NONE', 'NULL'])
-            m_coord_loc_invalida = df_loc['LAT_LOC'].isna() | df_loc['LON_LOC'].isna()
+            m_coord_loc_invalida = df_loc['LOCALIDADE_MOTIVO_REJEICAO'].astype(str).str.strip().ne('')
             m_loc_rej = m_nome_invalido | m_coord_loc_invalida
             df_loc_rej = df_loc[m_loc_rej].copy()
             if not df_loc_rej.empty:
@@ -1199,10 +1332,9 @@ else:
                     mm = []
                     if m_nome_invalido.loc[idx]:
                         mm.append('Nome do colaborador vazio')
-                    if pd.isna(df_loc_rej.loc[idx, 'LAT_LOC']):
-                        mm.append('Latitude inválida')
-                    if pd.isna(df_loc_rej.loc[idx, 'LON_LOC']):
-                        mm.append('Longitude inválida')
+                    mot_coord = str(df_loc_rej.loc[idx].get('LOCALIDADE_MOTIVO_REJEICAO', '')).strip()
+                    if mot_coord:
+                        mm.append(mot_coord)
                     motivos.append(' | '.join(mm))
                 df_loc_rej['MOTIVO_REJEICAO'] = motivos
 
@@ -1288,40 +1420,13 @@ else:
             df_master['LATITUDE_ORIGINAL'] = df_master['LATITUDE']
             df_master['LONGITUDE_ORIGINAL'] = df_master['LONGITUDE']
 
-            lat_original_num = pd.to_numeric(df_master['LATITUDE'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            lon_original_num = pd.to_numeric(df_master['LONGITUDE'].astype(str).str.replace(',', '.', regex=False), errors='coerce')
-            df_master['LAT_NUM'] = lat_original_num.apply(lambda x: corrigir_coord(x, 90))
-            df_master['LON_NUM'] = lon_original_num.apply(lambda x: corrigir_coord(x, 180))
-            df_master['LATITUDE'] = df_master['LAT_NUM']
-            df_master['LONGITUDE'] = df_master['LON_NUM']
-
-            mudou_lat = lat_original_num.notna() & df_master['LAT_NUM'].notna() & ((lat_original_num - df_master['LAT_NUM']).abs() > 1e-10)
-            mudou_lon = lon_original_num.notna() & df_master['LON_NUM'].notna() & ((lon_original_num - df_master['LON_NUM']).abs() > 1e-10)
-            df_master['COORDENADA_CORRIGIDA'] = np.where(mudou_lat | mudou_lon, 'SIM', 'NÃO')
-
-            m_coord_invalida = df_master['LATITUDE'].isna() | df_master['LONGITUDE'].isna()
+            df_master, lat_original_num, lon_original_num = sanear_coordenadas_brasil(df_master, 'LATITUDE', 'LONGITUDE')
+            df_master['LAT_NUM'] = df_master['LATITUDE']
+            df_master['LON_NUM'] = df_master['LONGITUDE']
+            m_coord_invalida = df_master['MOTIVO_REJEICAO'].astype(str).str.strip().ne('')
             df_rej_coord = df_master[m_coord_invalida].copy()
-            if not df_rej_coord.empty:
-                df_rej_coord['MOTIVO_REJEICAO'] = np.where(
-                    df_rej_coord['LATITUDE'].isna() & df_rej_coord['LONGITUDE'].isna(),
-                    'Latitude e Longitude inválidas',
-                    np.where(df_rej_coord['LATITUDE'].isna(), 'Latitude inválida', 'Longitude inválida')
-                )
-
             df_valid = df_master[~m_coord_invalida].copy()
-            alertas = []
-            for _, rr in df_valid.iterrows():
-                al = []
-                lat = float(rr['LATITUDE'])
-                lon = float(rr['LONGITUDE'])
-                if lat == 0.0 or lon == 0.0:
-                    al.append('Coordenada zerada')
-                if lat > 0 or lon > 0:
-                    al.append('Coordenada positiva')
-                if abs(lat) > abs(lon):
-                    al.append('Possível LAT/LON invertida')
-                alertas.append(' | '.join(al))
-            df_valid['COORDENADA_ALERTA'] = alertas
+            df_valid['COORDENADA_ALERTA'] = ''
 
             # Complementa a duplicidade com distância, município e divergência geográfica.
             df_valid = auditar_duplicidades_geograficas(df_valid, duplicadas_inter, raio_prox)
@@ -1383,6 +1488,10 @@ else:
             cores_calculadas = [determinar_classificacao_analise(r) for _, r in df_final.iterrows()]
             df_final['COR_MAPA'] = [c[0] for c in cores_calculadas]
             df_final['COR_NOME'] = [c[1] for c in cores_calculadas]
+            riscos = [calcular_risco_analise(r) for _, r in df_final.iterrows()]
+            df_final['SCORE_RISCO_ANALISE'] = [r[0] for r in riscos]
+            df_final['NIVEL_RISCO_ANALISE'] = [r[1] for r in riscos]
+            df_final['MOTIVO_RISCO_ANALISE'] = [r[2] for r in riscos]
             tempos_etapas['Classificação'] = round(time.time() - t_etapa, 3)
 
             id_analise = criar_id_analise()
@@ -1402,7 +1511,7 @@ else:
                 'EQUIPE_1', 'TIPO_EQUIPE_1', 'DISTANCIA_EQUIPE_1_KM',
                 'DISTANCIA_EQUIPE_MAIS_PROXIMA_KM', 'ALERTA_EQUIPE_DISTANTE',
                 'MUNICIPIO', 'LATITUDE', 'LONGITUDE', 'LATITUDE_ORIGINAL', 'LONGITUDE_ORIGINAL',
-                'COORDENADA_CORRIGIDA', 'COORDENADA_ALERTA', 'CLUSTER_ID', 'QTD_OBRAS_CLUSTER',
+                'COORDENADA_CORRIGIDA', 'COORDENADA_CORRECAO_TIPO', 'COORDENADA_ALERTA', 'SCORE_RISCO_ANALISE', 'NIVEL_RISCO_ANALISE', 'MOTIVO_RISCO_ANALISE', 'CLUSTER_ID', 'QTD_OBRAS_CLUSTER',
                 'QTD_SANEAMENTO_CLUSTER', 'QTD_LEVANTAMENTO_CLUSTER', 'DISTANCIA_MAX_CLUSTER_M',
                 'ORIGENS_CLUSTER', 'LAT_CENTRO_CLUSTER', 'LONG_CENTRO_CLUSTER', 'COR_MAPA', 'COR_NOME'
             ]
@@ -1436,6 +1545,9 @@ else:
                 'repetidas_levantamento': int(len(rep_lev)),
                 'tempos_etapas': tempos_etapas,
                 'tempo_processamento_s': round(time.time() - st_run, 2),
+                'total_entrada': int(len(df_san) + len(df_lev)),
+                'total_reconciliado': int(len(df_final) + len(df_rej_coord)),
+                'reconciliacao_ok': bool((len(df_san) + len(df_lev)) == (len(df_final) + len(df_rej_coord))),
             }
 
             render_t(1.0, "✅ Análise Concluída!")
