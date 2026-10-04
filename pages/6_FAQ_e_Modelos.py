@@ -172,6 +172,19 @@ with r1c3:
         + ("" if oficial_lista_continua else " ⚠️ Arquivo completo não localizado no servidor; foi gerado um modelo estrutural simplificado.")
     )
 
+# Avisos posicionados diretamente abaixo dos modelos aos quais se referem.
+info_tatico, info_lista = st.columns([2, 1])
+with info_tatico:
+    st.info(
+        "**Planejamento Tático:** use sempre os dois arquivos oficiais acima: "
+        "BASE_LEVANTAMENTO_ATUALIZADA + LEVANTADORES_PRINCIPAIS."
+    )
+with info_lista:
+    st.info(
+        "**Lista Contínua:** use BASE_LISTA_CONTINUA_LEVANTAMENTO; "
+        "não é necessário carregar uma base separada de levantadores."
+    )
+
 r2c1, r2c2, r2c3 = st.columns(3)
 with r2c1:
     st.markdown("#### 📋 Fiscalização")
@@ -217,12 +230,6 @@ with r3c1:
         use_container_width=True,
     )
     st.caption("Use uma linha por colaborador/localidade, com nome e coordenadas válidas da referência operacional.")
-
-with r3c2:
-    st.info("**Planejamento Tático:** use sempre os dois arquivos oficiais acima: BASE_LEVANTAMENTO_ATUALIZADA + LEVANTADORES_PRINCIPAIS.")
-
-with r3c3:
-    st.info("**Lista Contínua:** use BASE_LISTA_CONTINUA_LEVANTAMENTO; não é necessário carregar uma base separada de levantadores.")
 
 
 # ==============================================================
