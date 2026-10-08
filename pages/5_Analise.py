@@ -2727,6 +2727,41 @@ with st.expander(
 
 
 # ============================================================
+# ZERAR ANALISE - NAO ALTERA OUTRAS PAGINAS DO ROTEIRIZADOR
+# ============================================================
+
+def zerar_analise_nip():
+    # A callback ocorre ANTES de criar os widgets nesta execucao.
+    versao_atual = st.session_state.get("nip_analise_versao", 0)
+    for chave in list(st.session_state.keys()):
+        if (
+            chave.startswith("nip_analise_widget_")
+            or chave in {
+                "nipbase", "niproutes", "nipgeom", "capacity_editor",
+            }
+        ):
+            del st.session_state[chave]
+    # Novas chaves recriam os uploaders e todos os filtros vazios/padrao.
+    st.session_state["nip_analise_versao"] = versao_atual + 1
+
+
+versao_analise = st.session_state.get("nip_analise_versao", 0)
+
+col_acoes, col_instrucoes = st.columns([1, 3], vertical_alignment="center")
+with col_acoes:
+    st.button(
+        "🗑️ Zerar análise",
+        key="nip_analise_botao_zerar",
+        type="secondary",
+        use_container_width=True,
+        on_click=zerar_analise_nip,
+        help="Remove os arquivos anexados, bases processadas, filtros, programação e progresso OSRM desta análise.",
+    )
+with col_instrucoes:
+    st.caption("Limpa somente a Análise Cruzada; não apaga os arquivos do seu computador nem altera a Lista Contínua.")
+
+
+# ============================================================
 # UPLOAD DAS BASES
 # ============================================================
 
@@ -2742,20 +2777,23 @@ with a:
         type=[
             "xlsx",
             "csv"
-        ]
-    )
+        ],
+        key=f"nip_analise_widget_{versao_analise}_0"
+)
 
 with b:
     lev_file = st.file_uploader(
         "BASE_LEVANTAMENTO_ATUALIZADA",
-        type=["xlsx"]
-    )
+        type=["xlsx"],
+        key=f"nip_analise_widget_{versao_analise}_1"
+)
 
 with c:
     team_file = st.file_uploader(
         "LOCALIDADE LEVANTADORES-SANEAMENTO",
-        type=["xlsx"]
-    )
+        type=["xlsx"],
+        key=f"nip_analise_widget_{versao_analise}_2"
+)
 
 if not all([
     san_file,
@@ -2967,30 +3005,34 @@ with st.sidebar:
                 25
             )
         ),
-        value=200
-    )
+        value=200,
+        key=f"nip_analise_widget_{versao_analise}_3"
+)
 
     k = st.slider(
         "Equipes candidatas por atividade",
         1,
         5,
-        3
-    )
+        3,
+        key=f"nip_analise_widget_{versao_analise}_4"
+)
 
     super_m = st.slider(
         "Raio de superponto (m)",
         5,
         500,
         50,
-        5
-    )
+        5,
+        key=f"nip_analise_widget_{versao_analise}_5"
+)
 
     medium_days = st.number_input(
         "Dias para prioridade média",
         1,
         365,
-        14
-    )
+        14,
+        key=f"nip_analise_widget_{versao_analise}_6"
+)
 
     st.divider()
 
@@ -3005,34 +3047,39 @@ with st.sidebar:
             "POR DIA",
             "POR SEMANA",
             "POR MÊS"
-        ]
-    )
+        ],
+        key=f"nip_analise_widget_{versao_analise}_7"
+)
 
     period_cap = st.number_input(
         "Tarefas por equipe no período",
         1,
         10000,
-        20
-    )
+        20,
+        key=f"nip_analise_widget_{versao_analise}_8"
+)
 
     daily_cap = st.number_input(
         "Tarefas por dia (padrão)",
         1,
         100,
-        8
-    )
+        8,
+        key=f"nip_analise_widget_{versao_analise}_9"
+)
 
     periods = st.number_input(
         "Quantidade de períodos",
         1,
         52,
-        5
-    )
+        5,
+        key=f"nip_analise_widget_{versao_analise}_10"
+)
 
     first_day = st.date_input(
         "Data inicial",
-        value=datetime.today().date()
-    )
+        value=datetime.today().date(),
+        key=f"nip_analise_widget_{versao_analise}_11"
+)
 
     st.divider()
 
@@ -3042,34 +3089,39 @@ with st.sidebar:
 
     server = st.text_input(
         "OSRM",
-        OSRM
-    )
+        OSRM,
+        key=f"nip_analise_widget_{versao_analise}_12"
+)
 
     batch = st.slider(
         "Consultas por lote",
         1,
         25,
-        5
-    )
+        5,
+        key=f"nip_analise_widget_{versao_analise}_13"
+)
 
     kml_osrm = st.checkbox(
         "Incluir traçados reais OSRM no KML",
-        value=False
-    )
+        value=False,
+        key=f"nip_analise_widget_{versao_analise}_14"
+)
 
     geom_batch = st.slider(
         "Traçados por lote",
         1,
         15,
-        4
-    )
+        4,
+        key=f"nip_analise_widget_{versao_analise}_15"
+)
 
     st.divider()
 
     previous = st.file_uploader(
         "Análise anterior (opcional)",
-        type=["xlsx"]
-    )
+        type=["xlsx"],
+        key=f"nip_analise_widget_{versao_analise}_16"
+)
 
 
 # ============================================================
@@ -3228,8 +3280,9 @@ with f1:
             pending[
                 "REGIONAL"
             ].fillna("").unique()
-        )
-    )
+        ),
+        key=f"nip_analise_widget_{versao_analise}_17"
+)
 
 with f2:
     city = st.multiselect(
@@ -3238,8 +3291,9 @@ with f2:
             pending[
                 "MUNICIPIO"
             ].fillna("").unique()
-        )
-    )
+        ),
+        key=f"nip_analise_widget_{versao_analise}_18"
+)
 
 with f3:
     prio = st.multiselect(
@@ -3248,11 +3302,13 @@ with f3:
             "ALTA",
             "MEDIA",
             "BAIXA"
-        ]
-    )
+        ],
+        key=f"nip_analise_widget_{versao_analise}_19"
+)
 
 search = st.text_input(
-    "Pesquisar nota"
+    "Pesquisar nota",
+        key=f"nip_analise_widget_{versao_analise}_20"
 ).strip()
 
 view = pending.copy()
@@ -3342,7 +3398,7 @@ capacity = st.data_editor(
         "EQUIPE",
         "CIDADE_BASE"
     ],
-    key="capacity_editor"
+    key=f"nip_analise_widget_{versao_analise}_21"
 )
 
 capacity["CAPACIDADE_DIA"] = (
@@ -3674,8 +3730,9 @@ with exp1:
         default=[
             "SANEAMENTO",
             "LEVANTAMENTO"
-        ]
-    )
+        ],
+        key=f"nip_analise_widget_{versao_analise}_22"
+)
 
 with exp2:
     equipes_exportaveis = (
@@ -3690,8 +3747,9 @@ with exp2:
 
     exp_team = st.multiselect(
         "Equipe para exportar",
-        equipes_exportaveis
-    )
+        equipes_exportaveis,
+        key=f"nip_analise_widget_{versao_analise}_23"
+)
 
 with exp3:
     exp_dates = st.date_input(
@@ -3700,8 +3758,9 @@ with exp3:
             first_day,
             first_day
             + timedelta(days=30)
-        )
-    )
+        ),
+        key=f"nip_analise_widget_{versao_analise}_24"
+)
 
 exp_plan = plan.copy()
 
@@ -4230,8 +4289,9 @@ with tabs[6]:
 
 with tabs[7]:
     if st.checkbox(
-        "Carregar mapa"
-    ):
+        "Carregar mapa",
+        key=f"nip_analise_widget_{versao_analise}_25"
+):
         geo = view.dropna(
             subset=[
                 "LATITUDE",
