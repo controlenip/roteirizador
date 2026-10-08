@@ -131,10 +131,10 @@ def motivos_lev(r):
 
 def ler_equipes(arquivo):
     if arquivo.name.lower().endswith('.csv'):
-        raise ValueError('O arquivo de localidades precisa ser XLSX, com abas LEVANTADORES, SANEAMENTO e FISCALIZAÇÃO.')
+        raise ValueError('O arquivo de localidades precisa ser XLSX, com as abas LEVANTADORES e SANEAMENTO.')
     xls = pd.ExcelFile(io.BytesIO(arquivo.getvalue()), engine='openpyxl')
     partes = []
-    for tipo, nome_aba in [('LEVANTAMENTO', 'LEVANTADORES'), ('SANEAMENTO', 'SANEAMENTO'), ('FISCALIZAÇÃO', 'FISCALIZACAO')]:
+    for tipo, nome_aba in [('LEVANTAMENTO', 'LEVANTADORES'), ('SANEAMENTO', 'SANEAMENTO')]:
         nome = next((x for x in xls.sheet_names if norm(x) == nome_aba), None)
         if nome is None:
             raise ValueError(f'Aba obrigatória não localizada no arquivo de localidades: {nome_aba}')
@@ -293,7 +293,7 @@ with c1:
 with c2:
     lev_file = st.file_uploader('2. BASE_LEVANTAMENTO_ATUALIZADA', type=['xlsx', 'csv'], key='lev_upload')
 with c3:
-    loc_file = st.file_uploader('3. LOCALIDADE LEVANTADORES-SANEAMENTO-FISCALIZAÇÃO', type=['xlsx'], key='loc_upload')
+    loc_file = st.file_uploader('3. LOCALIDADE LEVANTADORES-SANEAMENTO', type=['xlsx'], key='loc_upload')
 
 if not (san_file and lev_file and loc_file):
     st.warning('Envie os três arquivos obrigatórios para habilitar o processamento.')
