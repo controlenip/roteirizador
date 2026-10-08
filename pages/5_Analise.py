@@ -2,6 +2,7 @@
 import io
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 import html
 import hashlib
 import zipfile
@@ -1255,7 +1256,7 @@ def team_candidates(
                 txt.append(
                     f"{eq['EQUIPE']} "
                     f"({eq['CIDADE_BASE']}) "
-                    f"- {km:.1f} km"
+                    f"- {km:.1f} km (linha reta)"
                 )
 
             labels[
@@ -2274,92 +2275,59 @@ def excel_bytes(sheets):
 # ============================================================
 
 def popup(r):
+    """Exibe as equipes candidatas nos popups do mapa e do Google Earth.
+
+    As distâncias listadas pela busca inicial de equipes são geográficas
+    (linha reta); rotas rodoviárias dependem de consulta OSRM confirmada.
+    """
+    def readable(value):
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return str(value) if value is not None else ""
+
     fields = [
-        (
-            "Nota",
-            r.get("NOTA", "")
-        ),
-        (
-            "Município",
-            r.get("MUNICIPIO", "")
-        ),
-        (
-            "Tipo",
-            r.get("LISTA", "")
-        )
+        ("Nota", r.get("NOTA", "")),
+        ("Município", r.get("MUNICIPIO", "")),
+        ("Tipo", r.get("LISTA", "")),
     ]
 
-    extras = [
-        (
-            "EQUIPES_SANEAMENTO",
-            "Equipes Saneamento"
-        ),
-        (
-            "EQUIPES_LEVANTAMENTO",
-            "Equipes Levantamento"
-        ),
-        (
-            "PRIORIDADE_PLANEJAMENTO",
-            "Prioridade"
-        ),
-        (
-            "EQUIPE_PROGRAMADA",
-            "Equipe programada"
-        ),
-        (
-            "DATA_PROGRAMADA",
-            "Data"
-        ),
-        (
-            "SUPER_PONTO",
-            "Superponto"
-        ),
-        (
-            "NOTAS_AGRUPADAS",
-            "Notas agrupadas"
-        )
-    ]
+    for key, title in [
+        ("EQUIPES_SANEAMENTO", "Equipes SANEAMENTO"),
+        ("EQUIPES_LEVANTAMENTO", "Equipes LEVANTAMENTO"),
+    ]:
+        value = readable(r.get(key, ""))
+        if value and n(value) not in ("NAO APLICAVEL", "NAN"):
+            fields.append((title, value))
 
-    for key, label in extras:
-        val = r.get(key, "")
-
-        if (
-            n(val)
-            and n(val) != "NAO APLICAVEL"
-        ):
-            fields.append(
-                (label, val)
-            )
+    for key, title in [
+        ("PRIORIDADE_PLANEJAMENTO", "Prioridade"),
+        ("EQUIPE_PROGRAMADA", "Equipe programada"),
+        ("DATA_PROGRAMADA", "Data programada"),
+        ("SUPER_PONTO", "Superponto"),
+        ("NOTAS_AGRUPADAS", "Notas agrupadas"),
+    ]:
+        value = readable(r.get(key, ""))
+        if value and n(value) not in ("NAN", "NAO APLICAVEL"):
+            fields.append((title, value))
 
     body = "".join(
-        (
-            '<tr>'
-            '<td style="padding:5px;'
-            'font-weight:bold;vertical-align:top">'
-            f'{html.escape(str(label))}'
-            '</td>'
-            '<td style="padding:5px">'
-            f'{html.escape(str(value))}'
-            '</td>'
-            '</tr>'
-        )
-        for label, value in fields
+        '<div style="margin:3px 0;line-height:1.32;overflow-wrap:anywhere">'
+        f'<b>{html.escape(str(title))}:</b> '
+        f'{html.escape(readable(value))}'
+        '</div>'
+        for title, value in fields
     )
-
-    color = COLORS.get(
-        r.get("LISTA"),
-        "#0d256c"
-    )
-
     return (
-        '<div style="width:340px;'
-        'font-family:Arial;font-size:12px">'
-        f'<div style="background:{color};'
-        'color:white;padding:10px;font-weight:bold">'
-        'INFORMAÇÕES DA OBRA'
-        '</div>'
-        f'<table>{body}</table>'
-        '</div>'
+        '<div style="font-family:Arial,sans-serif;font-size:13px;'
+        'color:#303030;max-width:440px;padding:4px">'
+        + body
+        + '<div style="font-size:11px;color:#666;margin-top:8px">'
+          'Distâncias das equipes próximas: referência geográfica '
+          '(linha reta), não percurso OSRM confirmado.'
+          '</div></div>'
     )
 
 
@@ -2766,73 +2734,140 @@ sig = tuple(
 
 
 # ============================================================
-# PROCESSAMENTO
+# PROCESSAMENTO - CRONOMETRO COM ATUALIZACAO EM TEMPO REAL
 # ============================================================
+
+PROCESS_STAGES = [
+    ("Lendo a base de Saneamento", 0.13),
+    ("Lendo a base de Levantamento", 0.73),
+    ("Lendo a base de equipes", 0.05),
+    ("Cruzando notas e classificando obras", 0.07),
+    ("Verificando inconsistencias", 0.02),
+]
+
+
+def tempo_legivel(segundos):
+    if segundos is None:
+        return "Calculando..."
+    total = max(0, int(round(segundos)))
+    horas, resto = divmod(total, 3600)
+    minutos, secs = divmod(resto, 60)
+    return (
+        f"{horas:02d}:{minutos:02d}:{secs:02d}"
+        if horas else f"{minutos:02d}:{secs:02d}"
+    )
+
+
+def processar_bases_em_thread(san_bytes, lev_bytes, team_bytes, estado):
+    # Nenhuma chamada st.* dentro da thread: apenas leitura/processamento.
+    class ArquivoMemoria:
+        def __init__(self, dados, nome):
+            self._dados = dados
+            self.name = nome
+
+        def getvalue(self):
+            return self._dados
+
+    def etapa(indice):
+        estado["indice"] = indice
+        estado["inicio_etapa"] = time.monotonic()
+
+    etapa(0)
+    san, sa = load_san(ArquivoMemoria(*san_bytes))
+    etapa(1)
+    lev, info = load_lev(ArquivoMemoria(*lev_bytes))
+    etapa(2)
+    teams = load_teams(ArquivoMemoria(*team_bytes))
+    etapa(3)
+    audit = consolidate(san, lev)
+    etapa(4)
+    errors = anomalies(san, lev, audit, teams)
+    estado["indice"] = len(PROCESS_STAGES)
+    return {
+        "audit": audit,
+        "teams": teams,
+        "san_name": sa,
+        "lev_info": info,
+        "issues": errors,
+    }
+
 
 if st.button(
     "🚀 Processar bases",
     type="primary",
     use_container_width=True
 ):
+    inicio_processamento = time.monotonic()
+    estado_progresso = {"indice": 0, "inicio_etapa": inicio_processamento}
+    linha_status = st.empty()
+    barra_status = st.empty()
+    linha_tempo = st.empty()
+
+    # Se os arquivos mudaram, nao utilizar resultados anteriores ao clicar.
+    st.session_state.pop("nipbase", None)
+
+    arquivos = (
+        (san_file.getvalue(), san_file.name),
+        (lev_file.getvalue(), lev_file.name),
+        (team_file.getvalue(), team_file.name),
+    )
+
     try:
-        start = time.perf_counter()
-
-        san, sa = load_san(
-            san_file
-        )
-
-        lev, info = load_lev(
-            lev_file
-        )
-
-        teams = load_teams(
-            team_file
-        )
-
-        audit = consolidate(
-            san,
-            lev
-        )
-
-        errors = anomalies(
-            san,
-            lev,
-            audit,
-            teams
-        )
-
-        st.session_state[
-            "nipbase"
-        ] = {
-            "sig": sig,
-            "audit": audit,
-            "teams": teams,
-            "san_name": sa,
-            "lev_info": info,
-            "issues": errors,
-            "seconds": (
-                time.perf_counter()
-                - start
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                processar_bases_em_thread,
+                *arquivos,
+                estado_progresso
             )
-        }
 
-        st.session_state.pop(
-            "niproutes",
-            None
-        )
+            while not future.done():
+                decorrido = time.monotonic() - inicio_processamento
+                indice = min(estado_progresso["indice"], len(PROCESS_STAGES)-1)
+                percentual = sum(peso for _, peso in PROCESS_STAGES[:indice])
+                etapa_nome = PROCESS_STAGES[indice][0]
 
-        st.session_state.pop(
-            "nipgeom",
-            None
-        )
+                # A ETA e uma projecao por etapa, nao uma promessa exata.
+                # Primeira etapa: aguarda dados para estimar o restante.
+                restante = (
+                    decorrido / percentual * (1 - percentual)
+                    if percentual >= 0.01 else None
+                )
+                linha_status.info(f"⏳ {etapa_nome}...")
+                barra_status.progress(
+                    max(0.01, min(0.99, percentual)),
+                    text=f"Etapas concluídas: {indice}/{len(PROCESS_STAGES)}"
+                )
+                linha_tempo.markdown(
+                    f"**⏱️ Tempo decorrido:** {tempo_legivel(decorrido)}"
+                    f"　 |　 **⌛ Tempo restante estimado:** {tempo_legivel(restante)}"
+                )
+                time.sleep(0.4)
 
-        st.success(
-            "Bases processadas com sucesso."
+            # Propaga erros da thread para o tratamento abaixo.
+            resultado = future.result()
+
+        total = time.monotonic() - inicio_processamento
+        resultado.update({
+            "sig": sig,
+            "seconds": total,
+        })
+        st.session_state["nipbase"] = resultado
+        st.session_state.pop("niproutes", None)
+        st.session_state.pop("nipgeom", None)
+
+        linha_status.success("✅ Bases processadas com sucesso.")
+        barra_status.progress(1.0, text="Processamento concluído")
+        linha_tempo.markdown(
+            f"**⏱️ Tempo total:** {tempo_legivel(total)}"
+            "　 |　 **⌛ Tempo restante:** 00:00"
         )
 
     except Exception as e:
-        st.error(
-            f"Erro no processamento: {e}"
+        linha_status.error(f"Erro no processamento: {e}")
+        barra_status.empty()
+        linha_tempo.markdown(
+            f"**⏱️ Tempo decorrido:** "
+            f"{tempo_legivel(time.monotonic() - inicio_processamento)}"
         )
 
 if "nipbase" not in st.session_state:
@@ -4267,9 +4302,14 @@ book = excel_bytes({
 # KML GERAL: todas as obras PENDENTES, independentemente dos filtros
 # de programacao, equipe, periodo e prioridade. Exporta apenas notas
 # com coordenadas validas. Nao cria trajetos/rotas inventados.
-kml_total_works = pending.dropna(
-    subset=["LATITUDE", "LONGITUDE"]
-).copy()
+# Enriquece TODAS as notas pendentes para o KML geral, não apenas
+# as notas selecionadas nos filtros de programação. O cálculo inicial
+# de proximidade é geográfico e não se confunde com distância OSRM.
+kml_total_works, _ = team_candidates(
+    pending.dropna(subset=["LATITUDE", "LONGITUDE"]).copy(),
+    teams,
+    k
+)
 kml = kml_bytes(
     kml_total_works,
     name="NIP - Todas as Obras Pendentes"
@@ -4507,10 +4547,16 @@ with c4:
         use_container_width=True
     )
 
+# Também inclui a relação de equipes no KML exclusivo de duplicadas.
+dup_com_equipes, _ = team_candidates(
+    dup,
+    teams,
+    k
+)
 st.download_button(
     "🟣 KML de duplicadas",
     kml_bytes(
-        dup,
+        dup_com_equipes,
         name="NIP - Duplicadas"
     ),
     "NIP_Duplicadas.kml"
