@@ -3646,21 +3646,25 @@ if not exp_plan.empty:
         )
         and len(exp_dates) == 2
     ):
+        # Normalize both sides to pandas Timestamp (no date/datetime64 mismatch).
         dat = pd.to_datetime(
-            exp_plan[
-                "DATA_PROGRAMADA"
-            ],
+            exp_plan["DATA_PROGRAMADA"],
             errors="coerce"
-        ).dt.date
+        ).dt.normalize()
 
-        exp_plan = exp_plan[
-            dat.ge(
-                exp_dates[0]
-            )
-            & dat.le(
-                exp_dates[1]
-            )
-        ]
+        data_inicial = pd.Timestamp(exp_dates[0]).normalize()
+        data_final = pd.Timestamp(exp_dates[1]).normalize()
+
+        if data_final < data_inicial:
+            data_inicial, data_final = data_final, data_inicial
+
+        mascara_datas = dat.between(
+            data_inicial,
+            data_final,
+            inclusive="both"
+        ).fillna(False)
+
+        exp_plan = exp_plan.loc[mascara_datas].copy()
 
 exp_notas = (
     set(
