@@ -8,8 +8,8 @@ import zipfile
 import unicodedata
 import xml.etree.ElementTree as ET
 
-from datetime import datetime, timedelta
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -17,16 +17,11 @@ import requests
 import streamlit as st
 import folium
 
-from sklearn.cluster import DBSCAN
-from sklearn.neighbors import BallTree
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
-
-from openpyxl.styles import (
-    Font,
-    PatternFill,
-    Alignment
-)
+from sklearn.cluster import DBSCAN
+from sklearn.neighbors import BallTree
+from openpyxl.styles import Font, PatternFill, Alignment
 
 
 # ============================================================
@@ -34,319 +29,146 @@ from openpyxl.styles import (
 # ============================================================
 
 st.set_page_config(
-    page_title="NIP | Analise Cruzada e Planejamento",
+    page_title="NIP | Análise Cruzada",
     page_icon="📍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-EARTH_KM = 6371.0088
-
-OSRM_DEFAULT = "https://router.project-osrm.org"
-
 CAT_SAN = "OBRA SANEAMENTO"
 CAT_LEV = "OBRA LEVANTAMENTO"
 CAT_DUP = "OBRA SANEAMENTO E LEVANTAMENTO"
 
-CATEGORIAS = [
+CATS = [
     CAT_SAN,
     CAT_LEV,
     CAT_DUP
 ]
 
-SAP_EXCLUIDOS = {
-    "FINL",
-    "CANC"
+COLORS = {
+    CAT_SAN: "#2563eb",
+    CAT_LEV: "#16a34a",
+    CAT_DUP: "#9333ea"
 }
 
-LIST_PERMITIDOS = {
-    "0",
-    "EM LEVANTAMENTO",
-    "CORRECAO DE LEVANTAMENTO"
-}
-
-CONTRATOS_PERMITIDOS = {
-    "0",
-    "NIP GLOBAL LTDA - EQTL MARANHAO"
-}
-
-CORES = {
-    CAT_SAN: "#2563EB",
-    CAT_LEV: "#16A34A",
-    CAT_DUP: "#9333EA"
-}
-
-CORES_FOLIUM = {
+MAP_COLORS = {
     CAT_SAN: "blue",
     CAT_LEV: "green",
     CAT_DUP: "purple"
 }
 
-DIAS_PT = {
-    0: "SEGUNDA-FEIRA",
-    1: "TERCA-FEIRA",
-    2: "QUARTA-FEIRA",
-    3: "QUINTA-FEIRA",
-    4: "SEXTA-FEIRA",
-    5: "SABADO",
-    6: "DOMINGO"
+LIST_VALID = {
+    "0",
+    "EM LEVANTAMENTO",
+    "CORRECAO DE LEVANTAMENTO"
 }
+
+CONTRACT_VALID = {
+    "0",
+    "NIP GLOBAL LTDA - EQTL MARANHAO"
+}
+
+R = 6371.0088
+
+OSRM = "https://router.project-osrm.org"
+
+DAY_NAMES = [
+    "Segunda",
+    "Terça",
+    "Quarta",
+    "Quinta",
+    "Sexta",
+    "Sábado",
+    "Domingo"
+]
 
 
 # ============================================================
-# ESTILO VISUAL - CORRECAO DO TITULO
+# ESTILO VISUAL
 # ============================================================
 
-st.markdown("""
-<style>
-
-/* Espacamento superior corrigido */
-.block-container {
-    padding-top: 4.5rem !important;
-    padding-bottom: 2.5rem !important;
-    padding-left: 2rem !important;
-    padding-right: 2rem !important;
-    max-width: 100% !important;
-}
-
-/* Titulo principal */
-.nip-title {
-    color: #0D256C !important;
-    font-size: 2rem !important;
-    font-weight: 800 !important;
-    line-height: 1.45 !important;
-    margin-top: 0 !important;
-    margin-bottom: 0.4rem !important;
-    padding-top: 10px !important;
-    padding-bottom: 5px !important;
-    overflow: visible !important;
-    white-space: normal !important;
-    word-break: normal !important;
-}
-
-/* Subtitulo */
-.nip-subtitle {
-    color: #64748B;
-    font-size: 0.94rem;
-    line-height: 1.5;
-    margin-top: 0.2rem;
-    margin-bottom: 1.5rem;
-}
-
-/* Secoes */
-.section-title {
-    color: #0D256C;
-    font-size: 1.32rem;
-    font-weight: 750;
-    line-height: 1.4;
-    margin-top: 1.3rem;
-    margin-bottom: 0.9rem;
-    padding-bottom: 4px;
-}
-
-/* Cards de indicadores */
-.nip-card {
-    background: #FFFFFF;
-    padding: 18px;
-    border-radius: 11px;
-    border: 1px solid #E2E8F0;
-    border-left: 5px solid var(--cor);
-    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-    margin-bottom: 12px;
-    min-height: 122px;
-    box-sizing: border-box;
-}
-
-.nip-card-label {
-    color: #64748B;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    line-height: 1.4;
-}
-
-.nip-card-value {
-    color: #172554;
-    font-size: clamp(20px, 2vw, 29px);
-    font-weight: 800;
-    line-height: 1.4;
-    margin-top: 6px;
-    margin-bottom: 4px;
-    overflow-wrap: anywhere;
-}
-
-.nip-card-desc {
-    color: #64748B;
-    font-size: 11px;
-    line-height: 1.4;
-}
-
-/* Uploads */
-div[data-testid="stFileUploader"] {
-    border-radius: 10px;
-}
-
-/* Botoes */
-div[data-testid="stButton"] button,
-div[data-testid="stDownloadButton"] button {
-    border-radius: 8px;
-    min-height: 42px;
-}
-
-/* Tabelas */
-div[data-testid="stDataFrame"] {
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-/* Adaptacao para telas menores */
-@media (max-width: 900px) {
+st.markdown(
+    """
+    <style>
     .block-container {
-        padding-top: 3.5rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+        padding-top: 4.5rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 100% !important;
     }
 
     .nip-title {
-        font-size: 1.55rem !important;
-        line-height: 1.4 !important;
+        font-size: 2rem;
+        color: #0d256c;
+        font-weight: 800;
+        line-height: 1.5;
+        margin: 0 0 8px;
+        overflow: visible;
+        padding-top: 8px;
+    }
+
+    .nip-muted {
+        color: #64748b;
+        margin-bottom: 20px;
     }
 
     .nip-card {
-        min-height: 105px;
-        padding: 12px;
+        padding: 15px;
+        border: 1px solid #e2e8f0;
+        border-left: 5px solid var(--accent);
+        border-radius: 10px;
+        min-height: 110px;
+        overflow-wrap: anywhere;
     }
 
-    .nip-card-value {
-        font-size: 22px;
+    .nip-label {
+        font-size: 12px;
+        color: #64748b;
+        font-weight: 600;
     }
-}
 
-</style>
-""", unsafe_allow_html=True)
+    .nip-value {
+        font-size: 26px;
+        font-weight: 800;
+        color: #172554;
+    }
 
+    .nip-small {
+        font-size: 11px;
+        color: #64748b;
+    }
 
-# ============================================================
-# COMPONENTES VISUAIS
-# ============================================================
+    @media(max-width:900px) {
+        .block-container {
+            padding-top: 3.3rem !important;
+        }
 
-def card(titulo, valor, cor="#0D256C", descricao=""):
-    return f"""
-    <div class="nip-card" style="--cor:{cor}">
-        <div class="nip-card-label">
-            {html.escape(str(titulo))}
-        </div>
-
-        <div class="nip-card-value">
-            {html.escape(str(valor))}
-        </div>
-
-        <div class="nip-card-desc">
-            {html.escape(str(descricao))}
-        </div>
-    </div>
-    """
-
-
-def mostrar_cards(itens):
-    if not itens:
-        return
-
-    for inicio in range(0, len(itens), 5):
-        lote = itens[inicio:inicio + 5]
-        colunas = st.columns(len(lote))
-
-        for coluna, item in zip(colunas, lote):
-            with coluna:
-                st.markdown(
-                    card(*item),
-                    unsafe_allow_html=True
-                )
-
-
-def secao(titulo):
-    st.markdown(
-        (
-            '<div class="section-title">'
-            + html.escape(titulo)
-            + '</div>'
-        ),
-        unsafe_allow_html=True
-    )
+        .nip-title {
+            font-size: 1.45rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 
 # ============================================================
-# CRONOMETRO
+# NORMALIZACAO
 # ============================================================
 
-def formatar_tempo(segundos):
-    if segundos is None:
-        return "Calculando..."
-
-    segundos = max(0, int(segundos))
-
-    horas, resto = divmod(segundos, 3600)
-    minutos, segundos = divmod(resto, 60)
-
-    if horas:
-        return (
-            f"{horas:02d}:"
-            f"{minutos:02d}:"
-            f"{segundos:02d}"
-        )
-
-    return f"{minutos:02d}:{segundos:02d}"
-
-
-def renderizar_cronometro(
-    decorrido,
-    processados,
-    total
-):
-    if processados > 0 and total > processados:
-        restante = (
-            decorrido / processados
-        ) * (total - processados)
-
-    elif total == processados:
-        restante = 0
-
-    else:
-        restante = None
-
-    mostrar_cards([
-        (
-            "Tempo Decorrido",
-            formatar_tempo(decorrido),
-            "#0D256C",
-            "Processamento OSRM"
-        ),
-        (
-            "Tempo Restante",
-            formatar_tempo(restante),
-            "#16A34A",
-            "Estimativa"
-        ),
-        (
-            "Trechos Processados",
-            f"{processados}/{total}",
-            "#9333EA",
-            "Progresso"
-        )
-    ])
-
-
-# ============================================================
-# NORMALIZACAO DOS DADOS
-# ============================================================
-
-def norm(valor):
-    if pd.isna(valor):
+def n(v):
+    if v is None:
         return ""
+
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
 
     texto = unicodedata.normalize(
         "NFKD",
-        str(valor)
+        str(v)
     ).encode(
         "ascii",
         "ignore"
@@ -355,78 +177,55 @@ def norm(valor):
     return re.sub(r"\s+", " ", texto)
 
 
-def status(valor):
-    texto = norm(valor)
+def clean(v):
+    s = n(v)
 
-    if re.fullmatch(r"\d+\.0+", texto):
-        return texto.split(".")[0]
+    if re.fullmatch(r"\d+\.0", s):
+        return s[:-2]
 
-    return texto
+    return s
 
 
-def chave_nota(valor):
-    if pd.isna(valor):
-        return ""
+def nota(v):
+    s = str(v).strip() if pd.notna(v) else ""
 
-    texto = str(valor).strip()
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
 
-    if re.fullmatch(r"\d+\.0+", texto):
-        texto = texto.split(".")[0]
-
-    if norm(texto) in {
+    if n(s) in (
         "",
         "NAN",
         "NONE",
         "NULL",
         "0"
-    }:
+    ):
         return ""
 
-    return texto
+    return s
 
 
-def texto_seguro(valor):
-    if valor is None:
-        return ""
-
-    if isinstance(valor, (list, dict)):
-        return str(valor)
-
-    try:
-        if pd.isna(valor):
-            return ""
-    except (TypeError, ValueError):
-        pass
-
-    return str(valor)
-
-
-def procurar_coluna(
-    df,
-    alternativas,
-    obrigatoria=True
-):
-    mapa = {
-        norm(coluna): coluna
-        for coluna in df.columns
+def col(df, variants, required=True):
+    names = {
+        n(c): c
+        for c in df.columns
     }
 
-    for alternativa in alternativas:
-        if norm(alternativa) in mapa:
-            return mapa[norm(alternativa)]
+    for x in variants:
+        if n(x) in names:
+            return names[n(x)]
 
-    if obrigatoria:
+    if required:
         raise ValueError(
-            "Coluna obrigatoria nao encontrada: "
-            + " / ".join(alternativas)
+            "Coluna ausente: "
+            + " / ".join(variants)
         )
 
     return None
 
 
-def converter_numero(serie):
+def to_num(series):
     return pd.to_numeric(
-        serie.astype(str).str.replace(
+        series.astype(str).str.replace(
             ",",
             ".",
             regex=False
@@ -435,199 +234,156 @@ def converter_numero(serie):
     )
 
 
-def validar_coordenadas(
-    df,
-    coluna_lat,
-    coluna_lon
-):
-    valido = (
-        df[coluna_lat].between(-35, 6)
-        & df[coluna_lon].between(-75, -30)
-        & df[coluna_lat].ne(0)
-        & df[coluna_lon].ne(0)
+def valid_coords(df, lat, lon):
+    la = to_num(df[lat])
+    lo = to_num(df[lon])
+
+    ok = (
+        la.between(-35, 6)
+        & lo.between(-75, -30)
+        & la.ne(0)
+        & lo.ne(0)
     )
 
-    df.loc[
-        ~valido,
-        coluna_lat
-    ] = np.nan
-
-    df.loc[
-        ~valido,
-        coluna_lon
-    ] = np.nan
+    return la.where(ok), lo.where(ok)
 
 
-def escolher_aba(
-    arquivo,
-    grupos_colunas,
-    preferida=None
-):
-    excel = pd.ExcelFile(
-        io.BytesIO(arquivo.getvalue()),
+# ============================================================
+# IDENTIFICACAO AUTOMATICA DE ABAS
+# ============================================================
+
+def find_sheet(file, groups, prefer=""):
+    xls = pd.ExcelFile(
+        io.BytesIO(file.getvalue()),
         engine="openpyxl"
     )
 
-    abas = list(excel.sheet_names)
-
-    if preferida:
-        abas.sort(
-            key=lambda aba: (
-                0 if norm(aba) == norm(preferida)
-                else 1
-            )
+    names = sorted(
+        xls.sheet_names,
+        key=lambda s: (
+            0 if n(s) == n(prefer) else 1
         )
+    )
 
-    for aba in abas:
-        for indice_cabecalho in range(5):
+    for name in names:
+        for header in range(6):
             try:
-                amostra = pd.read_excel(
-                    excel,
-                    sheet_name=aba,
-                    header=indice_cabecalho,
+                test = pd.read_excel(
+                    xls,
+                    sheet_name=name,
+                    header=header,
                     nrows=3,
                     dtype=str
                 )
 
-                nomes = {
-                    norm(coluna)
-                    for coluna in amostra.columns
+                keys = {
+                    n(x)
+                    for x in test.columns
                 }
 
-                encontrou = all(
+                encontrado = all(
                     any(
-                        norm(alternativa) in nomes
-                        for alternativa in grupo
+                        n(v) in keys
+                        for v in group
                     )
-                    for grupo in grupos_colunas
+                    for group in groups
                 )
 
-                if encontrou:
+                if encontrado:
                     df = pd.read_excel(
-                        excel,
-                        sheet_name=aba,
-                        header=indice_cabecalho,
+                        xls,
+                        sheet_name=name,
+                        header=header,
                         dtype=str
                     )
 
-                    return (
-                        df,
-                        aba,
-                        indice_cabecalho
-                    )
-
-            except Exception:
-                continue
-
-    raise ValueError(
-        "Nenhuma aba compativel encontrada. "
-        "Abas disponiveis: "
-        + ", ".join(excel.sheet_names)
-    )
-
-
-# ============================================================
-# CONVERSAO DE DATAS
-# ============================================================
-
-def converter_data(valor):
-    if pd.isna(valor):
-        return pd.NaT
-
-    if isinstance(
-        valor,
-        (pd.Timestamp, datetime)
-    ):
-        return pd.Timestamp(valor)
-
-    texto = str(valor).strip()
-
-    if norm(texto) in {
-        "",
-        "NAN",
-        "NONE",
-        "NULL",
-        "0",
-        "-"
-    }:
-        return pd.NaT
-
-    try:
-        numero = float(
-            texto.replace(",", ".")
-        )
-
-        if 20000 <= numero <= 80000:
-            return (
-                pd.Timestamp("1899-12-30")
-                + pd.Timedelta(days=numero)
-            )
-
-    except (ValueError, OverflowError):
-        pass
-
-    return pd.to_datetime(
-        valor,
-        errors="coerce",
-        dayfirst=True
-    )
-
-
-def responsavel_valido(valor):
-    texto = norm(valor)
-
-    return texto not in {
-        "",
-        "SEM LEVANTADOR",
-        "NAN",
-        "NONE",
-        "NULL",
-        "0",
-        "-"
-    }
-
-
-# ============================================================
-# LEITURA BASE SANEAMENTO
-# ============================================================
-
-def ler_saneamento(arquivo):
-    if arquivo.name.lower().endswith(".csv"):
-        df = None
-
-        for encoding in [
-            "utf-8-sig",
-            "latin-1"
-        ]:
-            try:
-                df = pd.read_csv(
-                    io.BytesIO(
-                        arquivo.getvalue()
-                    ),
-                    sep=None,
-                    engine="python",
-                    encoding=encoding,
-                    dtype=str
-                )
-
-                break
+                    return df, name
 
             except (
-                UnicodeError,
-                pd.errors.ParserError
+                ValueError,
+                TypeError,
+                KeyError
             ):
                 continue
 
-        if df is None:
-            raise ValueError(
-                "Nao foi possivel ler o CSV."
+    raise ValueError(
+        "Não encontrei aba com as colunas exigidas. "
+        "Abas: "
+        + ", ".join(xls.sheet_names)
+    )
+
+
+# ============================================================
+# DATAS
+# ============================================================
+
+def parse_date(v):
+    if v is None or n(v) in (
+        "",
+        "NAN",
+        "NONE",
+        "NULL",
+        "0",
+        "-"
+    ):
+        return pd.NaT
+
+    try:
+        f = float(
+            str(v).replace(",", ".")
+        )
+
+        if 20000 <= f <= 80000:
+            return (
+                pd.Timestamp("1899-12-30")
+                + pd.Timedelta(days=f)
             )
 
-        aba = "CSV"
+    except (
+        ValueError,
+        TypeError,
+        OverflowError
+    ):
+        pass
+
+    return pd.to_datetime(
+        v,
+        dayfirst=True,
+        errors="coerce"
+    )
+
+
+# ============================================================
+# LEITURA SANEAMENTO
+# ============================================================
+
+def load_san(file):
+    if file.name.lower().endswith(".csv"):
+        raw = file.getvalue()
+
+        try:
+            df = pd.read_csv(
+                io.BytesIO(raw),
+                sep=None,
+                engine="python",
+                dtype=str,
+                encoding="utf-8-sig"
+            )
+
+        except UnicodeDecodeError:
+            df = pd.read_csv(
+                io.BytesIO(raw),
+                sep=None,
+                engine="python",
+                dtype=str,
+                encoding="latin-1"
+            )
+
+        sheet = "CSV"
 
     else:
-        df, aba, _ = escolher_aba(
-            arquivo,
+        df, sheet = find_sheet(
+            file,
             [
                 ["NOTA"],
                 [
@@ -636,15 +392,12 @@ def ler_saneamento(arquivo):
                     "CIDADE"
                 ]
             ],
-            preferida="Clientes Existentes"
+            "Clientes Existentes"
         )
 
-    c_nota = procurar_coluna(
-        df,
-        ["NOTA"]
-    )
+    k = col(df, ["NOTA"])
 
-    c_municipio = procurar_coluna(
+    city = col(
         df,
         [
             "MUNICIPIO",
@@ -653,13 +406,13 @@ def ler_saneamento(arquivo):
         ]
     )
 
-    c_regional = procurar_coluna(
+    reg = col(
         df,
         ["REGIONAL"],
         False
     )
 
-    c_lat = procurar_coluna(
+    lat = col(
         df,
         [
             "LATITUDE PROJETO",
@@ -668,7 +421,7 @@ def ler_saneamento(arquivo):
         ]
     )
 
-    c_lon = procurar_coluna(
+    lon = col(
         df,
         [
             "LONGITUDE PROJETO",
@@ -677,92 +430,35 @@ def ler_saneamento(arquivo):
         ]
     )
 
-    df["CHAVE_NOTA"] = (
-        df[c_nota].map(chave_nota)
-    )
+    df["CHAVE"] = df[k].map(nota)
 
-    df["MUNICIPIO_OBRA"] = (
-        df[c_municipio].fillna("")
+    df["CIDADE_OBRA"] = (
+        df[city].fillna("")
     )
 
     df["REGIONAL_OBRA"] = (
-        df[c_regional].fillna("")
-        if c_regional is not None
-        else ""
+        df[reg].fillna("")
+        if reg else ""
     )
 
-    df["LAT_OBRA"] = (
-        converter_numero(df[c_lat])
+    df["LAT_OBRA"], df["LON_OBRA"] = (
+        valid_coords(
+            df,
+            lat,
+            lon
+        )
     )
 
-    df["LON_OBRA"] = (
-        converter_numero(df[c_lon])
-    )
-
-    validar_coordenadas(
-        df,
-        "LAT_OBRA",
-        "LON_OBRA"
-    )
-
-    return df, aba
+    return df, sheet
 
 
 # ============================================================
-# REGRAS BASE LEVANTAMENTO
+# LEITURA LEVANTAMENTO
 # ============================================================
 
-def motivos_levantamento(linha):
-    motivos = []
-
-    sap = linha["SAP_NORM"]
-    lista = linha["LIST_NORM"]
-    contrato = linha["CONTRATO_NORM"]
-    m = linha["M_NORM"]
-    n = linha["N_NORM"]
-
-    if sap in SAP_EXCLUIDOS:
-        motivos.append(
-            f"SAP {sap}"
-        )
-
-    if lista not in LIST_PERMITIDOS:
-        motivos.append(
-            "LIST NAO ACEITO: "
-            + (lista or "VAZIO")
-        )
-
-    if contrato not in CONTRATOS_PERMITIDOS:
-        motivos.append(
-            "CONTRATO NAO ACEITO: "
-            + (contrato or "VAZIO")
-        )
-
-    if m != "0":
-        motivos.append(
-            "ORCAMENTO MODULAR DIFERENTE DE 0"
-        )
-
-    if n != "0":
-        motivos.append(
-            "PLA ALVOS DIFERENTE DE 0"
-        )
-
-    if linha["JA_EM_CAMPO"]:
-        motivos.append(
-            "JA EM CAMPO - EQUIPE E DATA PREENCHIDAS"
-        )
-
-    return " | ".join(motivos)
-
-
-# ============================================================
-# LEITURA BASE LEVANTAMENTO
-# ============================================================
-
-def ler_levantamento(arquivo):
-    df, aba, header = escolher_aba(
-        arquivo,
+def load_lev(file):
+    df, sheet = find_sheet(
+        file,
         [
             ["PROTOCOLO"],
             [
@@ -774,15 +470,12 @@ def ler_levantamento(arquivo):
                 "STATUS_LIST"
             ]
         ],
-        preferida="NOTAS"
+        "NOTAS"
     )
 
-    c_nota = procurar_coluna(
-        df,
-        ["PROTOCOLO"]
-    )
+    k = col(df, ["PROTOCOLO"])
 
-    c_sap = procurar_coluna(
+    sap = col(
         df,
         [
             "STATUS SAP",
@@ -790,7 +483,7 @@ def ler_levantamento(arquivo):
         ]
     )
 
-    c_list = procurar_coluna(
+    lst = col(
         df,
         [
             "STATUS LIST",
@@ -798,12 +491,12 @@ def ler_levantamento(arquivo):
         ]
     )
 
-    c_contrato = procurar_coluna(
+    ctr = col(
         df,
         ["CONTRATO"]
     )
 
-    c_municipio = procurar_coluna(
+    city = col(
         df,
         [
             "MUNICIPIO",
@@ -812,64 +505,52 @@ def ler_levantamento(arquivo):
         ]
     )
 
-    c_regional = procurar_coluna(
+    reg = col(
         df,
         ["REGIONAL"],
         False
     )
 
-    c_lat = procurar_coluna(
-        df,
-        ["LATITUDE"]
-    )
+    lat = col(df, ["LATITUDE"])
+    lon = col(df, ["LONGITUDE"])
 
-    c_lon = procurar_coluna(
-        df,
-        ["LONGITUDE"]
-    )
-
-    c_m = next(
+    m = next(
         (
-            coluna
-            for coluna in df.columns
-            if "ORCAMENTO MODULAR"
-            in norm(coluna)
+            c for c in df.columns
+            if "ORCAMENTO MODULAR" in n(c)
         ),
         None
     )
 
-    c_n = next(
+    nn = next(
         (
-            coluna
-            for coluna in df.columns
-            if "PLA ALVOS"
-            in norm(coluna)
+            c for c in df.columns
+            if "PLA ALVOS" in n(c)
         ),
         None
     )
 
-    if c_m is None or c_n is None:
+    if m is None or nn is None:
         raise ValueError(
-            "Colunas ORCAMENTO MODULAR "
-            "ou PLA ALVOS nao encontradas."
+            "Não localizei ORÇAMENTO MODULAR "
+            "e PLA ALVOS."
         )
 
     if len(df.columns) < 3:
         raise ValueError(
-            "A base de Levantamento possui "
-            "menos de tres colunas."
+            "A aba necessita das colunas físicas B e C."
         )
 
-    coluna_b = df.columns[1]
-    coluna_c = df.columns[2]
+    b = df.columns[1]
+    c = df.columns[2]
 
-    c_prioridade = procurar_coluna(
+    priority = col(
         df,
         ["PRIORIDADE"],
         False
     )
 
-    c_abertura = procurar_coluna(
+    opening = col(
         df,
         [
             "DATA ABERTURA",
@@ -878,152 +559,171 @@ def ler_levantamento(arquivo):
         False
     )
 
-    df["CHAVE_NOTA"] = (
-        df[c_nota].map(chave_nota)
-    )
+    df["CHAVE"] = df[k].map(nota)
 
-    df["MUNICIPIO_OBRA"] = (
-        df[c_municipio].fillna("")
+    df["CIDADE_OBRA"] = (
+        df[city].fillna("")
     )
 
     df["REGIONAL_OBRA"] = (
-        df[c_regional].fillna("")
-        if c_regional is not None
-        else ""
+        df[reg].fillna("")
+        if reg else ""
     )
 
-    df["LAT_OBRA"] = (
-        converter_numero(df[c_lat])
+    df["LAT_OBRA"], df["LON_OBRA"] = (
+        valid_coords(
+            df,
+            lat,
+            lon
+        )
     )
 
-    df["LON_OBRA"] = (
-        converter_numero(df[c_lon])
+    df["SAP"] = df[sap].map(clean)
+    df["LIST"] = df[lst].map(clean)
+
+    df["CONTRATO_N"] = (
+        df[ctr].map(clean)
     )
 
-    validar_coordenadas(
-        df,
-        "LAT_OBRA",
-        "LON_OBRA"
-    )
+    df["M"] = df[m].map(clean)
+    df["N"] = df[nn].map(clean)
 
-    df["SAP_NORM"] = (
-        df[c_sap].map(status)
-    )
-
-    df["LIST_NORM"] = (
-        df[c_list].map(status)
-    )
-
-    df["CONTRATO_NORM"] = (
-        df[c_contrato].map(status)
-    )
-
-    df["M_NORM"] = (
-        df[c_m].map(status)
-    )
-
-    df["N_NORM"] = (
-        df[c_n].map(status)
-    )
-
-    df["PRIORIDADE_NORM"] = (
-        df[c_prioridade].fillna("")
-        if c_prioridade is not None
-        else ""
-    )
-
-    df["DATA_ABERTURA_NORM"] = (
-        df[c_abertura].fillna("")
-        if c_abertura is not None
-        else ""
-    )
-
-    # COLUNA B - RESPONSAVEL
-    df["RESPONSAVEL_CAMPO"] = (
-        df[coluna_b]
+    df["RESP_CAMPO"] = (
+        df[b]
         .fillna("")
         .astype(str)
         .str.strip()
     )
 
-    # COLUNA C - DATA
-    df["DATA_CAMPO"] = (
-        df[coluna_c].map(converter_data)
+    df["DATA_CAMPO_DT"] = (
+        df[c].map(parse_date)
     )
 
-    # EXCLUI APENAS QUANDO AMBAS AS CONDICOES
-    # FOREM VERDADEIRAS
-    df["JA_EM_CAMPO"] = (
-        df["RESPONSAVEL_CAMPO"].map(
-            responsavel_valido
+    df["EM_CAMPO"] = (
+        df["RESP_CAMPO"].map(
+            lambda x: n(x) not in (
+                "",
+                "SEM LEVANTADOR",
+                "NAN",
+                "NONE",
+                "NULL",
+                "0",
+                "-"
+            )
         )
-        & df["DATA_CAMPO"].notna()
+        & df["DATA_CAMPO_DT"].notna()
     )
 
-    df["MOTIVOS_EXCLUSAO"] = df.apply(
-        motivos_levantamento,
+    df["PRIORIDADE_RAW"] = (
+        df[priority].fillna("")
+        if priority else ""
+    )
+
+    df["ABERTURA_RAW"] = (
+        df[opening].fillna("")
+        if opening else ""
+    )
+
+    def reasons(r):
+        result = []
+
+        if r["SAP"] in (
+            "FINL",
+            "CANC"
+        ):
+            result.append(
+                "SAP " + r["SAP"]
+            )
+
+        if r["LIST"] not in LIST_VALID:
+            result.append(
+                "LIST "
+                + (
+                    r["LIST"]
+                    or "VAZIO"
+                )
+            )
+
+        if r["CONTRATO_N"] not in CONTRACT_VALID:
+            result.append(
+                "CONTRATO NÃO PERMITIDO"
+            )
+
+        if r["M"] != "0":
+            result.append(
+                "ORÇAMENTO MODULAR NÃO ZERO"
+            )
+
+        if r["N"] != "0":
+            result.append(
+                "PLA ALVOS NÃO ZERO"
+            )
+
+        if r["EM_CAMPO"]:
+            result.append(
+                "JÁ EM CAMPO (B+C)"
+            )
+
+        return result
+
+    df["MOTIVOS"] = df.apply(
+        reasons,
         axis=1
     )
 
-    info = {
-        "ABA": aba,
-        "LINHA_CABECALHO": header + 1,
-        "COLUNA_B": str(coluna_b),
-        "COLUNA_C": str(coluna_c),
-        "JA_EM_CAMPO_LINHAS": int(
-            df["JA_EM_CAMPO"].sum()
+    return df, {
+        "aba": sheet,
+        "B": b,
+        "C": c,
+        "linhas_campo": int(
+            df["EM_CAMPO"].sum()
         )
     }
 
-    return df, info
-
 
 # ============================================================
-# LEITURA DAS EQUIPES
+# LEITURA EQUIPES
 # ============================================================
 
-def ler_equipes(arquivo):
-    excel = pd.ExcelFile(
-        io.BytesIO(arquivo.getvalue()),
+def load_teams(file):
+    xls = pd.ExcelFile(
+        io.BytesIO(file.getvalue()),
         engine="openpyxl"
     )
 
-    partes = []
+    parts = []
 
-    configuracoes = [
-        (
-            "LEVANTAMENTO",
-            "LEVANTADORES"
-        ),
+    for kind, sheet in [
         (
             "SANEAMENTO",
             "SANEAMENTO"
+        ),
+        (
+            "LEVANTAMENTO",
+            "LEVANTADORES"
         )
-    ]
-
-    for tipo, nome_aba in configuracoes:
-        aba = next(
+    ]:
+        name = next(
             (
-                nome
-                for nome in excel.sheet_names
-                if norm(nome) == nome_aba
+                x for x in xls.sheet_names
+                if n(x) == sheet
             ),
             None
         )
 
-        if aba is None:
+        if name is None:
             raise ValueError(
-                "Aba obrigatoria nao localizada: "
-                + nome_aba
+                "Aba de equipe ausente: "
+                + sheet
             )
 
         df = pd.read_excel(
-            excel,
-            sheet_name=aba,
+            xls,
+            sheet_name=name,
             dtype=str
         )
 
-        c_nome = procurar_coluna(
+        namecol = col(
             df,
             [
                 "NOME",
@@ -1032,7 +732,7 @@ def ler_equipes(arquivo):
             ]
         )
 
-        c_cidade = procurar_coluna(
+        city = col(
             df,
             [
                 "CIDADES",
@@ -1041,7 +741,7 @@ def ler_equipes(arquivo):
             ]
         )
 
-        c_lat = procurar_coluna(
+        lat = col(
             df,
             [
                 "LATITUDE",
@@ -1049,7 +749,7 @@ def ler_equipes(arquivo):
             ]
         )
 
-        c_lon = procurar_coluna(
+        lon = col(
             df,
             [
                 "LONGITUDE",
@@ -1057,386 +757,445 @@ def ler_equipes(arquivo):
             ]
         )
 
-        parte = pd.DataFrame({
-            "EQUIPE": df[c_nome],
-            "CIDADE_BASE": df[c_cidade],
-            "LAT_EQUIPE": converter_numero(
-                df[c_lat]
-            ),
-            "LON_EQUIPE": converter_numero(
-                df[c_lon]
-            ),
-            "TIPO_EQUIPE": tipo
-        })
-
-        validar_coordenadas(
-            parte,
-            "LAT_EQUIPE",
-            "LON_EQUIPE"
+        la, lo = valid_coords(
+            df,
+            lat,
+            lon
         )
 
-        partes.append(parte)
+        parts.append(
+            pd.DataFrame({
+                "TIPO_EQUIPE": kind,
+                "EQUIPE": df[namecol],
+                "CIDADE_BASE": df[city],
+                "LAT_EQUIPE": la,
+                "LON_EQUIPE": lo
+            })
+        )
 
-    equipes = pd.concat(
-        partes,
+    data = pd.concat(
+        parts,
         ignore_index=True
-    )
-
-    equipes = equipes.dropna(
+    ).dropna(
         subset=[
             "EQUIPE",
             "LAT_EQUIPE",
             "LON_EQUIPE"
         ]
-    ).copy()
+    )
 
-    equipes = equipes[
-        equipes["EQUIPE"]
+    data = data[
+        data["EQUIPE"]
         .astype(str)
         .str.strip()
         .ne("")
     ].copy()
 
-    equipes["EQUIPE"] = (
-        equipes["EQUIPE"]
+    data["EQUIPE"] = (
+        data["EQUIPE"]
         .astype(str)
         .str.strip()
     )
 
-    equipes["ID_EQUIPE"] = (
-        equipes["TIPO_EQUIPE"]
-        + "|"
-        + equipes["EQUIPE"]
-        + "|"
-        + equipes["CIDADE_BASE"].astype(str)
+    data["CIDADE_BASE"] = (
+        data["CIDADE_BASE"].fillna("")
     )
 
-    equipes = equipes.drop_duplicates(
-        subset=["ID_EQUIPE"]
+    data["ID_EQUIPE"] = (
+        data["TIPO_EQUIPE"]
+        + "|"
+        + data["EQUIPE"]
+        + "|"
+        + data["CIDADE_BASE"]
+    )
+
+    return data.drop_duplicates(
+        "ID_EQUIPE"
     ).reset_index(drop=True)
-
-    if equipes.empty:
-        raise ValueError(
-            "Nenhuma equipe valida encontrada."
-        )
-
-    return equipes
 
 
 # ============================================================
 # CRUZAMENTO DAS BASES
 # ============================================================
 
-def primeira_valida(grupo):
-    coordenadas_validas = (
-        grupo["LAT_OBRA"].notna()
-        & grupo["LON_OBRA"].notna()
-    )
-
-    if coordenadas_validas.any():
-        return grupo.loc[
-            coordenadas_validas
-        ].iloc[0]
-
-    return grupo.iloc[0]
-
-
-def consolidar(saneamento, levantamento):
-    san = saneamento[
-        saneamento["CHAVE_NOTA"].ne("")
-    ].copy()
-
-    lev = levantamento[
-        levantamento["CHAVE_NOTA"].ne("")
-    ].copy()
-
-    grupos_san = dict(
+def consolidate(san, lev):
+    gs = dict(
         tuple(
-            san.groupby(
-                "CHAVE_NOTA",
+            san[
+                san["CHAVE"].ne("")
+            ].groupby(
+                "CHAVE",
                 sort=False
             )
         )
     )
 
-    grupos_lev = dict(
+    gl = dict(
         tuple(
-            lev.groupby(
-                "CHAVE_NOTA",
+            lev[
+                lev["CHAVE"].ne("")
+            ].groupby(
+                "CHAVE",
                 sort=False
             )
         )
     )
 
-    notas = dict.fromkeys(
-        list(grupos_san)
-        + list(grupos_lev)
-    )
+    rows = []
 
-    registros = []
+    for key in dict.fromkeys(
+        [*gs, *gl]
+    ):
+        a = gs.get(key)
+        b = gl.get(key)
 
-    for nota in notas:
-        grupo_san = grupos_san.get(nota)
-        grupo_lev = grupos_lev.get(nota)
+        if a is not None:
+            valid_a = (
+                a["LAT_OBRA"].notna()
+                & a["LON_OBRA"].notna()
+            )
 
-        tem_san = grupo_san is not None
-        tem_lev = grupo_lev is not None
-
-        a = (
-            primeira_valida(grupo_san)
-            if tem_san
-            else None
-        )
-
-        b = (
-            primeira_valida(grupo_lev)
-            if tem_lev
-            else None
-        )
-
-        if tem_san and tem_lev:
-            categoria = CAT_DUP
-
-        elif tem_san:
-            categoria = CAT_SAN
-
+            sa = (
+                a.loc[valid_a].iloc[0]
+                if valid_a.any()
+                else a.iloc[0]
+            )
         else:
-            categoria = CAT_LEV
+            sa = None
 
-        motivos = []
-
-        if tem_lev:
-            for texto in grupo_lev[
-                "MOTIVOS_EXCLUSAO"
-            ]:
-                if texto:
-                    motivos.extend(
-                        texto.split(" | ")
-                    )
-
-        motivos = list(
-            dict.fromkeys(motivos)
-        )
-
-        ja_em_campo = (
-            bool(
-                grupo_lev[
-                    "JA_EM_CAMPO"
-                ].any()
+        if b is not None:
+            valid_b = (
+                b["LAT_OBRA"].notna()
+                & b["LON_OBRA"].notna()
             )
-            if tem_lev
-            else False
-        )
 
-        responsaveis = []
-        datas_campo = []
+            sb = (
+                b.loc[valid_b].iloc[0]
+                if valid_b.any()
+                else b.iloc[0]
+            )
+        else:
+            sb = None
 
-        if tem_lev:
-            linhas_campo = grupo_lev[
-                grupo_lev["JA_EM_CAMPO"]
-            ]
-
-            responsaveis = [
-                str(valor)
-                for valor in linhas_campo[
-                    "RESPONSAVEL_CAMPO"
-                ].dropna().unique()
-            ]
-
-            datas_campo = []
-
-            for valor in linhas_campo[
-                "DATA_CAMPO"
-            ].dropna().unique():
-                data = pd.Timestamp(valor)
-                datas_campo.append(
-                    data.strftime("%d/%m/%Y")
+        source = (
+            sb
+            if (
+                sb is not None
+                and pd.notna(
+                    sb["LAT_OBRA"]
                 )
-
-        origem = (
-            a if a is not None else b
+            )
+            else sa
+            if sa is not None
+            else sb
         )
 
-        if (
-            b is not None
-            and pd.notna(b["LAT_OBRA"])
-            and pd.notna(b["LON_OBRA"])
-        ):
-            origem = b
+        reasons = (
+            list(
+                dict.fromkeys(
+                    v
+                    for sub in b["MOTIVOS"]
+                    for v in sub
+                )
+            )
+            if b is not None
+            else []
+        )
 
-        registros.append({
-            "NOTA": nota,
-            "LISTA": categoria,
-            "MUNICIPIO": origem[
-                "MUNICIPIO_OBRA"
+        status_saps = (
+            set(b["SAP"])
+            if b is not None
+            else set()
+        )
+
+        on_field = (
+            b[b["EM_CAMPO"]]
+            if b is not None
+            else pd.DataFrame()
+        )
+
+        rows.append({
+            "NOTA": key,
+            "LISTA": (
+                CAT_DUP
+                if (
+                    a is not None
+                    and b is not None
+                )
+                else CAT_SAN
+                if a is not None
+                else CAT_LEV
+            ),
+            "MUNICIPIO": source[
+                "CIDADE_OBRA"
             ],
-            "REGIONAL": origem[
+            "REGIONAL": source[
                 "REGIONAL_OBRA"
             ],
-            "LATITUDE": origem[
+            "LATITUDE": source[
                 "LAT_OBRA"
             ],
-            "LONGITUDE": origem[
+            "LONGITUDE": source[
                 "LON_OBRA"
             ],
-            "STATUS_SAP": (
-                b["SAP_NORM"]
-                if tem_lev else ""
-            ),
-            "STATUS_LIST": (
-                b["LIST_NORM"]
-                if tem_lev else ""
-            ),
-            "CONTRATO": (
-                b["CONTRATO_NORM"]
-                if tem_lev else ""
-            ),
-            "COLUNA_M": (
-                b["M_NORM"]
-                if tem_lev else ""
-            ),
-            "COLUNA_N": (
-                b["N_NORM"]
-                if tem_lev else ""
-            ),
-            "PRIORIDADE_ORIGINAL": (
-                b["PRIORIDADE_NORM"]
-                if tem_lev else ""
-            ),
-            "DATA_ABERTURA": (
-                b["DATA_ABERTURA_NORM"]
-                if tem_lev else ""
-            ),
             "DUPLICADA": (
                 "SIM"
-                if tem_san and tem_lev
+                if (
+                    a is not None
+                    and b is not None
+                )
+                else "NÃO"
+            ),
+            "PENDENTE_CONTAGEM": (
+                "NÃO"
+                if reasons
+                else "SIM"
+            ),
+            "MOTIVO_EXCLUSAO": (
+                " | ".join(reasons)
+                if reasons
+                else "-"
+            ),
+            "SAP_FINL": (
+                "SIM"
+                if "FINL" in status_saps
+                else "NÃO"
+            ),
+            "SAP_CANC": (
+                "SIM"
+                if "CANC" in status_saps
                 else "NÃO"
             ),
             "JA_EM_CAMPO": (
                 "SIM"
-                if ja_em_campo
+                if len(on_field)
                 else "NÃO"
             ),
-            "EQUIPE_CAMPO": " | ".join(
-                responsaveis
+            "EQUIPE_CAMPO": (
+                " | ".join(
+                    on_field[
+                        "RESP_CAMPO"
+                    ].astype(str).unique()
+                )
+                if len(on_field)
+                else ""
             ),
-            "DATA_CAMPO": " | ".join(
-                datas_campo
+            "DATA_CAMPO": (
+                " | ".join(
+                    pd.Timestamp(x).strftime(
+                        "%d/%m/%Y"
+                    )
+                    for x in on_field[
+                        "DATA_CAMPO_DT"
+                    ].dropna().unique()
+                )
+                if len(on_field)
+                else ""
             ),
-            "PENDENTE_CONTAGEM": (
-                "NÃO"
-                if motivos
-                else "SIM"
+            "STATUS_SAP": (
+                " | ".join(
+                    dict.fromkeys(
+                        b["SAP"]
+                    )
+                )
+                if b is not None
+                else ""
             ),
-            "MOTIVO_EXCLUSAO": (
-                " | ".join(motivos)
-                if motivos
-                else "-"
+            "STATUS_LIST": (
+                " | ".join(
+                    dict.fromkeys(
+                        b["LIST"]
+                    )
+                )
+                if b is not None
+                else ""
+            ),
+            "PRIORIDADE_ORIGINAL": (
+                sb["PRIORIDADE_RAW"]
+                if sb is not None
+                else ""
+            ),
+            "DATA_ABERTURA": (
+                sb["ABERTURA_RAW"]
+                if sb is not None
+                else ""
             ),
             "OCORRENCIAS_SANEAMENTO": (
-                len(grupo_san)
-                if tem_san
+                len(a)
+                if a is not None
                 else 0
             ),
             "OCORRENCIAS_LEVANTAMENTO": (
-                len(grupo_lev)
-                if tem_lev
+                len(b)
+                if b is not None
                 else 0
+            ),
+            "MUNICIPIO_SANEAMENTO": (
+                sa["CIDADE_OBRA"]
+                if sa is not None
+                else ""
+            ),
+            "MUNICIPIO_LEVANTAMENTO": (
+                sb["CIDADE_OBRA"]
+                if sb is not None
+                else ""
             )
         })
 
-    return pd.DataFrame(registros)
+    return pd.DataFrame(rows)
 
 
 # ============================================================
-# DISTANCIAS
+# TIPOS DE ATIVIDADE
 # ============================================================
 
-def haversine(
-    lat1,
-    lon1,
-    lat2,
-    lon2
-):
-    lat1 = np.radians(lat1)
-    lon1 = np.radians(lon1)
-    lat2 = np.radians(lat2)
-    lon2 = np.radians(lon2)
-
-    a = (
-        np.sin(
-            (lat2 - lat1) / 2
-        ) ** 2
-
-        + np.cos(lat1)
-        * np.cos(lat2)
-
-        * np.sin(
-            (lon2 - lon1) / 2
-        ) ** 2
-    )
-
-    return (
-        2
-        * EARTH_KM
-        * np.arcsin(
-            np.sqrt(
-                np.clip(a, 0, 1)
-            )
-        )
-    )
-
-
-def atividades(categoria):
-    if categoria == CAT_DUP:
+def activity(cat):
+    if cat == CAT_DUP:
         return [
             "SANEAMENTO",
             "LEVANTAMENTO"
         ]
 
-    if categoria == CAT_SAN:
+    if cat == CAT_SAN:
         return ["SANEAMENTO"]
 
     return ["LEVANTAMENTO"]
 
 
 # ============================================================
-# EQUIPES MAIS PROXIMAS
+# HAVERSINE
 # ============================================================
 
-def gerar_candidatos(
+def haversine(a, b, c, d):
+    x = np.radians(a)
+    y = np.radians(b)
+    z = np.radians(c)
+    w = np.radians(d)
+
+    t = (
+        np.sin(
+            (z - x) / 2
+        ) ** 2
+        + np.cos(x)
+        * np.cos(z)
+        * np.sin(
+            (w - y) / 2
+        ) ** 2
+    )
+
+    return (
+        2
+        * R
+        * np.arcsin(
+            np.sqrt(
+                np.clip(t, 0, 1)
+            )
+        )
+    )
+
+
+# ============================================================
+# PRIORIDADE
+# ============================================================
+
+def priority(df, days):
+    df = df.copy()
+
+    dates = pd.to_datetime(
+        df["DATA_ABERTURA"],
+        errors="coerce",
+        dayfirst=True
+    )
+
+    age = (
+        pd.Timestamp.today().normalize()
+        - dates
+    ).dt.days
+
+    df["DIAS_ABERTURA"] = age
+
+    resultados = []
+
+    for p, d in zip(
+        df["PRIORIDADE_ORIGINAL"],
+        age
+    ):
+        if (
+            "ALTA" in n(p)
+            or "URGENTE" in n(p)
+            or (
+                pd.notna(d)
+                and d >= 4 * days
+            )
+        ):
+            resultados.append(
+                "ALTA"
+            )
+
+        elif (
+            pd.notna(d)
+            and d >= days
+        ):
+            resultados.append(
+                "MEDIA"
+            )
+
+        else:
+            resultados.append(
+                "BAIXA"
+            )
+
+    df["PRIORIDADE_PLANEJAMENTO"] = (
+        resultados
+    )
+
+    return df
+
+
+# ============================================================
+# CANDIDATOS MAIS PROXIMOS
+# ============================================================
+
+@st.cache_data(
+    show_spinner=False
+)
+def team_candidates(
     obras,
     equipes,
-    quantidade=3
+    k
 ):
-    saida = obras.copy().reset_index(
-        drop=True
-    )
+    rows = []
+    labels = {}
 
-    saida["EQUIPES_SANEAMENTO"] = (
-        "NAO APLICAVEL"
-    )
-
-    saida["EQUIPES_LEVANTAMENTO"] = (
-        "NAO APLICAVEL"
-    )
-
-    registros = []
-
-    for tipo in [
+    for kind in [
         "SANEAMENTO",
         "LEVANTAMENTO"
     ]:
-        equipes_tipo = equipes[
-            equipes["TIPO_EQUIPE"].eq(tipo)
+        team = equipes[
+            equipes[
+                "TIPO_EQUIPE"
+            ].eq(kind)
         ].reset_index(drop=True)
 
-        if equipes_tipo.empty:
+        eligible = obras[
+            obras["LISTA"].map(
+                lambda c: (
+                    kind in activity(c)
+                )
+            )
+        ].dropna(
+            subset=[
+                "LATITUDE",
+                "LONGITUDE"
+            ]
+        )
+
+        if team.empty or eligible.empty:
             continue
 
-        arvore = BallTree(
+        tree = BallTree(
             np.radians(
-                equipes_tipo[
+                team[
                     [
                         "LAT_EQUIPE",
                         "LON_EQUIPE"
@@ -1446,500 +1205,656 @@ def gerar_candidatos(
             metric="haversine"
         )
 
-        indices_obras = [
-            i
-            for i, obra in saida.iterrows()
-            if (
-                tipo in atividades(
-                    obra["LISTA"]
-                )
-                and pd.notna(
-                    obra["LATITUDE"]
-                )
-                and pd.notna(
-                    obra["LONGITUDE"]
-                )
-            )
-        ]
-
-        if not indices_obras:
-            continue
-
-        pontos = np.radians(
-            saida.loc[
-                indices_obras,
-                [
-                    "LATITUDE",
-                    "LONGITUDE"
-                ]
-            ].to_numpy(float)
-        )
-
-        distancias, indices = (
-            arvore.query(
-                pontos,
-                k=min(
-                    quantidade,
-                    len(equipes_tipo)
-                )
+        dist, ids = tree.query(
+            np.radians(
+                eligible[
+                    [
+                        "LATITUDE",
+                        "LONGITUDE"
+                    ]
+                ].to_numpy(float)
+            ),
+            k=min(
+                k,
+                len(team)
             )
         )
 
-        for posicao, indice_obra in enumerate(
-            indices_obras
+        for i, (_, work) in enumerate(
+            eligible.iterrows()
         ):
-            textos = []
+            txt = []
 
             for j in range(
-                indices.shape[1]
+                ids.shape[1]
             ):
-                equipe = equipes_tipo.iloc[
-                    indices[posicao, j]
+                eq = team.iloc[
+                    ids[i, j]
                 ]
 
-                km = float(
-                    distancias[posicao, j]
-                    * EARTH_KM
+                km = round(
+                    float(
+                        dist[i, j] * R
+                    ),
+                    2
                 )
 
-                registros.append({
-                    "NOTA": saida.at[
-                        indice_obra,
-                        "NOTA"
-                    ],
-                    "ATIVIDADE": tipo,
-                    "ID_EQUIPE": equipe[
-                        "ID_EQUIPE"
-                    ],
-                    "EQUIPE": equipe[
-                        "EQUIPE"
-                    ],
-                    "CIDADE_BASE": equipe[
-                        "CIDADE_BASE"
-                    ],
-                    "LAT_EQUIPE": equipe[
-                        "LAT_EQUIPE"
-                    ],
-                    "LON_EQUIPE": equipe[
-                        "LON_EQUIPE"
-                    ],
-                    "DISTANCIA_RETA_KM": round(
-                        km,
-                        2
-                    )
+                rows.append({
+                    "NOTA": work["NOTA"],
+                    "ATIVIDADE": kind,
+                    "ID_EQUIPE": eq["ID_EQUIPE"],
+                    "EQUIPE": eq["EQUIPE"],
+                    "CIDADE_BASE": eq["CIDADE_BASE"],
+                    "LAT_EQUIPE": eq["LAT_EQUIPE"],
+                    "LON_EQUIPE": eq["LON_EQUIPE"],
+                    "LAT_OBRA": work["LATITUDE"],
+                    "LON_OBRA": work["LONGITUDE"],
+                    "KM_RETA": km
                 })
 
-                textos.append(
-                    f"{equipe['EQUIPE']} "
-                    f"({equipe['CIDADE_BASE']})"
-                    f" - {km:.1f} km"
+                txt.append(
+                    f"{eq['EQUIPE']} "
+                    f"({eq['CIDADE_BASE']}) "
+                    f"- {km:.1f} km"
                 )
 
-            saida.at[
-                indice_obra,
-                f"EQUIPES_{tipo}"
-            ] = " | ".join(textos)
+            labels[
+                (
+                    work["NOTA"],
+                    kind
+                )
+            ] = " | ".join(txt)
 
-    candidatos = pd.DataFrame(
-        registros,
-        columns=[
-            "NOTA",
-            "ATIVIDADE",
-            "ID_EQUIPE",
-            "EQUIPE",
-            "CIDADE_BASE",
-            "LAT_EQUIPE",
-            "LON_EQUIPE",
-            "DISTANCIA_RETA_KM"
-        ]
-    )
+    out = obras.copy()
 
-    return saida, candidatos
-
-
-# ============================================================
-# PRIORIDADES
-# ============================================================
-
-def priorizar(
-    obras,
-    dias_media=14
-):
-    df = obras.copy()
-
-    datas = pd.to_datetime(
-        df["DATA_ABERTURA"],
-        errors="coerce",
-        dayfirst=True
-    )
-
-    df["DIAS_ABERTURA"] = (
-        pd.Timestamp.today().normalize()
-        - datas
-    ).dt.days
-
-    def classificar(linha):
-        prioridade_original = norm(
-            linha["PRIORIDADE_ORIGINAL"]
-        )
-
-        if any(
-            palavra in prioridade_original
-            for palavra in [
-                "URGENTE",
-                "CRITICA",
-                "ALTA"
-            ]
-        ):
-            return "ALTA"
-
-        idade = linha["DIAS_ABERTURA"]
-
-        if pd.notna(idade):
-            if idade >= dias_media * 4:
-                return "ALTA"
-
-            if idade >= dias_media:
-                return "MEDIA"
-
-        return "BAIXA"
-
-    df["PRIORIDADE_PLANEJAMENTO"] = (
-        df.apply(
-            classificar,
+    for kind in [
+        "SANEAMENTO",
+        "LEVANTAMENTO"
+    ]:
+        out[
+            "EQUIPES_" + kind
+        ] = out.apply(
+            lambda r: labels.get(
+                (
+                    r["NOTA"],
+                    kind
+                ),
+                (
+                    "SEM COORDENADAS OU EQUIPE"
+                    if kind in activity(
+                        r["LISTA"]
+                    )
+                    else "NÃO APLICÁVEL"
+                )
+            ),
             axis=1
         )
+
+    columns = [
+        "NOTA",
+        "ATIVIDADE",
+        "ID_EQUIPE",
+        "EQUIPE",
+        "CIDADE_BASE",
+        "LAT_EQUIPE",
+        "LON_EQUIPE",
+        "LAT_OBRA",
+        "LON_OBRA",
+        "KM_RETA"
+    ]
+
+    return out, pd.DataFrame(
+        rows,
+        columns=columns
     )
 
-    return df
+
+# ============================================================
+# OSRM COM CACHE E TIMEOUT
+# ============================================================
+
+@st.cache_data(
+    ttl=86400,
+    max_entries=10000,
+    show_spinner=False
+)
+def osrm_route(
+    lat1,
+    lon1,
+    lat2,
+    lon2,
+    server,
+    geometry=False
+):
+    if (
+        lat1 == lat2
+        and lon1 == lon2
+    ):
+        return {
+            "ok": True,
+            "km": 0.0,
+            "min": 0.0,
+            "geometry": [
+                [lon1, lat1],
+                [lon2, lat2]
+            ]
+        }
+
+    url = (
+        server.rstrip("/")
+        + "/route/v1/driving/"
+        + f"{lon1:.6f},{lat1:.6f};"
+        + f"{lon2:.6f},{lat2:.6f}"
+    )
+
+    try:
+        response = requests.get(
+            url,
+            params={
+                "overview": (
+                    "full"
+                    if geometry
+                    else "false"
+                ),
+                "geometries": "geojson",
+                "steps": "false"
+            },
+            headers={
+                "User-Agent": "NIP-Planejamento/1.0"
+            },
+            timeout=(2, 4)
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if (
+            data.get("code") != "Ok"
+            or not data.get("routes")
+        ):
+            return {
+                "ok": False
+            }
+
+        route = data["routes"][0]
+
+        geom = (
+            route.get(
+                "geometry",
+                {}
+            ).get(
+                "coordinates",
+                []
+            )
+            if geometry
+            else []
+        )
+
+        return {
+            "ok": True,
+            "km": round(
+                float(
+                    route["distance"]
+                ) / 1000,
+                2
+            ),
+            "min": round(
+                float(
+                    route["duration"]
+                ) / 60,
+                1
+            ),
+            "geometry": geom
+        }
+
+    except (
+        requests.RequestException,
+        ValueError,
+        TypeError,
+        KeyError
+    ):
+        return {
+            "ok": False
+        }
+
+
+# ============================================================
+# PREPARACAO DE ROTAS
+# ============================================================
+
+def initial_routes(
+    candidates,
+    max_km
+):
+    data = candidates.copy()
+
+    data["KM_RODOVIARIO"] = np.nan
+    data["TEMPO_RODOVIARIO_MIN"] = np.nan
+
+    data["ROTA_STATUS"] = (
+        "NÃO CONSULTADA"
+    )
+
+    data["KM_ALOCACAO"] = np.nan
+
+    data.loc[
+        data["KM_RETA"].gt(max_km),
+        "ROTA_STATUS"
+    ] = "FORA RAIO GEOGRÁFICO"
+
+    return data
+
+
+# ============================================================
+# CONSULTAS OSRM POR LOTES
+# ============================================================
+
+def compute_route_batch(
+    routes,
+    start,
+    batch,
+    server,
+    placeholder=None
+):
+    df = routes.copy()
+
+    eligible = df.index[
+        df["ROTA_STATUS"].eq(
+            "NÃO CONSULTADA"
+        )
+    ].tolist()
+
+    end = min(
+        start + batch,
+        len(eligible)
+    )
+
+    t0 = time.monotonic()
+
+    for pos in range(start, end):
+        idx = eligible[pos]
+
+        r = df.loc[idx]
+
+        answer = osrm_route(
+            round(
+                float(
+                    r["LAT_EQUIPE"]
+                ),
+                6
+            ),
+            round(
+                float(
+                    r["LON_EQUIPE"]
+                ),
+                6
+            ),
+            round(
+                float(
+                    r["LAT_OBRA"]
+                ),
+                6
+            ),
+            round(
+                float(
+                    r["LON_OBRA"]
+                ),
+                6
+            ),
+            server,
+            False
+        )
+
+        if answer["ok"]:
+            df.at[
+                idx,
+                "KM_RODOVIARIO"
+            ] = answer["km"]
+
+            df.at[
+                idx,
+                "TEMPO_RODOVIARIO_MIN"
+            ] = answer["min"]
+
+            df.at[
+                idx,
+                "ROTA_STATUS"
+            ] = "OSRM CONFIRMADA"
+
+        else:
+            df.at[
+                idx,
+                "ROTA_STATUS"
+            ] = "SEM ROTA OSRM"
+
+        if placeholder is not None:
+            placeholder.text(
+                f"Lote: "
+                f"{pos - start + 1}/{end - start}"
+                f" | Tempo: "
+                f"{time.monotonic() - t0:.1f}s"
+            )
+
+    return (
+        df,
+        end - start,
+        time.monotonic() - t0
+    )
 
 
 # ============================================================
 # GERAR TAREFAS
 # ============================================================
 
-def gerar_tarefas(obras):
-    registros = []
+def tasks_for(obras):
+    rows = []
 
-    for _, obra in obras.iterrows():
-        for tipo in atividades(
-            obra["LISTA"]
+    for _, r in obras.iterrows():
+        for kind in activity(
+            r["LISTA"]
         ):
-            registro = obra.to_dict()
-            registro["ATIVIDADE"] = tipo
+            rows.append({
+                **r.to_dict(),
+                "ATIVIDADE": kind
+            })
 
-            registros.append(registro)
-
-    return pd.DataFrame(registros)
+    return pd.DataFrame(rows)
 
 
 # ============================================================
-# DATAS DA PROGRAMACAO
+# DATAS PARA PROGRAMACAO
 # ============================================================
 
-def gerar_datas(
-    data_inicio,
-    modo,
-    periodos
+def schedule_days(
+    start,
+    mode,
+    periods
 ):
-    inicio = pd.Timestamp(
-        data_inicio
-    )
+    start = pd.Timestamp(start)
 
-    if modo == "POR DIA":
-        fim = (
-            inicio
+    if mode == "POR DIA":
+        end = (
+            start
             + pd.Timedelta(
-                days=periodos * 2 + 15
+                days=periods * 3 + 14
             )
         )
 
-    elif modo == "POR SEMANA":
-        fim = (
-            inicio
+    elif mode == "POR SEMANA":
+        end = (
+            start
             + pd.Timedelta(
-                weeks=periodos
+                weeks=periods
             )
         )
 
-    elif modo == "POR MES":
-        fim = (
-            inicio
+    elif mode == "POR MÊS":
+        end = (
+            start
             + pd.DateOffset(
-                months=periodos
+                months=periods
             )
             - pd.Timedelta(days=1)
         )
 
     else:
-        fim = (
-            inicio
+        end = (
+            start
             + pd.Timedelta(days=365)
         )
 
-    datas = pd.date_range(
-        inicio,
-        fim,
-        freq="D"
-    )
-
-    dias_uteis = [
-        data.date()
-        for data in datas
-        if data.weekday() < 5
+    days = [
+        v.date()
+        for v in pd.date_range(
+            start,
+            end,
+            freq="D"
+        )
+        if v.weekday() < 5
     ]
 
-    if modo == "POR DIA":
-        return dias_uteis[:periodos]
+    if mode == "POR DIA":
+        return days[:periods]
 
-    return dias_uteis
+    return days
 
 
-def obter_periodo(data, modo):
-    if modo == "POR SEMANA":
-        iso = data.isocalendar()
+def period_id(date, mode):
+    iso = date.isocalendar()
 
+    if mode == "POR SEMANA":
         return (
-            f"{iso.year}-S{iso.week:02d}"
+            f"{iso.year}-S"
+            f"{iso.week:02d}"
         )
 
-    if modo == "POR MES":
-        return data.strftime("%Y-%m")
+    if mode == "POR MÊS":
+        return date.strftime("%Y-%m")
 
-    return data.isoformat()
+    return date.isoformat()
 
 
 # ============================================================
-# PROGRAMACAO
+# ALOCACAO COM DISTANCIA RODOVIARIA
 # ============================================================
 
-def programar(
-    tarefas,
-    candidatos,
-    raio,
-    data_inicio,
-    modo,
-    periodos,
-    limite_periodo,
-    limite_dia
+def schedule_tasks(
+    tasks,
+    routes,
+    teams,
+    capacities,
+    mode,
+    periods,
+    start,
+    period_cap,
+    default_daily,
+    limit_km,
+    route_only
 ):
-    if tarefas.empty:
+    cols = [
+        "EQUIPE_PROGRAMADA",
+        "ID_EQUIPE",
+        "DATA_PROGRAMADA",
+        "PERIODO",
+        "STATUS_PROGRAMACAO"
+    ]
+
+    if tasks.empty:
         return (
-            pd.DataFrame(),
+            pd.DataFrame(
+                columns=list(tasks.columns) + cols
+            ),
             pd.DataFrame()
         )
 
-    ordem_prioridade = {
+    routes = routes.copy()
+
+    routes["KM_ALOCACAO"] = (
+        routes["KM_RODOVIARIO"]
+    )
+
+    route_map = defaultdict(list)
+
+    for _, c in routes.iterrows():
+        if (
+            c["ROTA_STATUS"]
+            == "OSRM CONFIRMADA"
+            and pd.notna(
+                c["KM_RODOVIARIO"]
+            )
+            and c["KM_RODOVIARIO"] <= limit_km
+        ):
+            route_map[
+                (
+                    c["NOTA"],
+                    c["ATIVIDADE"]
+                )
+            ].append(
+                c.to_dict()
+            )
+
+    capmap = {
+        str(r["ID_EQUIPE"]): int(
+            r["CAPACIDADE_DIA"]
+        )
+        for _, r in capacities.iterrows()
+    }
+
+    days = schedule_days(
+        start,
+        mode,
+        periods
+    )
+
+    used_day = defaultdict(int)
+    used_period = defaultdict(int)
+
+    order = {
         "ALTA": 0,
         "MEDIA": 1,
         "BAIXA": 2
     }
 
-    tarefas = tarefas.copy()
-
-    tarefas["_ORDEM"] = (
-        tarefas[
+    ordered = tasks.assign(
+        _ord=tasks[
             "PRIORIDADE_PLANEJAMENTO"
-        ]
-        .map(ordem_prioridade)
-        .fillna(3)
-    )
-
-    tarefas = tarefas.sort_values(
+        ].map(order).fillna(3)
+    ).sort_values(
         [
-            "_ORDEM",
+            "_ord",
             "MUNICIPIO",
             "NOTA"
         ]
     )
 
-    datas = gerar_datas(
-        data_inicio,
-        modo,
-        periodos
-    )
+    out = []
 
-    candidatos_por_nota = defaultdict(list)
-
-    for _, candidato in candidatos.iterrows():
-        chave = (
-            candidato["NOTA"],
-            candidato["ATIVIDADE"]
-        )
-
-        candidatos_por_nota[
-            chave
-        ].append(
-            candidato.to_dict()
-        )
-
-    ocupacao_dia = defaultdict(int)
-    ocupacao_periodo = defaultdict(int)
-
-    resultados = []
-
-    for _, tarefa in tarefas.iterrows():
-        chave = (
-            tarefa["NOTA"],
-            tarefa["ATIVIDADE"]
-        )
-
-        alternativas = []
-
-        for candidato in candidatos_por_nota.get(
-            chave,
+    for _, task in ordered.iterrows():
+        candidates = route_map.get(
+            (
+                task["NOTA"],
+                task["ATIVIDADE"]
+            ),
             []
-        ):
-            km = float(
-                candidato["DISTANCIA_RETA_KM"]
-            )
+        )
 
-            if km > raio:
-                continue
+        options = []
 
-            for data in datas:
-                periodo = obter_periodo(
-                    data,
-                    modo
+        for c in candidates:
+            for day in days:
+                period = period_id(
+                    day,
+                    mode
                 )
 
-                chave_dia = (
-                    candidato["ID_EQUIPE"],
-                    data
+                key = (
+                    c["ID_EQUIPE"],
+                    day
                 )
 
-                chave_periodo = (
-                    candidato["ID_EQUIPE"],
-                    periodo
+                pk = (
+                    c["ID_EQUIPE"],
+                    period
                 )
 
-                carga_dia = ocupacao_dia[
-                    chave_dia
-                ]
-
-                carga_periodo = (
-                    ocupacao_periodo[
-                        chave_periodo
-                    ]
+                cap = int(
+                    capmap.get(
+                        c["ID_EQUIPE"],
+                        default_daily
+                    )
                 )
-
-                if carga_dia >= limite_dia:
-                    continue
 
                 if (
-                    carga_periodo
-                    >= limite_periodo
+                    used_day[key] < cap
+                    and used_period[pk] < period_cap
                 ):
-                    continue
+                    options.append(
+                        (
+                            used_period[pk],
+                            used_day[key],
+                            day,
+                            float(
+                                c["KM_RODOVIARIO"]
+                            ),
+                            c,
+                            period
+                        )
+                    )
 
-                alternativas.append({
-                    "CANDIDATO": candidato,
-                    "DATA": data,
-                    "PERIODO": periodo,
-                    "KM": km,
-                    "CARGA_DIA": carga_dia,
-                    "CARGA_PERIODO": carga_periodo
-                })
+                    break
 
-                break
-
-        registro = tarefa.drop(
-            labels=["_ORDEM"]
+        r = task.drop(
+            labels=["_ord"]
         ).to_dict()
 
-        if alternativas:
-            melhor = min(
-                alternativas,
-                key=lambda item: (
-                    item["CARGA_PERIODO"],
-                    item["CARGA_DIA"],
-                    item["KM"],
-                    item["DATA"]
-                )
+        if options:
+            (
+                _,
+                _,
+                day,
+                km,
+                c,
+                period
+            ) = min(
+                options,
+                key=lambda v: v[:4]
             )
 
-            candidato = melhor["CANDIDATO"]
-            data = melhor["DATA"]
-            periodo = melhor["PERIODO"]
-
-            ocupacao_dia[
+            used_day[
                 (
-                    candidato["ID_EQUIPE"],
-                    data
+                    c["ID_EQUIPE"],
+                    day
                 )
             ] += 1
 
-            ocupacao_periodo[
+            used_period[
                 (
-                    candidato["ID_EQUIPE"],
-                    periodo
+                    c["ID_EQUIPE"],
+                    period
                 )
             ] += 1
 
-            iso = data.isocalendar()
-
-            registro.update({
-                "ID_EQUIPE": candidato[
-                    "ID_EQUIPE"
+            r.update({
+                "EQUIPE_PROGRAMADA": c["EQUIPE"],
+                "ID_EQUIPE": c["ID_EQUIPE"],
+                "DATA_PROGRAMADA": day.isoformat(),
+                "DIA_SEMANA": DAY_NAMES[
+                    day.weekday()
                 ],
-                "EQUIPE_PROGRAMADA": candidato[
-                    "EQUIPE"
+                "PERIODO": period,
+                "KM_RODOVIARIO": km,
+                "TEMPO_RODOVIARIO_MIN": c[
+                    "TEMPO_RODOVIARIO_MIN"
                 ],
-                "CIDADE_BASE": candidato[
-                    "CIDADE_BASE"
-                ],
-                "DATA_PROGRAMADA": data.isoformat(),
-                "DIA_SEMANA": DIAS_PT[
-                    data.weekday()
-                ],
-                "DIA_MES": data.strftime(
-                    "%d/%m/%Y"
-                ),
-                "SEMANA": (
-                    f"{iso.year}-S"
-                    f"{iso.week:02d}"
-                ),
-                "MES": data.strftime(
-                    "%Y-%m"
-                ),
-                "PERIODO": periodo,
-                "DISTANCIA_REFERENCIA_KM": (
-                    melhor["KM"]
-                ),
-                "TIPO_DISTANCIA": "LINHA RETA",
-                "STATUS_PROGRAMACAO": "SUGESTAO"
+                "STATUS_PROGRAMACAO": "SUGESTÃO"
             })
 
         else:
-            registro.update({
+            r.update({
+                "EQUIPE_PROGRAMADA": "NÃO ALOCADA",
                 "ID_EQUIPE": "",
-                "EQUIPE_PROGRAMADA": "NAO ALOCADA",
-                "CIDADE_BASE": "",
                 "DATA_PROGRAMADA": "",
                 "DIA_SEMANA": "",
-                "DIA_MES": "",
-                "SEMANA": "",
-                "MES": "",
                 "PERIODO": "",
-                "DISTANCIA_REFERENCIA_KM": np.nan,
-                "TIPO_DISTANCIA": "",
-                "STATUS_PROGRAMACAO": "SEM ALOCACAO"
+                "KM_RODOVIARIO": np.nan,
+                "TEMPO_RODOVIARIO_MIN": np.nan,
+                "STATUS_PROGRAMACAO": (
+                    "SEM ROTA OU CAPACIDADE"
+                )
             })
 
-        resultados.append(registro)
+        out.append(r)
 
-    programacao = pd.DataFrame(
-        resultados
-    )
+    plan = pd.DataFrame(out)
 
-    alocadas = programacao[
-        programacao[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTAO")
-    ]
-
-    carga = (
-        alocadas.groupby(
+    load = (
+        plan[
+            plan[
+                "STATUS_PROGRAMACAO"
+            ].eq("SUGESTÃO")
+        ]
+        .groupby(
             [
                 "ATIVIDADE",
                 "EQUIPE_PROGRAMADA",
@@ -1952,193 +1867,53 @@ def programar(
         )
     )
 
-    return programacao, carga
+    return plan, load
 
 
 # ============================================================
-# MEDIA DE OBRAS POR EQUIPE
+# SUPERPONTOS DBSCAN
 # ============================================================
 
-def calcular_capacidade_media(
-    obras,
-    equipes,
-    programacao
+def merge_superpoints(
+    plan,
+    meters
 ):
-    resumos = []
-
-    for tipo, descricao in [
-        (
-            "SANEAMENTO",
-            "Saneamento"
-        ),
-        (
-            "LEVANTAMENTO",
-            "Levantamento"
-        )
-    ]:
-        equipes_tipo = equipes[
-            equipes[
-                "TIPO_EQUIPE"
-            ].eq(tipo)
-        ]
-
-        total_equipes = len(
-            equipes_tipo
-        )
-
-        categorias = (
-            [CAT_SAN, CAT_DUP]
-            if tipo == "SANEAMENTO"
-            else [CAT_LEV, CAT_DUP]
-        )
-
-        quantidade_obras = int(
-            obras[
-                "LISTA"
-            ].isin(
-                categorias
-            ).sum()
-        )
-
-        media = (
-            quantidade_obras / total_equipes
-            if total_equipes
-            else 0
-        )
-
-        tarefas_tipo = (
-            programacao[
-                programacao[
-                    "ATIVIDADE"
-                ].eq(tipo)
-            ]
-            if not programacao.empty
-            else pd.DataFrame()
-        )
-
-        programadas = (
-            int(
-                tarefas_tipo[
-                    "STATUS_PROGRAMACAO"
-                ].eq(
-                    "SUGESTAO"
-                ).sum()
-            )
-            if not tarefas_tipo.empty
-            else 0
-        )
-
-        resumos.append({
-            "ATIVIDADE": descricao,
-            "EQUIPES": total_equipes,
-            "OBRAS_DISPONIVEIS": quantidade_obras,
-            "MEDIA_OBRAS_POR_EQUIPE": round(
-                media, 2
-            ),
-            "TAREFAS_PROGRAMADAS": programadas,
-            "MEDIA_PROGRAMADA_POR_EQUIPE": (
-                round(
-                    programadas / total_equipes,
-                    2
-                )
-                if total_equipes
-                else 0
-            )
-        })
-
-    quadro = pd.DataFrame(
-        resumos
-    )
-
-    if not programacao.empty:
-        contagem = (
-            programacao[
-                programacao[
-                    "STATUS_PROGRAMACAO"
-                ].eq("SUGESTAO")
-            ]
-            .groupby("ID_EQUIPE")
-            .size()
-            .to_dict()
-        )
-
-    else:
-        contagem = {}
-
-    detalhe = equipes[
-        [
-            "ID_EQUIPE",
-            "TIPO_EQUIPE",
-            "EQUIPE",
-            "CIDADE_BASE"
-        ]
-    ].copy()
-
-    detalhe["OBRAS_PROGRAMADAS"] = (
-        detalhe["ID_EQUIPE"]
-        .map(contagem)
-        .fillna(0)
-        .astype(int)
-    )
-
-    for tipo, descricao in [
-        (
-            "SANEAMENTO",
-            "Saneamento"
-        ),
-        (
-            "LEVANTAMENTO",
-            "Levantamento"
-        )
-    ]:
-        media = quadro.loc[
-            quadro[
-                "ATIVIDADE"
-            ].eq(descricao),
-            "MEDIA_OBRAS_POR_EQUIPE"
-        ].iloc[0]
-
-        detalhe.loc[
-            detalhe[
-                "TIPO_EQUIPE"
-            ].eq(tipo),
-            "MEDIA_DISPONIVEL_ATIVIDADE"
-        ] = media
-
-    return quadro, detalhe
-
-
-# ============================================================
-# SUPERPONTOS
-# ============================================================
-
-def fundir_superpontos(
-    df,
-    raio_metros=50
-):
-    if df.empty:
+    if plan.empty:
         return (
             pd.DataFrame(),
             0
         )
 
-    validas = df.dropna(
+    valid = plan.dropna(
         subset=[
             "LATITUDE",
             "LONGITUDE"
         ]
     ).copy()
 
-    invalidas = df[
-        df["LATITUDE"].isna()
-        | df["LONGITUDE"].isna()
+    invalid = plan[
+        plan["LATITUDE"].isna()
+        | plan["LONGITUDE"].isna()
     ].copy()
 
-    saida = []
+    if valid.empty:
+        return invalid, 0
 
-    if not validas.empty:
-        coordenadas = np.radians(
-            validas[
+    grouped = []
+
+    # Agrupamento independente por equipe,
+    # data e atividade.
+    for _, g in valid.groupby(
+        [
+            "ID_EQUIPE",
+            "DATA_PROGRAMADA",
+            "ATIVIDADE"
+        ],
+        dropna=False,
+        sort=False
+    ):
+        coords = np.radians(
+            g[
                 [
                     "LATITUDE",
                     "LONGITUDE"
@@ -2146,596 +1921,382 @@ def fundir_superpontos(
             ].to_numpy(float)
         )
 
-        modelo = DBSCAN(
-            eps=raio_metros / 6371000,
+        labels = DBSCAN(
+            eps=meters / 6371000,
             min_samples=1,
             metric="haversine",
             algorithm="ball_tree"
-        ).fit(coordenadas)
+        ).fit(coords).labels_
 
-        validas["CLUSTER_ID"] = (
-            modelo.labels_
+        clustered = g.assign(
+            _cluster=labels
         )
 
-        validas["CHAVE_GRUPO"] = (
-            validas[
-                "CLUSTER_ID"
-            ].astype(str)
-            + "|"
-            + validas[
-                "ID_EQUIPE"
-            ].astype(str)
-            + "|"
-            + validas[
-                "DATA_PROGRAMADA"
-            ].astype(str)
-            + "|"
-            + validas[
-                "ATIVIDADE"
-            ].astype(str)
-        )
-
-        for _, grupo in validas.groupby(
-            "CHAVE_GRUPO",
+        for _, cluster in clustered.groupby(
+            "_cluster",
             sort=False
         ):
-            base = grupo.iloc[0].copy()
+            r = cluster.iloc[0].drop(
+                labels=["_cluster"]
+            ).to_dict()
 
-            originais = (
-                grupo.to_dict(
-                    "records"
-                )
+            original = cluster.drop(
+                columns="_cluster"
+            ).to_dict("records")
+
+            r["_ORIGINAL_ROWS"] = original
+
+            r["LATITUDE"] = (
+                cluster["LATITUDE"].mean()
             )
 
-            quantidade = len(
-                originais
+            r["LONGITUDE"] = (
+                cluster["LONGITUDE"].mean()
             )
 
-            base["_ORIGINAL_ROWS"] = (
-                originais
-            )
-
-            base["LATITUDE"] = (
-                grupo[
-                    "LATITUDE"
-                ].mean()
-            )
-
-            base["LONGITUDE"] = (
-                grupo[
-                    "LONGITUDE"
-                ].mean()
-            )
-
-            base["SUPER_PONTO"] = (
-                f"SIM ({quantidade} un.)"
-                if quantidade > 1
+            r["SUPER_PONTO"] = (
+                f"SIM ({len(cluster)} un.)"
+                if len(cluster) > 1
                 else "NÃO"
             )
 
-            base["NOTAS_AGRUPADAS"] = (
+            r["NOTAS_AGRUPADAS"] = (
                 " | ".join(
-                    grupo[
+                    cluster[
                         "NOTA"
-                    ].astype(str).tolist()
+                    ].astype(str)
                 )
             )
 
-            saida.append(base)
+            grouped.append(r)
 
-    if not invalidas.empty:
-        invalidas["SUPER_PONTO"] = (
-            "NÃO"
-        )
+    for _, r in invalid.iterrows():
+        grouped.append({
+            **r.to_dict(),
+            "SUPER_PONTO": "NÃO",
+            "NOTAS_AGRUPADAS": r["NOTA"],
+            "_ORIGINAL_ROWS": [
+                r.to_dict()
+            ]
+        })
 
-        invalidas["NOTAS_AGRUPADAS"] = (
-            invalidas[
-                "NOTA"
-            ].astype(str)
-        )
-
-        invalidas["_ORIGINAL_ROWS"] = [
-            [registro]
-            for registro in invalidas.to_dict(
-                "records"
-            )
-        ]
-
-        saida.extend(
-            invalidas.to_dict(
-                "records"
-            )
-        )
-
-    final = pd.DataFrame(
-        saida
+    return (
+        pd.DataFrame(grouped),
+        len(plan) - len(grouped)
     )
 
-    final = final.drop(
+
+# ============================================================
+# AUDITORIA DE INCONSISTENCIAS
+# ============================================================
+
+def anomalies(
+    san,
+    lev,
+    consolidated,
+    teams
+):
+    issues = []
+
+    for origin, df in [
+        ("SANEAMENTO", san),
+        ("LEVANTAMENTO", lev)
+    ]:
+        counts = (
+            df.loc[
+                df["CHAVE"].ne(""),
+                "CHAVE"
+            ].value_counts()
+        )
+
+        repeated = counts[
+            counts > 1
+        ]
+
+        for key, count in repeated.items():
+            issues.append({
+                "NOTA": key,
+                "TIPO": (
+                    "REPETIDA NA BASE "
+                    + origin
+                ),
+                "DETALHE": f"{count} linhas"
+            })
+
+    for _, r in consolidated.iterrows():
+        if (
+            pd.isna(r["LATITUDE"])
+            or pd.isna(r["LONGITUDE"])
+        ):
+            issues.append({
+                "NOTA": r["NOTA"],
+                "TIPO": "COORDENADA AUSENTE",
+                "DETALHE": r["MUNICIPIO"]
+            })
+
+        municipio_san = n(
+            r["MUNICIPIO_SANEAMENTO"]
+        )
+
+        municipio_lev = n(
+            r["MUNICIPIO_LEVANTAMENTO"]
+        )
+
+        if (
+            municipio_san
+            and municipio_lev
+            and municipio_san != municipio_lev
+        ):
+            issues.append({
+                "NOTA": r["NOTA"],
+                "TIPO": (
+                    "DIVERGÊNCIA DE MUNICÍPIO"
+                ),
+                "DETALHE": (
+                    f"{r['MUNICIPIO_SANEAMENTO']} / "
+                    f"{r['MUNICIPIO_LEVANTAMENTO']}"
+                )
+            })
+
+        if (
+            r["SAP_FINL"] == "SIM"
+            and r["SAP_CANC"] == "SIM"
+        ):
+            issues.append({
+                "NOTA": r["NOTA"],
+                "TIPO": (
+                    "STATUS SAP CONFLITANTE"
+                ),
+                "DETALHE": (
+                    "FINL e CANC em linhas diferentes"
+                )
+            })
+
+    return pd.DataFrame(
+        issues,
         columns=[
-            "CLUSTER_ID",
-            "CHAVE_GRUPO"
+            "NOTA",
+            "TIPO",
+            "DETALHE"
+        ]
+    )
+
+
+# ============================================================
+# COMPARACAO HISTORICA
+# ============================================================
+
+def compare_history(
+    current,
+    file
+):
+    sheets = pd.read_excel(
+        io.BytesIO(file.getvalue()),
+        sheet_name=None,
+        engine="openpyxl",
+        dtype=str
+    )
+
+    previous = next(
+        (
+            sheets[x]
+            for x in [
+                "CONSOLIDADO",
+                "AUDITORIA COMPLETA",
+                "AUDITORIA"
+            ]
+            if x in sheets
+        ),
+        None
+    )
+
+    if (
+        previous is None
+        or "NOTA" not in previous.columns
+    ):
+        raise ValueError(
+            "Histórico deve conter CONSOLIDADO "
+            "ou AUDITORIA e coluna NOTA."
+        )
+
+    if (
+        "PENDENTE_CONTAGEM"
+        in previous.columns
+    ):
+        previous = previous[
+            previous[
+                "PENDENTE_CONTAGEM"
+            ].eq("SIM")
+        ]
+
+    old = set(
+        previous["NOTA"].map(nota)
+    ) - {""}
+
+    new = set(
+        current["NOTA"].map(nota)
+    ) - {""}
+
+    return (
+        pd.DataFrame({
+            "NOTA": sorted(
+                new - old
+            )
+        }),
+        pd.DataFrame({
+            "NOTA": sorted(
+                old - new
+            )
+        })
+    )
+
+
+# ============================================================
+# EXCEL
+# ============================================================
+
+def safe_excel(df):
+    df = df.copy()
+
+    for c in df.columns:
+        if df[c].dtype == "object":
+            df[c] = df[c].map(
+                lambda x: (
+                    " | ".join(
+                        map(str, x)
+                    )
+                    if isinstance(x, list)
+                    else str(x)
+                    if isinstance(x, dict)
+                    else x
+                )
+            )
+
+    return df.drop(
+        columns=[
+            "_ORIGINAL_ROWS",
+            "GEOMETRIA"
         ],
         errors="ignore"
     )
 
-    return (
-        final,
-        len(df) - len(final)
-    )
 
+def excel_bytes(sheets):
+    out = io.BytesIO()
 
-# ============================================================
-# OSRM
-# ============================================================
+    with pd.ExcelWriter(
+        out,
+        engine="openpyxl"
+    ) as writer:
 
-@st.cache_data(
-    ttl=86400,
-    max_entries=3000,
-    show_spinner=False
-)
-def consultar_osrm(
-    lat1,
-    lon1,
-    lat2,
-    lon2,
-    servidor,
-    timeout_s=4
-):
-    if lat1 == lat2 and lon1 == lon2:
-        return {
-            "OK": True,
-            "KM": 0.0,
-            "MIN": 0.0,
-            "GEOMETRIA": [
-                [lon1, lat1],
-                [lon2, lat2]
-            ]
-        }
+        for name, frame in sheets.items():
+            df = safe_excel(frame)
 
-    url = (
-        servidor.rstrip("/")
-        + "/route/v1/driving/"
-        + f"{lon1:.6f},{lat1:.6f};"
-        + f"{lon2:.6f},{lat2:.6f}"
-    )
+            sheet = name[:31]
 
-    try:
-        resposta = requests.get(
-            url,
-            params={
-                "overview": "full",
-                "geometries": "geojson",
-                "steps": "false"
-            },
-            timeout=(2, timeout_s),
-            headers={
-                "User-Agent": "NIP-Roteirizador/1.0"
-            }
-        )
-
-        resposta.raise_for_status()
-
-        dados = resposta.json()
-
-        if dados.get("code") != "Ok":
-            return {
-                "OK": False
-            }
-
-        rotas = dados.get(
-            "routes",
-            []
-        )
-
-        if not rotas:
-            return {
-                "OK": False
-            }
-
-        rota = rotas[0]
-
-        geometria = (
-            rota.get(
-                "geometry",
-                {}
-            ).get(
-                "coordinates",
-                []
+            df.to_excel(
+                writer,
+                sheet_name=sheet,
+                index=False
             )
-        )
 
-        if len(geometria) < 2:
-            return {
-                "OK": False
-            }
+            ws = writer.sheets[sheet]
 
-        return {
-            "OK": True,
-            "KM": round(
-                float(
-                    rota["distance"]
-                ) / 1000,
-                2
-            ),
-            "MIN": round(
-                float(
-                    rota["duration"]
-                ) / 60,
-                1
-            ),
-            "GEOMETRIA": geometria
-        }
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
 
-    except (
-        requests.RequestException,
-        ValueError,
-        TypeError,
-        KeyError
-    ):
-        return {
-            "OK": False
-        }
+            ws.sheet_view.showGridLines = False
 
+            for cell in ws[1]:
+                cell.fill = PatternFill(
+                    "solid",
+                    fgColor="002060"
+                )
 
-# ============================================================
-# PREPARAR TRECHOS
-# ============================================================
+                cell.font = Font(
+                    color="FFFFFF",
+                    bold=True
+                )
 
-def preparar_trechos(
-    programacao,
-    equipes
-):
-    if programacao.empty:
-        return pd.DataFrame()
+                cell.alignment = Alignment(
+                    horizontal="center"
+                )
 
-    linhas = []
-
-    validas = programacao[
-        programacao[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTAO")
-    ].dropna(
-        subset=[
-            "LATITUDE",
-            "LONGITUDE"
-        ]
-    )
-
-    for (
-        id_equipe,
-        data
-    ), grupo in validas.groupby(
-        [
-            "ID_EQUIPE",
-            "DATA_PROGRAMADA"
-        ]
-    ):
-        equipe_df = equipes[
-            equipes[
-                "ID_EQUIPE"
-            ].eq(id_equipe)
-        ]
-
-        if equipe_df.empty:
-            continue
-
-        equipe = equipe_df.iloc[0]
-
-        lat_atual = float(
-            equipe[
-                "LAT_EQUIPE"
-            ]
-        )
-
-        lon_atual = float(
-            equipe[
-                "LON_EQUIPE"
-            ]
-        )
-
-        restantes = (
-            grupo.to_dict(
-                "records"
-            )
-        )
-
-        ordem = 0
-
-        while restantes:
-            distancias = [
-                float(
-                    haversine(
-                        lat_atual,
-                        lon_atual,
-                        float(
-                            registro[
-                                "LATITUDE"
-                            ]
-                        ),
-                        float(
-                            registro[
-                                "LONGITUDE"
-                            ]
+            for row in ws.iter_rows(
+                min_row=2
+            ):
+                if (
+                    "SUPER_PONTO" in df.columns
+                    and str(
+                        row[
+                            df.columns.get_loc(
+                                "SUPER_PONTO"
+                            )
+                        ].value
+                    ).startswith("SIM")
+                ):
+                    for cell in row:
+                        cell.fill = PatternFill(
+                            "solid",
+                            fgColor="FCE4D6"
                         )
+
+            for col_cells in ws.columns:
+                letter = (
+                    col_cells[0].column_letter
+                )
+
+                lengths = [
+                    len(str(c.value or ""))
+                    for c in list(
+                        col_cells
+                    )[:100]
+                ]
+
+                ws.column_dimensions[
+                    letter
+                ].width = min(
+                    55,
+                    max(
+                        13,
+                        max(
+                            lengths,
+                            default=10
+                        ) + 2
                     )
                 )
-                for registro in restantes
-            ]
 
-            indice = int(
-                np.argmin(
-                    distancias
-                )
-            )
-
-            obra = restantes.pop(
-                indice
-            )
-
-            ordem += 1
-
-            linhas.append({
-                "NOTA": obra["NOTA"],
-                "ATIVIDADE": obra[
-                    "ATIVIDADE"
-                ],
-                "EQUIPE": obra[
-                    "EQUIPE_PROGRAMADA"
-                ],
-                "ID_EQUIPE": id_equipe,
-                "DATA": data,
-                "ORDEM": ordem,
-                "LAT_ORIGEM": lat_atual,
-                "LON_ORIGEM": lon_atual,
-                "LAT_DESTINO": float(
-                    obra[
-                        "LATITUDE"
-                    ]
-                ),
-                "LON_DESTINO": float(
-                    obra[
-                        "LONGITUDE"
-                    ]
-                ),
-                "KM_RETA": round(
-                    distancias[indice],
-                    2
-                )
-            })
-
-            lat_atual = float(
-                obra[
-                    "LATITUDE"
-                ]
-            )
-
-            lon_atual = float(
-                obra[
-                    "LONGITUDE"
-                ]
-            )
-
-    return pd.DataFrame(
-        linhas
-    )
+    return out.getvalue()
 
 
 # ============================================================
-# PROCESSAMENTO OSRM POR LOTES
+# POPUP DOS MARCADORES
 # ============================================================
 
-def processar_lote_osrm(
-    trechos,
-    servidor,
-    inicio,
-    tamanho_lote
-):
-    novos = []
-
-    fim = min(
-        inicio + tamanho_lote,
-        len(trechos)
-    )
-
-    progresso = st.progress(
-        inicio / max(
-            1,
-            len(trechos)
-        )
-    )
-
-    texto_progresso = st.empty()
-
-    inicio_lote = time.monotonic()
-
-    for indice in range(
-        inicio,
-        fim
-    ):
-        trecho = trechos.iloc[
-            indice
-        ]
-
-        rota = consultar_osrm(
-            round(
-                float(
-                    trecho[
-                        "LAT_ORIGEM"
-                    ]
-                ),
-                6
-            ),
-            round(
-                float(
-                    trecho[
-                        "LON_ORIGEM"
-                    ]
-                ),
-                6
-            ),
-            round(
-                float(
-                    trecho[
-                        "LAT_DESTINO"
-                    ]
-                ),
-                6
-            ),
-            round(
-                float(
-                    trecho[
-                        "LON_DESTINO"
-                    ]
-                ),
-                6
-            ),
-            servidor
-        )
-
-        registro = trecho.to_dict()
-
-        if rota["OK"]:
-            registro[
-                "TIPO_TRAJETO"
-            ] = "OSRM"
-
-            registro[
-                "KM_RODOVIARIO"
-            ] = rota["KM"]
-
-            registro[
-                "TEMPO_MIN"
-            ] = rota["MIN"]
-
-            registro[
-                "GEOMETRIA"
-            ] = rota["GEOMETRIA"]
-
-        else:
-            registro[
-                "TIPO_TRAJETO"
-            ] = "ESTIMATIVA - LINHA RETA"
-
-            registro[
-                "KM_RODOVIARIO"
-            ] = np.nan
-
-            registro[
-                "TEMPO_MIN"
-            ] = np.nan
-
-            registro[
-                "GEOMETRIA"
-            ] = [
-                [
-                    registro[
-                        "LON_ORIGEM"
-                    ],
-                    registro[
-                        "LAT_ORIGEM"
-                    ]
-                ],
-                [
-                    registro[
-                        "LON_DESTINO"
-                    ],
-                    registro[
-                        "LAT_DESTINO"
-                    ]
-                ]
-            ]
-
-        novos.append(
-            registro
-        )
-
-        processados = indice + 1
-
-        progresso.progress(
-            processados / len(
-                trechos
-            )
-        )
-
-        texto_progresso.markdown(
-            f"**Processando trecho "
-            f"{processados}/{len(trechos)}** "
-            f"| Lote: "
-            f"{formatar_tempo(time.monotonic() - inicio_lote)}"
-        )
-
-    return (
-        novos,
-        fim,
-        time.monotonic() - inicio_lote
-    )
-
-
-# ============================================================
-# POPUPS DOS MARCADORES
-# ============================================================
-
-def popup_html(obra):
-    def esc(campo):
-        return html.escape(
-            texto_seguro(
-                obra.get(
-                    campo,
-                    ""
-                )
-            )
-        )
-
-    linhas = [
+def popup(r):
+    fields = [
         (
             "Nota",
-            esc("NOTA")
+            r.get("NOTA", "")
         ),
         (
-            "Municipio",
-            esc("MUNICIPIO")
+            "Município",
+            r.get("MUNICIPIO", "")
         ),
         (
             "Tipo",
-            esc("LISTA")
+            r.get("LISTA", "")
         )
     ]
 
-    saneamento = esc(
-        "EQUIPES_SANEAMENTO"
-    )
-
-    levantamento = esc(
-        "EQUIPES_LEVANTAMENTO"
-    )
-
-    if (
-        saneamento
-        and saneamento != "NAO APLICAVEL"
-    ):
-        linhas.append(
-            (
-                "Equipes Saneamento",
-                saneamento
-            )
-        )
-
-    if (
-        levantamento
-        and levantamento != "NAO APLICAVEL"
-    ):
-        linhas.append(
-            (
-                "Equipes Levantamento",
-                levantamento
-            )
-        )
-
-    campos_adicionais = [
+    extras = [
         (
-            "REGIONAL",
-            "Regional"
+            "EQUIPES_SANEAMENTO",
+            "Equipes Saneamento"
+        ),
+        (
+            "EQUIPES_LEVANTAMENTO",
+            "Equipes Levantamento"
         ),
         (
             "PRIORIDADE_PLANEJAMENTO",
@@ -2743,11 +2304,11 @@ def popup_html(obra):
         ),
         (
             "EQUIPE_PROGRAMADA",
-            "Equipe Programada"
+            "Equipe programada"
         ),
         (
             "DATA_PROGRAMADA",
-            "Data Programada"
+            "Data"
         ),
         (
             "SUPER_PONTO",
@@ -2755,220 +2316,153 @@ def popup_html(obra):
         ),
         (
             "NOTAS_AGRUPADAS",
-            "Notas Agrupadas"
+            "Notas agrupadas"
         )
     ]
 
-    for campo, rotulo in campos_adicionais:
-        valor = esc(campo)
+    for key, label in extras:
+        val = r.get(key, "")
 
         if (
-            valor
-            and valor.lower() != "nan"
+            n(val)
+            and n(val) != "NAO APLICAVEL"
         ):
-            linhas.append(
-                (
-                    rotulo,
-                    valor
-                )
+            fields.append(
+                (label, val)
             )
 
-    corpo = "".join(
-        f"""
-        <tr>
-            <td style="
-                padding:6px;
-                width:115px;
-                font-weight:bold;
-                vertical-align:top;
-                border-bottom:1px solid #eee;
-            ">
-                {html.escape(rotulo)}
-            </td>
-            <td style="
-                padding:6px;
-                border-bottom:1px solid #eee;
-                word-break:break-word;
-            ">
-                {valor}
-            </td>
-        </tr>
-        """
-        for rotulo, valor in linhas
+    body = "".join(
+        (
+            '<tr>'
+            '<td style="padding:5px;'
+            'font-weight:bold;vertical-align:top">'
+            f'{html.escape(str(label))}'
+            '</td>'
+            '<td style="padding:5px">'
+            f'{html.escape(str(value))}'
+            '</td>'
+            '</tr>'
+        )
+        for label, value in fields
     )
 
-    cor = CORES.get(
-        obra.get(
-            "LISTA"
-        ),
-        "#0D256C"
+    color = COLORS.get(
+        r.get("LISTA"),
+        "#0d256c"
     )
 
-    return f"""
-    <div style="
-        font-family:Arial,sans-serif;
-        width:350px;
-        max-width:100%;
-        font-size:12px;
-        color:#1f2937;
-    ">
-        <div style="
-            background:{cor};
-            color:white;
-            padding:12px;
-            font-weight:bold;
-            border-radius:8px 8px 0 0;
-        ">
-            INFORMACOES DA OBRA
-        </div>
-
-        <table style="
-            width:100%;
-            border-collapse:collapse;
-            background:white;
-        ">
-            {corpo}
-        </table>
-    </div>
-    """
+    return (
+        '<div style="width:340px;'
+        'font-family:Arial;font-size:12px">'
+        f'<div style="background:{color};'
+        'color:white;padding:10px;font-weight:bold">'
+        'INFORMAÇÕES DA OBRA'
+        '</div>'
+        f'<table>{body}</table>'
+        '</div>'
+    )
 
 
 # ============================================================
-# EXPORTACAO KML
+# GERAR KML
 # ============================================================
 
-def gerar_kml(
-    obras,
-    superpontos=None,
-    trajetos=None,
-    nome="NIP - Obras Pendentes"
+def kml_bytes(
+    works,
+    superpoints=None,
+    paths=None,
+    name="NIP - Obras"
 ):
-    namespace = (
+    ns = (
         "http://www.opengis.net/kml/2.2"
     )
 
-    ET.register_namespace(
-        "",
-        namespace
-    )
+    ET.register_namespace("", ns)
 
-    def elemento(
-        pai,
-        tag,
-        texto=None
-    ):
-        item = ET.SubElement(
-            pai,
-            f"{{{namespace}}}{tag}"
+    def add(parent, tag, value=None):
+        x = ET.SubElement(
+            parent,
+            f"{{{ns}}}{tag}"
         )
 
-        if texto is not None:
-            item.text = str(
-                texto
-            )
+        x.text = (
+            str(value)
+            if value is not None
+            else None
+        )
 
-        return item
+        return x
 
-    raiz = ET.Element(
-        f"{{{namespace}}}kml"
+    root = ET.Element(
+        f"{{{ns}}}kml"
     )
 
-    documento = elemento(
-        raiz,
+    doc = add(
+        root,
         "Document"
     )
 
-    elemento(
-        documento,
+    add(
+        doc,
         "name",
-        nome
+        name
     )
 
-    estilos = {
-        CAT_SAN: (
-            "saneamento",
-            "http://maps.google.com/mapfiles/"
-            "kml/paddle/blu-blank.png"
-        ),
-        CAT_LEV: (
-            "levantamento",
-            "http://maps.google.com/mapfiles/"
-            "kml/paddle/grn-blank.png"
-        ),
-        CAT_DUP: (
-            "duplicadas",
-            "http://maps.google.com/mapfiles/"
-            "kml/paddle/purple-blank.png"
-        )
+    icons = {
+        CAT_SAN: "blu-blank.png",
+        CAT_LEV: "grn-blank.png",
+        CAT_DUP: "purple-blank.png"
     }
 
-    for categoria, (
-        id_estilo,
-        url
-    ) in estilos.items():
-        estilo = elemento(
-            documento,
+    for cat in CATS:
+        style = add(
+            doc,
             "Style"
         )
 
-        estilo.set(
+        style.set(
             "id",
-            id_estilo
+            "cat" + str(
+                CATS.index(cat)
+            )
         )
 
-        icone_estilo = elemento(
-            estilo,
-            "IconStyle"
-        )
-
-        elemento(
-            icone_estilo,
-            "scale",
-            "1.2"
-        )
-
-        icone = elemento(
-            icone_estilo,
+        ic = add(
+            add(
+                style,
+                "IconStyle"
+            ),
             "Icon"
         )
 
-        elemento(
-            icone,
+        add(
+            ic,
             "href",
-            url
+            (
+                "http://maps.google.com/mapfiles/"
+                "kml/paddle/"
+                + icons[cat]
+            )
         )
 
-        rotulo = elemento(
-            estilo,
-            "LabelStyle"
-        )
-
-        elemento(
-            rotulo,
-            "scale",
-            "0"
-        )
-
-    # PONTOS DAS OBRAS
-    for categoria in CATEGORIAS:
-        pasta = elemento(
-            documento,
+        folder = add(
+            doc,
             "Folder"
         )
 
-        elemento(
-            pasta,
+        add(
+            folder,
             "name",
-            categoria
+            cat
         )
 
-        if obras.empty:
+        if works.empty:
             continue
 
-        dados_categoria = obras[
-            obras[
+        subset = works[
+            works[
                 "LISTA"
-            ].eq(categoria)
+            ].eq(cat)
         ].dropna(
             subset=[
                 "LATITUDE",
@@ -2976,567 +2470,193 @@ def gerar_kml(
             ]
         )
 
-        for _, obra in dados_categoria.iterrows():
-            ponto = elemento(
-                pasta,
+        for _, r in subset.iterrows():
+            pm = add(
+                folder,
                 "Placemark"
             )
 
-            elemento(
-                ponto,
+            add(
+                pm,
                 "name",
-                f"NOTA {obra['NOTA']}"
+                "Nota " + str(
+                    r["NOTA"]
+                )
             )
 
-            elemento(
-                ponto,
+            add(
+                pm,
                 "styleUrl",
-                "#" + estilos[categoria][0]
+                "#cat"
+                + str(
+                    CATS.index(cat)
+                )
             )
 
-            elemento(
-                ponto,
+            add(
+                pm,
                 "description",
-                popup_html(obra)
+                popup(r)
             )
 
-            geometria = elemento(
-                ponto,
-                "Point"
-            )
-
-            elemento(
-                geometria,
+            add(
+                add(
+                    pm,
+                    "Point"
+                ),
                 "coordinates",
                 (
-                    f"{float(obra['LONGITUDE'])},"
-                    f"{float(obra['LATITUDE'])},0"
+                    f"{r['LONGITUDE']},"
+                    f"{r['LATITUDE']},0"
                 )
             )
 
     # SUPERPONTOS
     if (
-        superpontos is not None
-        and not superpontos.empty
+        superpoints is not None
+        and not superpoints.empty
     ):
-        pasta_super = elemento(
-            documento,
+        folder = add(
+            doc,
             "Folder"
         )
 
-        elemento(
-            pasta_super,
+        add(
+            folder,
             "name",
             "SUPERPONTOS"
         )
 
-        for _, registro in superpontos.iterrows():
-            if not str(
-                registro.get(
-                    "SUPER_PONTO",
-                    ""
-                )
-            ).startswith("SIM"):
-                continue
+        dados = superpoints[
+            superpoints[
+                "SUPER_PONTO"
+            ].astype(str).str.startswith(
+                "SIM"
+            )
+        ].dropna(
+            subset=[
+                "LATITUDE",
+                "LONGITUDE"
+            ]
+        )
 
-            if (
-                pd.isna(
-                    registro["LATITUDE"]
-                )
-                or pd.isna(
-                    registro["LONGITUDE"]
-                )
-            ):
-                continue
-
-            ponto = elemento(
-                pasta_super,
+        for _, r in dados.iterrows():
+            pm = add(
+                folder,
                 "Placemark"
             )
 
-            elemento(
-                ponto,
+            add(
+                pm,
                 "name",
                 (
-                    "SUPERPONTO - "
+                    "SUPERPONTO "
                     + str(
-                        registro[
-                            "SUPER_PONTO"
-                        ]
+                        r["SUPER_PONTO"]
                     )
                 )
             )
 
-            categoria = registro[
-                "LISTA"
-            ]
-
-            elemento(
-                ponto,
+            add(
+                pm,
                 "styleUrl",
-                "#" + estilos.get(
-                    categoria,
-                    estilos[CAT_DUP]
-                )[0]
-            )
-
-            elemento(
-                ponto,
-                "description",
-                popup_html(registro)
-            )
-
-            geometria = elemento(
-                ponto,
-                "Point"
-            )
-
-            elemento(
-                geometria,
-                "coordinates",
-                (
-                    f"{float(registro['LONGITUDE'])},"
-                    f"{float(registro['LATITUDE'])},0"
+                "#cat"
+                + str(
+                    CATS.index(
+                        r["LISTA"]
+                    )
                 )
             )
 
-    # TRAJETOS
+            add(
+                pm,
+                "description",
+                popup(r)
+            )
+
+            add(
+                add(
+                    pm,
+                    "Point"
+                ),
+                "coordinates",
+                (
+                    f"{r['LONGITUDE']},"
+                    f"{r['LATITUDE']},0"
+                )
+            )
+
+    # TRAJETOS OSRM CONFIRMADOS
     if (
-        trajetos is not None
-        and not trajetos.empty
+        paths is not None
+        and not paths.empty
     ):
-        pasta_rotas = elemento(
-            documento,
+        folder = add(
+            doc,
             "Folder"
         )
 
-        elemento(
-            pasta_rotas,
+        add(
+            folder,
             "name",
-            "TRAJETOS DAS EQUIPES"
+            "TRAJETOS OSRM CONFIRMADOS"
         )
 
-        for _, trecho in trajetos.iterrows():
-            geometria = trecho.get(
-                "GEOMETRIA"
+        for _, r in paths.iterrows():
+            coords = r.get(
+                "GEOMETRIA",
+                []
             )
 
-            if not isinstance(
-                geometria,
-                list
+            if (
+                not isinstance(coords, list)
+                or len(coords) < 2
             ):
                 continue
 
-            if len(geometria) < 2:
-                continue
-
-            ponto = elemento(
-                pasta_rotas,
+            pm = add(
+                folder,
                 "Placemark"
             )
 
-            tipo = trecho.get(
-                "TIPO_TRAJETO",
-                "LINHA RETA"
-            )
-
-            elemento(
-                ponto,
+            add(
+                pm,
                 "name",
                 (
-                    f"{trecho['EQUIPE']} - "
-                    f"{trecho['ORDEM']} - "
-                    f"{tipo}"
+                    f"{r['EQUIPE']} "
+                    f"| {r['NOTA']}"
                 )
             )
 
-            elemento(
-                ponto,
-                "description",
-                (
-                    f"Equipe: {trecho['EQUIPE']}\n"
-                    f"Nota: {trecho['NOTA']}\n"
-                    f"Tipo: {tipo}\n"
-                    f"KM rodoviario: "
-                    f"{texto_seguro(trecho.get('KM_RODOVIARIO'))}"
-                )
-            )
-
-            linha = elemento(
-                ponto,
+            line = add(
+                pm,
                 "LineString"
             )
 
-            elemento(
-                linha,
+            add(
+                line,
                 "tessellate",
                 "1"
             )
 
-            elemento(
-                linha,
+            add(
+                line,
                 "coordinates",
                 " ".join(
-                    f"{coordenada[0]},"
-                    f"{coordenada[1]},0"
-                    for coordenada in geometria
+                    f"{x},{y},0"
+                    for x, y in coords
                 )
             )
 
-            estilo = elemento(
-                ponto,
-                "Style"
-            )
-
-            linha_estilo = elemento(
-                estilo,
-                "LineStyle"
-            )
-
-            cor = (
-                "ffff6600"
-                if tipo == "OSRM"
-                else "ff999999"
-            )
-
-            elemento(
-                linha_estilo,
-                "color",
-                cor
-            )
-
-            elemento(
-                linha_estilo,
-                "width",
-                "4"
-            )
-
     return ET.tostring(
-        raiz,
+        root,
         encoding="utf-8",
         xml_declaration=True
     )
 
 
 # ============================================================
-# EXPORTACAO EXCEL
-# ============================================================
-
-def limpar_excel(df):
-    if df is None:
-        return pd.DataFrame()
-
-    saida = df.copy()
-
-    saida = saida.drop(
-        columns=[
-            "_ORIGINAL_ROWS",
-            "GEOMETRIA",
-            "ROTA_GEOMETRIA",
-            "CLUSTER_ID",
-            "CHAVE_GRUPO"
-        ],
-        errors="ignore"
-    )
-
-    for coluna in saida.columns:
-        if saida[coluna].dtype == "object":
-            saida[coluna] = saida[coluna].map(
-                lambda valor: (
-                    " | ".join(
-                        map(str, valor)
-                    )
-                    if isinstance(
-                        valor,
-                        list
-                    )
-                    else str(valor)
-                    if isinstance(
-                        valor,
-                        dict
-                    )
-                    else valor
-                )
-            )
-
-    return saida
-
-
-def formatar_planilha(
-    writer,
-    aba,
-    df
-):
-    ws = writer.sheets[
-        aba
-    ]
-
-    cabecalho = PatternFill(
-        "solid",
-        fgColor="002060"
-    )
-
-    cor_super = PatternFill(
-        "solid",
-        fgColor="FCE4D6"
-    )
-
-    fonte_cabecalho = Font(
-        name="Calibri",
-        color="FFFFFF",
-        bold=True
-    )
-
-    fonte_prioridade = Font(
-        name="Calibri",
-        color="FF0000",
-        bold=True
-    )
-
-    ws.freeze_panes = "A2"
-    ws.sheet_view.showGridLines = False
-    ws.auto_filter.ref = ws.dimensions
-
-    for celula in ws[1]:
-        celula.fill = cabecalho
-        celula.font = fonte_cabecalho
-
-        celula.alignment = Alignment(
-            horizontal="center",
-            vertical="center"
-        )
-
-    ws.row_dimensions[1].height = 26
-
-    indice_super = (
-        df.columns.get_loc(
-            "SUPER_PONTO"
-        )
-        if "SUPER_PONTO"
-        in df.columns
-        else None
-    )
-
-    indice_prioridade = (
-        df.columns.get_loc(
-            "PRIORIDADE_PLANEJAMENTO"
-        )
-        if "PRIORIDADE_PLANEJAMENTO"
-        in df.columns
-        else None
-    )
-
-    for linha in ws.iter_rows(
-        min_row=2
-    ):
-        superponto = (
-            str(
-                linha[indice_super].value
-            ).startswith("SIM")
-            if indice_super is not None
-            else False
-        )
-
-        prioridade = (
-            str(
-                linha[
-                    indice_prioridade
-                ].value
-            ).upper() == "ALTA"
-            if indice_prioridade is not None
-            else False
-        )
-
-        for celula in linha:
-            if superponto:
-                celula.fill = cor_super
-
-            if prioridade:
-                celula.font = fonte_prioridade
-
-    for coluna in ws.columns:
-        letra = coluna[0].column_letter
-
-        tamanhos = [
-            len(
-                str(
-                    celula.value or ""
-                )
-            )
-            for celula in list(
-                coluna
-            )[:120]
-        ]
-
-        ws.column_dimensions[
-            letra
-        ].width = min(
-            60,
-            max(
-                13,
-                max(
-                    tamanhos,
-                    default=10
-                ) + 2
-            )
-        )
-
-
-def gerar_excel(planilhas):
-    memoria = io.BytesIO()
-
-    with pd.ExcelWriter(
-        memoria,
-        engine="openpyxl"
-    ) as writer:
-
-        for nome, df in planilhas.items():
-            aba = nome[:31]
-
-            tabela = limpar_excel(
-                df
-            )
-
-            tabela.to_excel(
-                writer,
-                sheet_name=aba,
-                index=False
-            )
-
-            formatar_planilha(
-                writer,
-                aba,
-                tabela
-            )
-
-    return memoria.getvalue()
-
-
-def gerar_zip_excel_por_equipe(
-    programacao
-):
-    memoria = io.BytesIO()
-
-    with zipfile.ZipFile(
-        memoria,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as arquivo_zip:
-
-        if not programacao.empty:
-            grupos = programacao.groupby(
-                [
-                    "ATIVIDADE",
-                    "EQUIPE_PROGRAMADA"
-                ]
-            )
-
-            for (
-                tipo,
-                equipe
-            ), grupo in grupos:
-
-                if equipe == "NAO ALOCADA":
-                    continue
-
-                nome_seguro = re.sub(
-                    r"[^A-Za-z0-9_-]+",
-                    "_",
-                    norm(equipe)
-                )[:55]
-
-                arquivo_zip.writestr(
-                    (
-                        f"{tipo}/"
-                        f"Rota_{nome_seguro}.xlsx"
-                    ),
-                    gerar_excel({
-                        "Obras Roteirizadas": grupo
-                    })
-                )
-
-    return memoria.getvalue()
-
-
-def gerar_zip_kml_por_equipe(
-    obras,
-    programacao,
-    trajetos=None
-):
-    memoria = io.BytesIO()
-
-    with zipfile.ZipFile(
-        memoria,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as arquivo_zip:
-
-        if not programacao.empty:
-            alocadas = programacao[
-                programacao[
-                    "STATUS_PROGRAMACAO"
-                ].eq("SUGESTAO")
-            ]
-
-            for (
-                tipo,
-                equipe
-            ), grupo in alocadas.groupby(
-                [
-                    "ATIVIDADE",
-                    "EQUIPE_PROGRAMADA"
-                ]
-            ):
-                notas = set(
-                    grupo[
-                        "NOTA"
-                    ].astype(str)
-                )
-
-                obras_equipe = obras[
-                    obras[
-                        "NOTA"
-                    ].astype(str).isin(
-                        notas
-                    )
-                ]
-
-                rotas_equipe = (
-                    trajetos[
-                        trajetos[
-                            "EQUIPE"
-                        ].eq(equipe)
-                    ]
-                    if (
-                        trajetos is not None
-                        and not trajetos.empty
-                    )
-                    else pd.DataFrame()
-                )
-
-                nome_seguro = re.sub(
-                    r"[^A-Za-z0-9_-]+",
-                    "_",
-                    norm(equipe)
-                )[:55]
-
-                arquivo_zip.writestr(
-                    (
-                        f"{tipo}/"
-                        f"Rota_{nome_seguro}.kml"
-                    ),
-                    gerar_kml(
-                        obras_equipe,
-                        trajetos=rotas_equipe,
-                        nome=f"Rota - {equipe}"
-                    )
-                )
-
-    return memoria.getvalue()
-
-
-# ============================================================
-# CABECALHO DO APLICATIVO
+# INTERFACE PRINCIPAL
 # ============================================================
 
 st.markdown(
@@ -3544,15 +2664,9 @@ st.markdown(
     <div class="nip-title">
         📍 NIP | Análise Cruzada e Planejamento
     </div>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <div class="nip-subtitle">
-        Obras Pendentes | Programação |
-        Superpontos | Auditoria | Excel e KML
+    <div class="nip-muted">
+        Backlog | Equipes | OSRM |
+        Superpontos | Excel e KML
     </div>
     """,
     unsafe_allow_html=True
@@ -3560,98 +2674,78 @@ st.markdown(
 
 
 # ============================================================
-# REGRAS DE CONTAGEM
+# REGRAS
 # ============================================================
 
 with st.expander(
-    "📘 Regras de contagem e exclusão",
-    expanded=False
+    "📘 Regras de contagem"
 ):
     st.markdown("""
-    **STATUS SAP**
+    **STATUS SAP:** somente FINL e CANC excluídos.
 
-    - Somente FINL e CANC são excluídos.
-    - Todos os demais status SAP são considerados.
+    **STATUS LIST aceitos:**
+    0, Em levantamento e Correção de levantamento.
 
-    **STATUS LIST**
+    **Contratos aceitos:**
+    0 ou NIP GLOBAL LTDA - EQTL MARANHÃO.
 
-    - 0 é considerado.
-    - Em levantamento é considerado.
-    - Correção de levantamento é considerada.
-    - Outros status são excluídos.
+    **Colunas M e N:** precisam estar iguais a zero.
 
-    **Contrato**
+    **Colunas B e C:**
+    se B contém equipe diferente de SEM LEVANTADOR
+    e C contém data válida, a nota fica fora
+    da contagem.
 
-    - 0.
-    - NIP GLOBAL LTDA - EQTL MARANHÃO.
+    **Duplicadas:** contam uma única vez na
+    volumetria, podendo gerar tarefas distintas.
 
-    **Colunas M e N**
+    **Distância:** a alocação exige rota
+    rodoviária OSRM confirmada.
 
-    - Precisam estar iguais a zero.
-
-    **Colunas B e C**
-
-    - Se B contém equipe diferente de SEM LEVANTADOR
-      e C contém data válida, a nota é retirada
-      da contagem pendente.
-    - A nota permanece registrada na auditoria.
-
-    **Duplicidade**
-
-    - A nota presente nas duas bases conta uma vez.
-    - Pode gerar duas tarefas, uma por atividade.
-
-    **Distâncias**
-
-    - Equipes são sugeridas inicialmente por
-      proximidade geográfica.
-    - OSRM é opcional para desenhar trajetos reais
-      pelas ruas e estradas.
+    **Sem rota confirmada:** a tarefa permanece
+    sem alocação.
     """)
 
 
 # ============================================================
-# IMPORTACAO DOS ARQUIVOS
+# UPLOAD DAS BASES
 # ============================================================
 
-secao("📂 Importação das Bases")
+st.subheader(
+    "📂 Importação das bases"
+)
 
-c1, c2, c3 = st.columns(3)
+a, b, c = st.columns(3)
 
-with c1:
-    arquivo_san = st.file_uploader(
+with a:
+    san_file = st.file_uploader(
         "BASE_SANEAMENTO",
         type=[
             "xlsx",
             "csv"
-        ],
-        key="upload_saneamento"
+        ]
     )
 
-with c2:
-    arquivo_lev = st.file_uploader(
+with b:
+    lev_file = st.file_uploader(
         "BASE_LEVANTAMENTO_ATUALIZADA",
-        type=["xlsx"],
-        key="upload_levantamento"
+        type=["xlsx"]
     )
 
-with c3:
-    arquivo_equipes = st.file_uploader(
+with c:
+    team_file = st.file_uploader(
         "LOCALIDADE LEVANTADORES-SANEAMENTO",
-        type=["xlsx"],
-        key="upload_equipes"
+        type=["xlsx"]
     )
 
 if not all([
-    arquivo_san,
-    arquivo_lev,
-    arquivo_equipes
+    san_file,
+    lev_file,
+    team_file
 ]):
     st.info(
-        "Envie os três arquivos obrigatórios "
-        "para iniciar a análise."
+        "Envie os três arquivos obrigatórios."
     )
-
     st.stop()
 
 
@@ -3659,156 +2753,114 @@ if not all([
 # ASSINATURA DOS ARQUIVOS
 # ============================================================
 
-assinatura = tuple(
+sig = tuple(
     hashlib.sha256(
-        arquivo.getvalue()
+        f.getvalue()
     ).hexdigest()
-    for arquivo in [
-        arquivo_san,
-        arquivo_lev,
-        arquivo_equipes
+    for f in [
+        san_file,
+        lev_file,
+        team_file
     ]
 )
 
 
 # ============================================================
-# PROCESSAMENTO DAS BASES
+# PROCESSAMENTO
 # ============================================================
 
 if st.button(
-    "🚀 PROCESSAR BASES",
+    "🚀 Processar bases",
     type="primary",
     use_container_width=True
 ):
-    inicio_processamento = (
-        time.perf_counter()
-    )
-
     try:
-        with st.spinner(
-            "Validando e cruzando as bases..."
-        ):
-            san, aba_san = ler_saneamento(
-                arquivo_san
-            )
+        start = time.perf_counter()
 
-            lev, info_lev = ler_levantamento(
-                arquivo_lev
-            )
+        san, sa = load_san(
+            san_file
+        )
 
-            equipes = ler_equipes(
-                arquivo_equipes
-            )
+        lev, info = load_lev(
+            lev_file
+        )
 
-            auditoria = consolidar(
-                san,
-                lev
-            )
+        teams = load_teams(
+            team_file
+        )
 
-            if auditoria.empty:
-                raise ValueError(
-                    "Nenhuma nota válida encontrada."
-                )
+        audit = consolidate(
+            san,
+            lev
+        )
 
-            tempo_total = (
+        errors = anomalies(
+            san,
+            lev,
+            audit,
+            teams
+        )
+
+        st.session_state[
+            "nipbase"
+        ] = {
+            "sig": sig,
+            "audit": audit,
+            "teams": teams,
+            "san_name": sa,
+            "lev_info": info,
+            "issues": errors,
+            "seconds": (
                 time.perf_counter()
-                - inicio_processamento
+                - start
             )
+        }
 
-            st.session_state[
-                "nip_base"
-            ] = {
-                "assinatura": assinatura,
-                "auditoria": auditoria,
-                "equipes": equipes,
-                "aba_san": aba_san,
-                "info_lev": info_lev,
-                "qtd_san": len(san),
-                "qtd_lev": len(lev),
-                "tempo_processamento": tempo_total
-            }
+        st.session_state.pop(
+            "niproutes",
+            None
+        )
 
-            st.session_state.pop(
-                "nip_osrm",
-                None
-            )
+        st.session_state.pop(
+            "nipgeom",
+            None
+        )
 
         st.success(
-            "Bases processadas em "
-            + formatar_tempo(
-                tempo_total
-            )
+            "Bases processadas com sucesso."
         )
 
-    except Exception as erro:
+    except Exception as e:
         st.error(
-            f"Erro no processamento: {erro}"
+            f"Erro no processamento: {e}"
         )
 
-
-if "nip_base" not in st.session_state:
+if "nipbase" not in st.session_state:
     st.stop()
 
-dados = st.session_state[
-    "nip_base"
+data = st.session_state[
+    "nipbase"
 ]
 
-if dados["assinatura"] != assinatura:
+if data["sig"] != sig:
     st.warning(
-        "Os arquivos foram alterados. "
-        "Clique novamente em PROCESSAR BASES."
+        "Os arquivos mudaram. Processe novamente."
     )
-
     st.stop()
 
-auditoria = dados[
-    "auditoria"
-]
-
-equipes = dados[
-    "equipes"
-]
+audit = data["audit"]
+teams = data["teams"]
+issues = data["issues"]
 
 st.caption(
-    f"Saneamento: aba {dados['aba_san']} | "
-    f"Levantamento: aba "
-    f"{dados['info_lev']['ABA']} | "
-    f"Processamento: "
-    f"{formatar_tempo(dados['tempo_processamento'])}"
+    f"Abas: Saneamento = "
+    f"{data['san_name']} | "
+    f"Levantamento = "
+    f"{data['lev_info']['aba']} | "
+    f"B: {data['lev_info']['B']} | "
+    f"C: {data['lev_info']['C']} | "
+    f"Leitura: {data['seconds']:.1f}s"
 )
-
-
-# ============================================================
-# CONFERENCIA DAS COLUNAS B E C
-# ============================================================
-
-with st.expander(
-    "🔎 Conferência das colunas B e C"
-):
-    info = dados["info_lev"]
-
-    st.write(
-        "**Coluna B identificada:** "
-        + info["COLUNA_B"]
-    )
-
-    st.write(
-        "**Coluna C identificada:** "
-        + info["COLUNA_C"]
-    )
-
-    st.write(
-        "**Registros com equipe e data:** "
-        + str(
-            info["JA_EM_CAMPO_LINHAS"]
-        )
-    )
-
-    st.caption(
-        "A exclusão é aplicada somente quando "
-        "as duas condições são atendidas. "
-        "A volumetria final considera notas únicas."
-    )
 
 
 # ============================================================
@@ -3816,73 +2868,82 @@ with st.expander(
 # ============================================================
 
 with st.sidebar:
-    st.header("⚙️ Planejamento")
+    st.header(
+        "⚙️ Planejamento"
+    )
 
-    raio_equipes = st.select_slider(
-        "Raio de referência das equipes (km)",
+    radius = st.select_slider(
+        "Raio máximo rodoviário (km)",
         options=list(
-            range(200, 501, 25)
+            range(
+                200,
+                501,
+                25
+            )
         ),
         value=200
     )
 
-    quantidade_equipes = st.slider(
-        "Equipes próximas por atividade",
-        min_value=1,
-        max_value=5,
-        value=3
+    k = st.slider(
+        "Equipes candidatas por atividade",
+        1,
+        5,
+        3
     )
 
-    raio_super = st.slider(
-        "Raio Superponto (metros)",
-        min_value=10,
-        max_value=500,
-        value=50,
-        step=10
+    super_m = st.slider(
+        "Raio de superponto (m)",
+        5,
+        500,
+        50,
+        5
     )
 
-    dias_prioridade = st.number_input(
+    medium_days = st.number_input(
         "Dias para prioridade média",
-        min_value=1,
-        value=14
+        1,
+        365,
+        14
     )
 
     st.divider()
 
     st.subheader(
-        "📅 Programação"
+        "📅 Capacidade"
     )
 
-    modo = st.selectbox(
-        "Modo de programação",
+    mode = st.selectbox(
+        "Programação",
         [
             "POR QUANTIDADE",
             "POR DIA",
             "POR SEMANA",
-            "POR MES"
+            "POR MÊS"
         ]
     )
 
-    limite_periodo = st.number_input(
-        "Quantidade por equipe no período",
-        min_value=1,
-        value=10
+    period_cap = st.number_input(
+        "Tarefas por equipe no período",
+        1,
+        10000,
+        20
     )
 
-    limite_dia = st.number_input(
-        "Limite diário por equipe",
-        min_value=1,
-        value=8
+    daily_cap = st.number_input(
+        "Tarefas por dia (padrão)",
+        1,
+        100,
+        8
     )
 
-    periodos = st.number_input(
+    periods = st.number_input(
         "Quantidade de períodos",
-        min_value=1,
-        max_value=52,
-        value=5
+        1,
+        52,
+        5
     )
 
-    data_inicio = st.date_input(
+    first_day = st.date_input(
         "Data inicial",
         value=datetime.today().date()
     )
@@ -3890,206 +2951,212 @@ with st.sidebar:
     st.divider()
 
     st.subheader(
-        "🛣️ OSRM"
+        "🛣️ Rotas reais"
     )
 
-    usar_osrm = st.checkbox(
-        "Traçado real por ruas no KML",
-        value=False,
-        help=(
-            "Ative para consultar trajetos pelas "
-            "ruas. Desativado, exporta somente "
-            "os marcadores sem consultas OSRM."
-        )
+    server = st.text_input(
+        "OSRM",
+        OSRM
     )
 
-    servidor_osrm = st.text_input(
-        "Endpoint OSRM",
-        value=OSRM_DEFAULT
+    batch = st.slider(
+        "Consultas por lote",
+        1,
+        25,
+        5
     )
 
-    lote_osrm = st.slider(
-        "Consultas OSRM por lote",
-        min_value=1,
-        max_value=8,
-        value=5
+    kml_osrm = st.checkbox(
+        "Incluir traçados reais OSRM no KML",
+        value=False
     )
 
-    st.caption(
-        "O OSRM é processado em pequenos lotes "
-        "para evitar consultas longas."
+    geom_batch = st.slider(
+        "Traçados por lote",
+        1,
+        15,
+        4
+    )
+
+    st.divider()
+
+    previous = st.file_uploader(
+        "Análise anterior (opcional)",
+        type=["xlsx"]
     )
 
 
 # ============================================================
-# OBRAS PENDENTES E EXCLUIDAS
+# DADOS OPERACIONAIS
 # ============================================================
 
-obras = auditoria[
-    auditoria[
-        "PENDENTE_CONTAGEM"
-    ].eq("SIM")
-].copy()
-
-duplicadas_total = auditoria[
-    auditoria[
-        "DUPLICADA"
-    ].eq("SIM")
-].copy()
-
-duplicadas_pendentes = obras[
-    obras[
-        "DUPLICADA"
-    ].eq("SIM")
-].copy()
-
-obras_finl = auditoria[
-    auditoria[
-        "MOTIVO_EXCLUSAO"
-    ].astype(str).str.contains(
-        r"(?:^|\s\|\s)SAP FINL(?:$|\s\|\s)",
-        regex=True
-    )
-].copy()
-
-obras_canc = auditoria[
-    auditoria[
-        "MOTIVO_EXCLUSAO"
-    ].astype(str).str.contains(
-        r"(?:^|\s\|\s)SAP CANC(?:$|\s\|\s)",
-        regex=True
-    )
-].copy()
-
-obras_campo = auditoria[
-    auditoria[
-        "JA_EM_CAMPO"
-    ].eq("SIM")
-].copy()
-
-excluidas = auditoria[
-    auditoria[
-        "PENDENTE_CONTAGEM"
-    ].eq("NÃO")
-].copy()
-
-obras = priorizar(
-    obras,
-    dias_prioridade
+pending = priority(
+    audit[
+        audit[
+            "PENDENTE_CONTAGEM"
+        ].eq("SIM")
+    ].copy(),
+    medium_days
 )
 
+finl = audit[
+    audit[
+        "SAP_FINL"
+    ].eq("SIM")
+]
+
+canc = audit[
+    audit[
+        "SAP_CANC"
+    ].eq("SIM")
+]
+
+field = audit[
+    audit[
+        "JA_EM_CAMPO"
+    ].eq("SIM")
+]
+
+dup = audit[
+    audit[
+        "DUPLICADA"
+    ].eq("SIM")
+]
+
 
 # ============================================================
-# CARDS DE INDICADORES
+# INDICADORES
 # ============================================================
 
-secao("📊 Indicadores Operacionais")
-
-mostrar_cards([
+metrics = [
     (
         "Saneamento",
         int(
-            obras[
+            pending[
                 "LISTA"
             ].eq(CAT_SAN).sum()
         ),
-        "#2563EB",
-        "Obras exclusivas"
+        "#2563eb"
     ),
     (
         "Levantamento",
         int(
-            obras[
+            pending[
                 "LISTA"
             ].eq(CAT_LEV).sum()
         ),
-        "#16A34A",
-        "Obras exclusivas"
+        "#16a34a"
     ),
     (
         "Duplicadas",
-        len(
-            duplicadas_pendentes
+        int(
+            pending[
+                "LISTA"
+            ].eq(CAT_DUP).sum()
         ),
-        "#9333EA",
-        "Pendentes nas duas bases"
+        "#9333ea"
     ),
     (
-        "Total Pendente",
-        len(obras),
-        "#0D256C",
-        "Notas únicas"
+        "Total pendente",
+        len(pending),
+        "#0d256c"
     ),
     (
         "Excluídas",
-        len(excluidas),
-        "#DC2626",
-        "Fora da contagem"
+        int(
+            audit[
+                "PENDENTE_CONTAGEM"
+            ].eq("NÃO").sum()
+        ),
+        "#dc2626"
     )
-])
+]
 
-mostrar_cards([
-    (
-        "SAP FINL",
-        len(obras_finl),
-        "#64748B",
-        "Notas com FINL"
-    ),
-    (
-        "SAP CANC",
-        len(obras_canc),
-        "#F97316",
-        "Notas com CANC"
-    ),
-    (
-        "Já em Campo",
-        len(obras_campo),
-        "#0891B2",
-        "Equipe e data nas colunas B/C"
-    ),
-    (
-        "Duplicadas Totais",
-        len(duplicadas_total),
-        "#9333EA",
-        "Incluindo excluídas"
+metric_groups = [
+    metrics,
+    [
+        (
+            "FINL",
+            len(finl),
+            "#64748b"
+        ),
+        (
+            "CANC",
+            len(canc),
+            "#ea580c"
+        ),
+        (
+            "Já em campo",
+            len(field),
+            "#0891b2"
+        ),
+        (
+            "Inconsistências",
+            len(issues),
+            "#d97706"
+        )
+    ]
+]
+
+for block in metric_groups:
+    cols = st.columns(
+        len(block)
     )
-])
+
+    for cn, (
+        label,
+        value,
+        color
+    ) in zip(cols, block):
+
+        cn.markdown(
+            (
+                '<div class="nip-card" '
+                f'style="--accent:{color}">'
+                '<div class="nip-label">'
+                f'{label}'
+                '</div>'
+                '<div class="nip-value">'
+                f'{value:,}'
+                '</div>'
+                '</div>'
+            ),
+            unsafe_allow_html=True
+        )
 
 
 # ============================================================
-# FILTROS
+# FILTROS OPERACIONAIS
 # ============================================================
 
-secao("🔎 Filtrar Obras")
-
-c1, c2, c3 = st.columns(3)
-
-regionais = sorted(
-    obras[
-        "REGIONAL"
-    ].dropna().astype(str).unique()
+st.subheader(
+    "🔎 Filtros operacionais"
 )
 
-municipios = sorted(
-    obras[
-        "MUNICIPIO"
-    ].dropna().astype(str).unique()
-)
+f1, f2, f3 = st.columns(3)
 
-with c1:
-    filtro_regional = st.multiselect(
+with f1:
+    reg = st.multiselect(
         "Regional",
-        regionais
+        sorted(
+            pending[
+                "REGIONAL"
+            ].fillna("").unique()
+        )
     )
 
-with c2:
-    filtro_municipio = st.multiselect(
+with f2:
+    city = st.multiselect(
         "Município",
-        municipios
+        sorted(
+            pending[
+                "MUNICIPIO"
+            ].fillna("").unique()
+        )
     )
 
-with c3:
-    filtro_prioridade = st.multiselect(
+with f3:
+    prio = st.multiselect(
         "Prioridade",
         [
             "ALTA",
@@ -4098,361 +3165,841 @@ with c3:
         ]
     )
 
-pesquisa = st.text_input(
+search = st.text_input(
     "Pesquisar nota"
-)
+).strip()
 
-view = obras.copy()
+view = pending.copy()
 
-if filtro_regional:
+if reg:
     view = view[
         view[
             "REGIONAL"
-        ].isin(
-            filtro_regional
-        )
+        ].isin(reg)
     ]
 
-if filtro_municipio:
+if city:
     view = view[
         view[
             "MUNICIPIO"
-        ].isin(
-            filtro_municipio
-        )
+        ].isin(city)
     ]
 
-if filtro_prioridade:
+if prio:
     view = view[
         view[
             "PRIORIDADE_PLANEJAMENTO"
-        ].isin(
-            filtro_prioridade
-        )
+        ].isin(prio)
     ]
 
-if pesquisa.strip():
+if search:
     view = view[
         view[
             "NOTA"
         ].astype(str).str.contains(
-            re.escape(
-                pesquisa.strip()
-            ),
+            re.escape(search),
             case=False,
             na=False
         )
     ]
 
-
-# ============================================================
-# EQUIPES CANDIDATAS
-# ============================================================
-
-view, candidatos = gerar_candidatos(
-    view,
-    equipes,
-    quantidade_equipes
+view = view.reset_index(
+    drop=True
 )
 
-tarefas = gerar_tarefas(
+
+# ============================================================
+# CANDIDATOS
+# ============================================================
+
+view, candidates = team_candidates(
+    view,
+    teams,
+    k
+)
+
+if candidates.empty:
+    st.warning(
+        "Nenhuma equipe candidata para "
+        "as obras filtradas."
+    )
+
+
+# ============================================================
+# METAS POR EQUIPE
+# ============================================================
+
+st.subheader(
+    "👥 Metas por equipe"
+)
+
+capacity = teams[
+    [
+        "ID_EQUIPE",
+        "TIPO_EQUIPE",
+        "EQUIPE",
+        "CIDADE_BASE"
+    ]
+].copy()
+
+capacity["CAPACIDADE_DIA"] = int(
+    daily_cap
+)
+
+capacity = st.data_editor(
+    capacity,
+    hide_index=True,
+    use_container_width=True,
+    disabled=[
+        "ID_EQUIPE",
+        "TIPO_EQUIPE",
+        "EQUIPE",
+        "CIDADE_BASE"
+    ],
+    key="capacity_editor"
+)
+
+capacity["CAPACIDADE_DIA"] = (
+    pd.to_numeric(
+        capacity["CAPACIDADE_DIA"],
+        errors="coerce"
+    )
+    .fillna(daily_cap)
+    .clip(lower=1)
+    .astype(int)
+)
+
+
+# ============================================================
+# ASSINATURA DAS ROTAS
+# ============================================================
+
+route_key = hashlib.sha256(
+    (
+        candidates.to_json(
+            orient="records"
+        )
+        + str(radius)
+        + server
+    ).encode()
+).hexdigest()
+
+if (
+    "niproutes" not in st.session_state
+    or st.session_state[
+        "niproutes"
+    ]["key"] != route_key
+):
+    st.session_state[
+        "niproutes"
+    ] = {
+        "key": route_key,
+        "df": initial_routes(
+            candidates,
+            radius
+        ),
+        "elapsed": 0.0
+    }
+
+rs = st.session_state[
+    "niproutes"
+]
+
+routes = rs["df"]
+
+waiting = int(
+    routes[
+        "ROTA_STATUS"
+    ].eq("NÃO CONSULTADA").sum()
+)
+
+outside = int(
+    routes[
+        "ROTA_STATUS"
+    ].eq("FORA RAIO GEOGRÁFICO").sum()
+)
+
+done = (
+    len(routes)
+    - waiting
+    - outside
+)
+
+total = done + waiting
+
+
+# ============================================================
+# CONSULTAS RODOVIARIAS
+# ============================================================
+
+st.subheader(
+    "🛣️ Validação rodoviária antes da distribuição"
+)
+
+if total:
+    remaining = (
+        rs["elapsed"]
+        / done
+        * waiting
+        if done
+        else None
+    )
+
+    st.progress(
+        done / total
+    )
+
+    texto_restante = (
+        f"{remaining:.1f}s"
+        if remaining is not None
+        else "calculando"
+    )
+
+    st.caption(
+        f"Consultas: {done}/{total} | "
+        f"Decorrido: {rs['elapsed']:.1f}s | "
+        f"Restante estimado: {texto_restante}"
+    )
+
+else:
+    st.info(
+        "Sem candidatos para consultar."
+    )
+
+if waiting:
+    if st.button(
+        "🚗 Consultar próximo lote OSRM",
+        type="primary"
+    ):
+        msg = st.empty()
+
+        new, processed, spent = (
+            compute_route_batch(
+                routes,
+                0,
+                batch,
+                server,
+                msg
+            )
+        )
+
+        rs["df"] = new
+        rs["elapsed"] += spent
+
+        st.session_state[
+            "niproutes"
+        ] = rs
+
+        st.rerun()
+
+if not waiting and total:
+    st.success(
+        "Consultas rodoviárias concluídas."
+    )
+
+routes = rs["df"]
+
+
+# ============================================================
+# PROGRAMACAO
+# ============================================================
+
+filtered_tasks = tasks_for(
     view
 )
 
-programacao, carga = programar(
-    tarefas,
-    candidatos,
-    raio_equipes,
-    data_inicio,
-    modo,
-    int(periodos),
-    int(limite_periodo),
-    int(limite_dia)
+plan, load = schedule_tasks(
+    filtered_tasks,
+    routes,
+    teams,
+    capacity,
+    mode,
+    periods,
+    first_day,
+    period_cap,
+    daily_cap,
+    radius,
+    True
 )
 
-
-# ============================================================
-# QUADRO DE CAPACIDADE
-# ============================================================
-
-quadro_capacidade, detalhe_capacidade = (
-    calcular_capacidade_media(
-        view,
-        equipes,
-        programacao
-    )
+allocated = (
+    plan[
+        plan[
+            "STATUS_PROGRAMACAO"
+        ].eq("SUGESTÃO")
+    ]
+    if not plan.empty
+    else pd.DataFrame()
 )
-
-secao(
-    "👥 Capacidade e Média de Obras por Equipe"
-)
-
-saneamento_resumo = quadro_capacidade[
-    quadro_capacidade[
-        "ATIVIDADE"
-    ].eq("Saneamento")
-].iloc[0]
-
-levantamento_resumo = quadro_capacidade[
-    quadro_capacidade[
-        "ATIVIDADE"
-    ].eq("Levantamento")
-].iloc[0]
-
-mostrar_cards([
-    (
-        "Média por Equipe - Saneamento",
-        (
-            f"{saneamento_resumo['MEDIA_OBRAS_POR_EQUIPE']:.2f}"
-        ),
-        "#2563EB",
-        (
-            f"{saneamento_resumo['OBRAS_DISPONIVEIS']} obras / "
-            f"{saneamento_resumo['EQUIPES']} equipes"
-        )
-    ),
-    (
-        "Média por Equipe - Levantamento",
-        (
-            f"{levantamento_resumo['MEDIA_OBRAS_POR_EQUIPE']:.2f}"
-        ),
-        "#16A34A",
-        (
-            f"{levantamento_resumo['OBRAS_DISPONIVEIS']} obras / "
-            f"{levantamento_resumo['EQUIPES']} equipes"
-        )
-    )
-])
-
-st.dataframe(
-    quadro_capacidade,
-    hide_index=True,
-    use_container_width=True
-)
-
-with st.expander(
-    "📋 Distribuição detalhada por equipe"
-):
-    st.dataframe(
-        detalhe_capacidade,
-        hide_index=True,
-        use_container_width=True
-    )
 
 
 # ============================================================
 # SUPERPONTOS
 # ============================================================
 
-if not programacao.empty:
-    alocadas = programacao[
-        programacao[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTAO")
-    ].copy()
+superpoints, reduction = (
+    merge_superpoints(
+        allocated,
+        super_m
+    )
+)
 
-    superpontos, qtd_fundidas = (
-        fundir_superpontos(
-            alocadas,
-            raio_super
+
+# ============================================================
+# MEDIA DE OBRAS POR ATIVIDADE
+# ============================================================
+
+st.subheader(
+    "📊 Cobertura e médias por atividade"
+)
+
+summary = []
+
+for kind, categories in [
+    (
+        "SANEAMENTO",
+        [
+            CAT_SAN,
+            CAT_DUP
+        ]
+    ),
+    (
+        "LEVANTAMENTO",
+        [
+            CAT_LEV,
+            CAT_DUP
+        ]
+    )
+]:
+    nteam = int(
+        teams[
+            "TIPO_EQUIPE"
+        ].eq(kind).sum()
+    )
+
+    nwork = int(
+        view[
+            "LISTA"
+        ].isin(categories).sum()
+    )
+
+    nalloc = (
+        int(
+            allocated[
+                "ATIVIDADE"
+            ].eq(kind).sum()
+        )
+        if not allocated.empty
+        else 0
+    )
+
+    summary.append({
+        "ATIVIDADE": kind,
+        "EQUIPES": nteam,
+        "OBRAS_DISPONÍVEIS": nwork,
+        "MÉDIA_POR_EQUIPE": (
+            round(
+                nwork / nteam,
+                2
+            )
+            if nteam
+            else 0
+        ),
+        "TAREFAS_ALOCADAS": nalloc,
+        "MÉDIA_PROGRAMADA": (
+            round(
+                nalloc / nteam,
+                2
+            )
+            if nteam
+            else 0
+        )
+    })
+
+summary = pd.DataFrame(
+    summary
+)
+
+st.dataframe(
+    summary,
+    hide_index=True,
+    use_container_width=True
+)
+
+actual_load = (
+    allocated.groupby(
+        "ID_EQUIPE"
+    ).size().to_dict()
+    if not allocated.empty
+    else {}
+)
+
+capacity["TAREFAS_PROGRAMADAS"] = (
+    capacity[
+        "ID_EQUIPE"
+    ].map(actual_load)
+    .fillna(0)
+    .astype(int)
+)
+
+
+# ============================================================
+# HISTORICO
+# ============================================================
+
+new = pd.DataFrame(
+    columns=["NOTA"]
+)
+
+gone = pd.DataFrame(
+    columns=["NOTA"]
+)
+
+if previous is not None:
+    try:
+        new, gone = compare_history(
+            pending,
+            previous
+        )
+
+    except Exception as e:
+        st.warning(
+            f"Histórico não comparado: {e}"
+        )
+
+
+# ============================================================
+# FILTROS DE EXPORTACAO
+# ============================================================
+
+st.subheader(
+    "📦 Escopo das exportações"
+)
+
+exp1, exp2, exp3 = st.columns(3)
+
+with exp1:
+    exp_kind = st.multiselect(
+        "Atividade para exportar",
+        [
+            "SANEAMENTO",
+            "LEVANTAMENTO"
+        ],
+        default=[
+            "SANEAMENTO",
+            "LEVANTAMENTO"
+        ]
+    )
+
+with exp2:
+    equipes_exportaveis = (
+        sorted(
+            allocated[
+                "EQUIPE_PROGRAMADA"
+            ].dropna().unique().tolist()
+        )
+        if not allocated.empty
+        else []
+    )
+
+    exp_team = st.multiselect(
+        "Equipe para exportar",
+        equipes_exportaveis
+    )
+
+with exp3:
+    exp_dates = st.date_input(
+        "Período da programação",
+        value=(
+            first_day,
+            first_day
+            + timedelta(days=30)
         )
     )
 
-else:
-    superpontos = pd.DataFrame()
-    qtd_fundidas = 0
+exp_plan = plan.copy()
 
-qtd_superpontos = (
-    int(
-        superpontos[
-            "SUPER_PONTO"
-        ].astype(str).str.startswith(
-            "SIM"
-        ).sum()
-    )
-    if not superpontos.empty
-    else 0
-)
-
-
-# ============================================================
-# PREPARACAO DO OSRM
-# ============================================================
-
-trechos = preparar_trechos(
-    programacao,
-    equipes
-)
-
-if not trechos.empty:
-    dados_assinatura = trechos[
-        [
-            "NOTA",
-            "ATIVIDADE",
-            "DATA",
-            "ID_EQUIPE",
-            "LAT_ORIGEM",
-            "LON_ORIGEM",
-            "LAT_DESTINO",
-            "LON_DESTINO"
+if not exp_plan.empty:
+    if exp_kind:
+        exp_plan = exp_plan[
+            exp_plan[
+                "ATIVIDADE"
+            ].isin(exp_kind)
         ]
-    ].to_json(
-        orient="records"
+
+    else:
+        exp_plan = (
+            exp_plan.iloc[0:0]
+        )
+
+    if exp_team:
+        exp_plan = exp_plan[
+            exp_plan[
+                "EQUIPE_PROGRAMADA"
+            ].isin(exp_team)
+        ]
+
+    if (
+        isinstance(
+            exp_dates,
+            (tuple, list)
+        )
+        and len(exp_dates) == 2
+    ):
+        dat = pd.to_datetime(
+            exp_plan[
+                "DATA_PROGRAMADA"
+            ],
+            errors="coerce"
+        ).dt.date
+
+        exp_plan = exp_plan[
+            dat.ge(
+                exp_dates[0]
+            )
+            & dat.le(
+                exp_dates[1]
+            )
+        ]
+
+exp_notas = (
+    set(
+        exp_plan[
+            "NOTA"
+        ].astype(str)
     )
+    if not exp_plan.empty
+    else set()
+)
+
+if (
+    exp_team
+    or (
+        isinstance(
+            exp_dates,
+            (tuple, list)
+        )
+        and len(exp_dates) == 2
+    )
+):
+    exp_works = view[
+        view[
+            "NOTA"
+        ].astype(str).isin(
+            exp_notas
+        )
+    ]
 
 else:
-    dados_assinatura = ""
+    exp_works = view
 
-assinatura_rotas = hashlib.sha256(
+exp_sp = (
+    superpoints[
+        superpoints[
+            "NOTA"
+        ].astype(str).isin(
+            exp_notas
+        )
+    ]
+    if not superpoints.empty
+    else superpoints
+)
+
+
+# ============================================================
+# PREPARACAO DE TRECHOS PARA KML
+# ============================================================
+
+def build_segments(p):
+    rows = []
+
+    if p.empty:
+        return pd.DataFrame()
+
+    validas = p[
+        p[
+            "STATUS_PROGRAMACAO"
+        ].eq("SUGESTÃO")
+    ]
+
+    for (
+        tid,
+        day
+    ), g in validas.groupby(
+        [
+            "ID_EQUIPE",
+            "DATA_PROGRAMADA"
+        ]
+    ):
+        eq = teams[
+            teams[
+                "ID_EQUIPE"
+            ].eq(tid)
+        ]
+
+        if eq.empty:
+            continue
+
+        lat = float(
+            eq.iloc[0][
+                "LAT_EQUIPE"
+            ]
+        )
+
+        lon = float(
+            eq.iloc[0][
+                "LON_EQUIPE"
+            ]
+        )
+
+        rest = g.to_dict(
+            "records"
+        )
+
+        order = 0
+
+        while rest:
+            distances = [
+                float(
+                    haversine(
+                        lat,
+                        lon,
+                        float(
+                            r["LATITUDE"]
+                        ),
+                        float(
+                            r["LONGITUDE"]
+                        )
+                    )
+                )
+                for r in rest
+            ]
+
+            idx = int(
+                np.argmin(
+                    distances
+                )
+            )
+
+            r = rest.pop(idx)
+
+            order += 1
+
+            rows.append({
+                "NOTA": r["NOTA"],
+                "ATIVIDADE": r["ATIVIDADE"],
+                "EQUIPE": r["EQUIPE_PROGRAMADA"],
+                "ID_EQUIPE": tid,
+                "DATA": day,
+                "ORDEM": order,
+                "LAT1": lat,
+                "LON1": lon,
+                "LAT2": float(r["LATITUDE"]),
+                "LON2": float(r["LONGITUDE"])
+            })
+
+            lat = float(
+                r["LATITUDE"]
+            )
+
+            lon = float(
+                r["LONGITUDE"]
+            )
+
+    return pd.DataFrame(rows)
+
+
+segments = build_segments(
+    exp_plan
+)
+
+
+# ============================================================
+# ASSINATURA DO KML OSRM
+# ============================================================
+
+geom_key = hashlib.sha256(
     (
-        dados_assinatura
-        + servidor_osrm
+        segments.to_json(
+            orient="records"
+        )
+        + server
     ).encode()
 ).hexdigest()
 
 if (
-    "nip_osrm" not in st.session_state
+    "nipgeom" not in st.session_state
     or st.session_state[
-        "nip_osrm"
-    ].get(
-        "assinatura"
-    ) != assinatura_rotas
+        "nipgeom"
+    ]["key"] != geom_key
 ):
     st.session_state[
-        "nip_osrm"
+        "nipgeom"
     ] = {
-        "assinatura": assinatura_rotas,
+        "key": geom_key,
         "cursor": 0,
-        "registros": [],
-        "segundos_acumulados": 0.0
+        "items": [],
+        "elapsed": 0.0
     }
 
-estado_osrm = st.session_state[
-    "nip_osrm"
+geom = st.session_state[
+    "nipgeom"
 ]
 
 
 # ============================================================
-# CRONOMETRO OSRM
+# PROCESSAMENTO DOS TRACADOS OSRM
 # ============================================================
 
-if usar_osrm and not trechos.empty:
-    secao(
-        "⏱️ Tempo de Processamento OSRM"
+if (
+    kml_osrm
+    and not segments.empty
+):
+    st.markdown(
+        "**Traçados OSRM para KML**"
     )
 
-    total_trechos = len(
-        trechos
-    )
+    nseg = len(segments)
 
-    processados = estado_osrm[
-        "cursor"
-    ]
+    processed = geom["cursor"]
 
-    decorrido = estado_osrm.get(
-        "segundos_acumulados",
-        0.0
-    )
-
-    renderizar_cronometro(
-        decorrido,
-        processados,
-        total_trechos
+    left = (
+        geom["elapsed"]
+        / processed
+        * (nseg - processed)
+        if processed
+        else None
     )
 
     st.progress(
-        processados / total_trechos
+        processed / nseg
     )
 
-    if processados < total_trechos:
-        if st.button(
-            "🛣️ PROCESSAR PRÓXIMO LOTE OSRM",
-            type="primary",
-            use_container_width=True
-        ):
-            novos, proximo, tempo_lote = (
-                processar_lote_osrm(
-                    trechos,
-                    servidor_osrm,
-                    processados,
-                    lote_osrm
-                )
-            )
+    restante_texto = (
+        f"{left:.1f}s"
+        if left is not None
+        else "calculando"
+    )
 
-            estado_osrm[
-                "registros"
-            ].extend(novos)
+    st.caption(
+        f"{processed}/{nseg} trechos | "
+        f"Decorrido: {geom['elapsed']:.1f}s | "
+        f"Restante: {restante_texto}"
+    )
 
-            estado_osrm[
-                "cursor"
-            ] = proximo
+    if (
+        processed < nseg
+        and st.button(
+            "🗺️ Traçar próximo lote"
+        )
+    ):
+        t0 = time.monotonic()
 
-            estado_osrm[
-                "segundos_acumulados"
-            ] += tempo_lote
-
-            st.session_state[
-                "nip_osrm"
-            ] = estado_osrm
-
-            st.rerun()
-
-    else:
-        st.success(
-            "Todos os trechos foram processados."
+        fim = min(
+            processed + geom_batch,
+            nseg
         )
 
-trajetos = pd.DataFrame(
-    estado_osrm[
-        "registros"
-    ]
-)
+        for idx in range(
+            processed,
+            fim
+        ):
+            s = segments.iloc[idx]
 
-trajetos_exportar = (
-    trajetos
-    if usar_osrm
+            resp = osrm_route(
+                round(
+                    s["LAT1"],
+                    6
+                ),
+                round(
+                    s["LON1"],
+                    6
+                ),
+                round(
+                    s["LAT2"],
+                    6
+                ),
+                round(
+                    s["LON2"],
+                    6
+                ),
+                server,
+                True
+            )
+
+            if (
+                resp["ok"]
+                and resp["geometry"]
+            ):
+                geom["items"].append({
+                    **s.to_dict(),
+                    "GEOMETRIA": resp["geometry"],
+                    "KM_RODOVIARIO": resp["km"]
+                })
+
+        geom["cursor"] = fim
+
+        geom["elapsed"] += (
+            time.monotonic()
+            - t0
+        )
+
+        st.session_state[
+            "nipgeom"
+        ] = geom
+
+        st.rerun()
+
+paths = (
+    pd.DataFrame(
+        geom["items"]
+    )
+    if kml_osrm
     else pd.DataFrame()
 )
 
 
 # ============================================================
-# ABAS DE RESULTADOS
+# ABAS
 # ============================================================
 
-abas = st.tabs([
-    "🟣 SANEAMENTO",
+names = [
+    "🔵 SANEAMENTO",
     "🟢 LEVANTAMENTO",
-    "🔵 DUPLICADAS",
+    "🟣 DUPLICADAS",
     "📅 PROGRAMAÇÃO",
-    "👥 CAPACIDADE",
     "🏢 SUPERPONTOS",
     "⚠️ AUDITORIA",
+    "📊 HISTÓRICO",
     "🗺️ MAPA"
-])
+]
+
+tabs = st.tabs(
+    names
+)
 
 
 # ============================================================
-# TABELAS DAS TRES CATEGORIAS
+# CATEGORIAS
 # ============================================================
 
-for aba, categoria in zip(
-    abas[:3],
-    CATEGORIAS
+for tab, kind in zip(
+    tabs[:3],
+    CATS
 ):
-    with aba:
-        tabela = view[
+    with tab:
+        x = view[
             view[
                 "LISTA"
-            ].eq(categoria)
+            ].eq(kind)
         ]
 
-        st.subheader(
-            f"{categoria} - "
-            f"{len(tabela)} obras"
+        st.write(
+            f"**{len(x)} obras**"
         )
 
         st.dataframe(
-            tabela,
+            x,
             hide_index=True,
             use_container_width=True
         )
@@ -4462,301 +4009,228 @@ for aba, categoria in zip(
 # PROGRAMACAO
 # ============================================================
 
-with abas[3]:
-    st.subheader(
-        "📅 Programação de Obras"
+with tabs[3]:
+    st.metric(
+        "Alocadas com OSRM confirmado",
+        len(allocated)
     )
 
-    if not programacao.empty:
-        quantidade_alocada = int(
-            programacao[
-                "STATUS_PROGRAMACAO"
-            ].eq("SUGESTAO").sum()
-        )
-
-        quantidade_sem = int(
-            programacao[
-                "STATUS_PROGRAMACAO"
-            ].eq("SEM ALOCACAO").sum()
-        )
-
-        mostrar_cards([
-            (
-                "Total de Tarefas",
-                len(programacao),
-                "#0D256C",
-                "Saneamento e levantamento"
-            ),
-            (
-                "Tarefas Alocadas",
-                quantidade_alocada,
-                "#16A34A",
-                "Programação sugerida"
-            ),
-            (
-                "Sem Alocação",
-                quantidade_sem,
-                "#DC2626",
-                "Necessitam avaliação"
-            )
-        ])
+    st.metric(
+        "Ainda sem alocação",
+        len(plan) - len(allocated)
+    )
 
     st.dataframe(
-        programacao,
+        plan,
         hide_index=True,
         use_container_width=True
     )
 
-    st.subheader(
-        "Carga por Equipe"
-    )
-
     st.dataframe(
-        carga,
+        load,
         hide_index=True,
         use_container_width=True
     )
-
-
-# ============================================================
-# CAPACIDADE
-# ============================================================
-
-with abas[4]:
-    st.subheader(
-        "👥 Capacidade por Equipe"
-    )
-
-    st.dataframe(
-        detalhe_capacidade,
-        hide_index=True,
-        use_container_width=True
-    )
-
-    if not detalhe_capacidade.empty:
-        grafico = detalhe_capacidade.set_index(
-            "EQUIPE"
-        )[
-            "OBRAS_PROGRAMADAS"
-        ]
-
-        st.bar_chart(
-            grafico
-        )
 
 
 # ============================================================
 # SUPERPONTOS
 # ============================================================
 
-with abas[5]:
-    st.subheader(
-        "🏢 Superpontos"
+with tabs[4]:
+    quantidade_super = (
+        int(
+            superpoints[
+                "SUPER_PONTO"
+            ].astype(str).str.startswith(
+                "SIM"
+            ).sum()
+        )
+        if not superpoints.empty
+        else 0
     )
 
-    mostrar_cards([
-        (
-            "Superpontos",
-            qtd_superpontos,
-            "#F59E0B",
-            "Grupos com mais de uma tarefa"
-        ),
-        (
-            "Tarefas Fundidas",
-            qtd_fundidas,
-            "#9333EA",
-            "Redução de marcadores"
-        ),
-        (
-            "Raio",
-            f"{raio_super} metros",
-            "#0D256C",
-            "DBSCAN Haversine"
-        )
-    ])
+    st.metric(
+        "Superpontos com múltiplas tarefas",
+        quantidade_super
+    )
 
-    if not superpontos.empty:
-        st.dataframe(
-            limpar_excel(
-                superpontos
-            ),
-            hide_index=True,
-            use_container_width=True
-        )
+    st.metric(
+        "Tarefas agrupadas",
+        reduction
+    )
+
+    st.dataframe(
+        safe_excel(
+            superpoints
+        ),
+        hide_index=True,
+        use_container_width=True
+    )
 
 
 # ============================================================
 # AUDITORIA
 # ============================================================
 
-with abas[6]:
-    subabas = st.tabs([
+with tabs[5]:
+    t = st.tabs([
         "Excluídas",
-        "Já em Campo",
-        "SAP FINL",
-        "SAP CANC",
-        "Duplicadas Totais"
+        "FINL",
+        "CANC",
+        "Já em campo",
+        "Duplicadas totais",
+        "Inconsistências"
     ])
 
-    tabelas = [
-        excluidas,
-        obras_campo,
-        obras_finl,
-        obras_canc,
-        duplicadas_total
+    frames = [
+        audit[
+            audit[
+                "PENDENTE_CONTAGEM"
+            ].eq("NÃO")
+        ],
+        finl,
+        canc,
+        field,
+        dup,
+        issues
     ]
 
-    for subaba, tabela in zip(
-        subabas,
-        tabelas
+    for tab, frame in zip(
+        t,
+        frames
     ):
-        with subaba:
+        with tab:
             st.dataframe(
-                tabela,
+                frame,
                 hide_index=True,
                 use_container_width=True
             )
 
 
 # ============================================================
-# MAPA INTERATIVO
+# HISTORICO
 # ============================================================
 
-with abas[7]:
-    st.subheader(
-        "🗺️ Mapa Operacional"
+with tabs[6]:
+    st.metric(
+        "Notas novas",
+        len(new)
     )
 
+    st.metric(
+        "Notas que saíram",
+        len(gone)
+    )
+
+    st.dataframe(
+        new,
+        hide_index=True
+    )
+
+    st.dataframe(
+        gone,
+        hide_index=True
+    )
+
+
+# ============================================================
+# MAPA
+# ============================================================
+
+with tabs[7]:
     if st.checkbox(
-        "Carregar mapa interativo"
+        "Carregar mapa"
     ):
-        geos = view.dropna(
+        geo = view.dropna(
             subset=[
                 "LATITUDE",
                 "LONGITUDE"
             ]
         )
 
-        if geos.empty:
+        if geo.empty:
             st.warning(
-                "Nenhuma obra com coordenadas válidas."
+                "Sem coordenadas válidas."
             )
 
         else:
-            mapa = folium.Map(
+            m = folium.Map(
                 location=[
-                    float(
-                        geos[
-                            "LATITUDE"
-                        ].mean()
-                    ),
-                    float(
-                        geos[
-                            "LONGITUDE"
-                        ].mean()
-                    )
+                    geo[
+                        "LATITUDE"
+                    ].mean(),
+                    geo[
+                        "LONGITUDE"
+                    ].mean()
                 ],
                 zoom_start=7
             )
 
-            for categoria in CATEGORIAS:
-                camada = folium.FeatureGroup(
-                    name=categoria
+            for cat in CATS:
+                fg = folium.FeatureGroup(
+                    name=cat
                 )
 
-                cluster = MarkerCluster().add_to(
-                    camada
+                cl = MarkerCluster().add_to(
+                    fg
                 )
 
-                subset = geos[
-                    geos[
+                subset = geo[
+                    geo[
                         "LISTA"
-                    ].eq(categoria)
+                    ].eq(cat)
                 ]
 
-                for _, obra in subset.iterrows():
+                for _, r in subset.iterrows():
                     folium.Marker(
                         [
-                            float(
-                                obra[
-                                    "LATITUDE"
-                                ]
-                            ),
-                            float(
-                                obra[
-                                    "LONGITUDE"
-                                ]
-                            )
+                            r["LATITUDE"],
+                            r["LONGITUDE"]
                         ],
                         popup=folium.Popup(
-                            popup_html(obra),
-                            max_width=440
+                            popup(r),
+                            max_width=450
                         ),
                         icon=folium.Icon(
-                            color=CORES_FOLIUM[
-                                categoria
+                            color=MAP_COLORS[
+                                cat
                             ]
                         )
-                    ).add_to(cluster)
+                    ).add_to(cl)
 
-                camada.add_to(
-                    mapa
+                fg.add_to(m)
+
+            if not paths.empty:
+                fg = folium.FeatureGroup(
+                    name=(
+                        "Traçados rodoviários OSRM"
+                    )
                 )
 
-            # Trajetos OSRM, quando disponíveis.
-            if not trajetos_exportar.empty:
-                camada_rotas = folium.FeatureGroup(
-                    name="Trajetos OSRM"
-                )
-
-                for _, trecho in trajetos_exportar.iterrows():
-                    geometria = trecho.get(
-                        "GEOMETRIA"
-                    )
-
-                    if not isinstance(
-                        geometria,
-                        list
-                    ):
-                        continue
-
-                    if len(geometria) < 2:
-                        continue
-
-                    cor_rota = (
-                        "blue"
-                        if trecho.get(
-                            "TIPO_TRAJETO"
-                        ) == "OSRM"
-                        else "gray"
-                    )
-
+                for _, s in paths.iterrows():
                     folium.PolyLine(
                         [
                             [
-                                ponto[1],
-                                ponto[0]
+                                v[1],
+                                v[0]
                             ]
-                            for ponto in geometria
+                            for v in s["GEOMETRIA"]
                         ],
-                        color=cor_rota,
+                        color="blue",
                         weight=3
-                    ).add_to(
-                        camada_rotas
-                    )
+                    ).add_to(fg)
 
-                camada_rotas.add_to(
-                    mapa
-                )
+                fg.add_to(m)
 
             folium.LayerControl().add_to(
-                mapa
+                m
             )
 
             st_folium(
-                mapa,
+                m,
                 use_container_width=True,
-                height=600
+                height=570
             )
 
 
@@ -4764,270 +4238,258 @@ with abas[7]:
 # EXPORTACOES
 # ============================================================
 
-secao(
-    "📥 Exportação de Planilhas e KML"
-)
-
-resumo_geral = pd.DataFrame([
-    [
-        "Saneamento",
-        int(
-            obras[
-                "LISTA"
-            ].eq(CAT_SAN).sum()
-        )
-    ],
-    [
-        "Levantamento",
-        int(
-            obras[
-                "LISTA"
-            ].eq(CAT_LEV).sum()
-        )
-    ],
-    [
-        "Duplicadas Pendentes",
-        len(
-            duplicadas_pendentes
-        )
-    ],
-    [
-        "Total Pendente",
-        len(obras)
-    ],
-    [
-        "Total Excluídas",
-        len(excluidas)
-    ],
-    [
-        "Já em Campo",
-        len(obras_campo)
-    ],
-    [
-        "SAP FINL",
-        len(obras_finl)
-    ],
-    [
-        "SAP CANC",
-        len(obras_canc)
-    ]
-], columns=[
-    "INDICADOR",
-    "VALOR"
-])
-
-
-# ============================================================
-# EXCEL GERAL
-# ============================================================
-
-excel_geral = gerar_excel({
-    "RESUMO": resumo_geral,
-    "CONSOLIDADO": obras,
-    "SANEAMENTO": obras[
-        obras[
-            "LISTA"
-        ].eq(CAT_SAN)
-    ],
-    "LEVANTAMENTO": obras[
-        obras[
-            "LISTA"
-        ].eq(CAT_LEV)
-    ],
-    "DUPLICADAS": duplicadas_pendentes,
-    "DUPLICADAS TOTAL": duplicadas_total,
-    "SAP FINL": obras_finl,
-    "SAP CANC": obras_canc,
-    "JA EM CAMPO": obras_campo,
-    "AUDITORIA": auditoria,
-    "PROGRAMACAO": programacao,
-    "CAPACIDADE EQUIPES": detalhe_capacidade,
-    "MEDIAS": quadro_capacidade,
-    "SUPERPONTOS": superpontos,
-    "ROTAS OSRM": trajetos_exportar
-})
-
-
-# ============================================================
-# EXPORTACOES ESPECIFICAS
-# ============================================================
-
-excel_duplicadas = gerar_excel({
-    "DUPLICADAS PENDENTES": duplicadas_pendentes,
-    "DUPLICADAS TOTAL": duplicadas_total
-})
-
-excel_finl = gerar_excel({
-    "SAP FINL": obras_finl
-})
-
-excel_canc = gerar_excel({
-    "SAP CANC": obras_canc
-})
-
-excel_campo = gerar_excel({
-    "JA EM CAMPO": obras_campo
-})
-
-
-# ============================================================
-# KML
-# ============================================================
-
-kml_geral = gerar_kml(
-    view,
-    superpontos,
-    trajetos_exportar
-)
-
-kml_duplicadas = gerar_kml(
-    duplicadas_total,
-    nome="NIP - Obras Duplicadas"
-)
-
-
-# ============================================================
-# ZIP POR EQUIPE
-# ============================================================
-
-zip_excel_equipes = gerar_zip_excel_por_equipe(
-    programacao
-)
-
-zip_kml_equipes = gerar_zip_kml_por_equipe(
-    view,
-    programacao,
-    trajetos_exportar
-)
-
-
-# ============================================================
-# BOTOES - ARQUIVOS GERAIS
-# ============================================================
-
 st.subheader(
-    "Arquivos Gerais"
+    "📥 Exportações"
 )
 
-c1, c2, c3, c4 = st.columns(4)
+book = excel_bytes({
+    "RESUMO": summary,
+    "CONSOLIDADO": view,
+    "PROGRAMACAO": exp_plan,
+    "CARGA": load,
+    "SUPERPONTOS": exp_sp,
+    "EQUIPES": capacity,
+    "CANDIDATOS OSRM": routes,
+    "AUDITORIA COMPLETA": audit,
+    "INCONSISTENCIAS": issues,
+    "DUPLICADAS": dup,
+    "FINL": finl,
+    "CANC": canc,
+    "JA EM CAMPO": field,
+    "NOVAS": new,
+    "SAIRAM": gone
+})
+
+kml = kml_bytes(
+    exp_works,
+    exp_sp,
+    paths
+)
+
+
+# ============================================================
+# ZIPS POR EQUIPE
+# ============================================================
+
+zip_excel = io.BytesIO()
+zip_kml = io.BytesIO()
+
+with zipfile.ZipFile(
+    zip_excel,
+    "w",
+    zipfile.ZIP_DEFLATED
+) as z:
+
+    z.writestr(
+        "Analise_Geral.xlsx",
+        book
+    )
+
+    programadas = exp_plan[
+        exp_plan[
+            "STATUS_PROGRAMACAO"
+        ].eq("SUGESTÃO")
+    ]
+
+    for (
+        kind,
+        tid
+    ), g in programadas.groupby(
+        [
+            "ATIVIDADE",
+            "ID_EQUIPE"
+        ]
+    ):
+        name = re.sub(
+            "[^a-zA-Z0-9_-]",
+            "_",
+            tid
+        )[:70]
+
+        z.writestr(
+            f"{kind}/{name}.xlsx",
+            excel_bytes({
+                "Obras Roteirizadas": g
+            })
+        )
+
+with zipfile.ZipFile(
+    zip_kml,
+    "w",
+    zipfile.ZIP_DEFLATED
+) as z:
+
+    z.writestr(
+        "Obras_Geral.kml",
+        kml
+    )
+
+    programadas = exp_plan[
+        exp_plan[
+            "STATUS_PROGRAMACAO"
+        ].eq("SUGESTÃO")
+    ]
+
+    for (
+        kind,
+        tid
+    ), g in programadas.groupby(
+        [
+            "ATIVIDADE",
+            "ID_EQUIPE"
+        ]
+    ):
+        name = re.sub(
+            "[^a-zA-Z0-9_-]",
+            "_",
+            tid
+        )[:70]
+
+        w = exp_works[
+            exp_works[
+                "NOTA"
+            ].isin(
+                g["NOTA"]
+            )
+        ]
+
+        sp = (
+            exp_sp[
+                exp_sp[
+                    "ID_EQUIPE"
+                ].eq(tid)
+            ]
+            if not exp_sp.empty
+            else None
+        )
+
+        p = (
+            paths[
+                paths[
+                    "ID_EQUIPE"
+                ].eq(tid)
+            ]
+            if not paths.empty
+            else None
+        )
+
+        z.writestr(
+            f"{kind}/{name}.kml",
+            kml_bytes(
+                w,
+                sp,
+                p,
+                f"Equipe {tid}"
+            )
+        )
+
+
+# ============================================================
+# DOWNLOADS GERAIS
+# ============================================================
+
+first, second, third, fourth = (
+    st.columns(4)
+)
+
+with first:
+    st.download_button(
+        "📊 Excel geral",
+        book,
+        "NIP_Analise.xlsx",
+        use_container_width=True
+    )
+
+with second:
+    st.download_button(
+        "🗺️ KML geral",
+        kml,
+        "NIP_Obras.kml",
+        use_container_width=True
+    )
+
+with third:
+    st.download_button(
+        "📦 ZIP Excel equipes",
+        zip_excel.getvalue(),
+        "NIP_Excel_Equipes.zip",
+        use_container_width=True
+    )
+
+with fourth:
+    st.download_button(
+        "📦 ZIP KML equipes",
+        zip_kml.getvalue(),
+        "NIP_KML_Equipes.zip",
+        use_container_width=True
+    )
+
+
+# ============================================================
+# DOWNLOADS ESPECIFICOS
+# ============================================================
+
+c1, c2, c3, c4 = (
+    st.columns(4)
+)
 
 with c1:
     st.download_button(
-        "📊 EXCEL GERAL",
-        data=excel_geral,
-        file_name="NIP_Analise_Geral.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
+        "Duplicadas Excel",
+        excel_bytes({
+            "DUPLICADAS": dup
+        }),
+        "Duplicadas.xlsx",
         use_container_width=True
     )
 
 with c2:
     st.download_button(
-        "🗺️ KML GERAL",
-        data=kml_geral,
-        file_name="NIP_Obras_Geral.kml",
-        mime="application/vnd.google-earth.kml+xml",
+        "FINL Excel",
+        excel_bytes({
+            "FINL": finl
+        }),
+        "FINL.xlsx",
         use_container_width=True
     )
 
 with c3:
     st.download_button(
-        "📦 EXCEL POR EQUIPE",
-        data=zip_excel_equipes,
-        file_name="NIP_Equipes_Excel.zip",
-        mime="application/zip",
+        "CANC Excel",
+        excel_bytes({
+            "CANC": canc
+        }),
+        "CANC.xlsx",
         use_container_width=True
     )
 
 with c4:
     st.download_button(
-        "📦 KML POR EQUIPE",
-        data=zip_kml_equipes,
-        file_name="NIP_Equipes_KML.zip",
-        mime="application/zip",
+        "Já em campo Excel",
+        excel_bytes({
+            "JA EM CAMPO": field
+        }),
+        "Em_Campo.xlsx",
         use_container_width=True
     )
 
-
-# ============================================================
-# BOTOES - ARQUIVOS ESPECIFICOS
-# ============================================================
-
-st.subheader(
-    "Exportações Específicas"
+st.download_button(
+    "🟣 KML de duplicadas",
+    kml_bytes(
+        dup,
+        name="NIP - Duplicadas"
+    ),
+    "NIP_Duplicadas.kml"
 )
-
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    st.download_button(
-        "🔵 DUPLICADAS - EXCEL",
-        data=excel_duplicadas,
-        file_name="NIP_Obras_Duplicadas.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
-        use_container_width=True
-    )
-
-    st.download_button(
-        "🗺️ DUPLICADAS - KML",
-        data=kml_duplicadas,
-        file_name="NIP_Obras_Duplicadas.kml",
-        mime="application/vnd.google-earth.kml+xml",
-        use_container_width=True
-    )
-
-with c2:
-    st.download_button(
-        "⚪ FINL - EXCEL",
-        data=excel_finl,
-        file_name="NIP_Obras_FINL.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
-        use_container_width=True
-    )
-
-    st.download_button(
-        "🟠 CANC - EXCEL",
-        data=excel_canc,
-        file_name="NIP_Obras_CANC.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
-        use_container_width=True
-    )
-
-with c3:
-    st.download_button(
-        "🚗 JÁ EM CAMPO - EXCEL",
-        data=excel_campo,
-        file_name="NIP_Obras_Ja_Em_Campo.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
-        use_container_width=True
-    )
 
 
 # ============================================================
 # RODAPE
 # ============================================================
 
-st.divider()
-
 st.caption(
-    f"Base Saneamento: "
-    f"{dados['qtd_san']} linhas | "
-    f"Base Levantamento: "
-    f"{dados['qtd_lev']} linhas | "
-    f"Notas únicas analisadas: "
-    f"{len(auditoria)}"
+    "Distâncias de alocação exigem confirmação "
+    "OSRM. A programação é sugestiva, considera "
+    "dias úteis (sem feriados) e requer "
+    "revisão operacional."
 )
