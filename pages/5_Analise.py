@@ -4264,10 +4264,31 @@ book = excel_bytes({
     "SAIRAM": gone
 })
 
+# KML GERAL: todas as obras PENDENTES, independentemente dos filtros
+# de programacao, equipe, periodo e prioridade. Exporta apenas notas
+# com coordenadas validas. Nao cria trajetos/rotas inventados.
+kml_total_works = pending.dropna(
+    subset=["LATITUDE", "LONGITUDE"]
+).copy()
 kml = kml_bytes(
+    kml_total_works,
+    name="NIP - Todas as Obras Pendentes"
+)
+
+# KML FILTRADO: mantem o comportamento anterior, inclusive
+# superpontos e trajetos calculados para a programacao selecionada.
+kml_filtrado = kml_bytes(
     exp_works,
     exp_sp,
-    paths
+    paths,
+    name="NIP - Obras Programadas / Filtradas"
+)
+
+st.caption(
+    f"KML geral: {len(kml_total_works):,} notas pendentes com coordenadas | "
+    f"Notas pendentes sem coordenadas: "
+    f"{len(pending) - len(kml_total_works):,} | "
+    f"KML filtrado: {len(exp_works.dropna(subset=['LATITUDE', 'LONGITUDE'])):,} notas"
 )
 
 
@@ -4406,7 +4427,7 @@ with first:
 
 with second:
     st.download_button(
-        "🗺️ KML geral",
+        "🗺️ KML TODAS AS OBRAS PENDENTES",
         kml,
         "NIP_Obras.kml",
         use_container_width=True
@@ -4427,6 +4448,15 @@ with fourth:
         "NIP_KML_Equipes.zip",
         use_container_width=True
     )
+
+# Este download respeita filtros e programacao; o KML geral acima nao.
+st.download_button(
+    "🗺️ KML filtrado / programado",
+    kml_filtrado,
+    "NIP_Obras_Filtradas.kml",
+    mime="application/vnd.google-earth.kml+xml",
+    use_container_width=True
+)
 
 
 # ============================================================
