@@ -2316,6 +2316,11 @@ def popup(r):
         ("PRIORIDADE_PLANEJAMENTO", "Prioridade"),
         ("EQUIPE_PROGRAMADA", "Equipe programada"),
         ("DATA_PROGRAMADA", "Data programada"),
+        ("TIPO_OBRA", "Classificação da obra"),
+        ("BASE_ATRIBUIDA", "Equipe mais próxima"),
+        ("ATIVIDADE_EQUIPE", "Atividade da equipe"),
+        ("DISTANCIA_EQUIPE_KM", "Distância da equipe (km, linha reta)"),
+        ("ORDEM", "Ordem da visita"),
         ("SUPER_PONTO", "Superponto"),
         ("NOTAS_AGRUPADAS", "Notas agrupadas"),
     ]:
@@ -2498,8 +2503,10 @@ def kml_bytes(
             add(
                 pm,
                 "name",
-                "Nota " + str(
-                    r["NOTA"]
+                (
+                    "SUPERPONTO " + str(r["SUPER_PONTO"])
+                    if str(r.get("SUPER_PONTO", "")).startswith("SIM")
+                    else "Nota " + str(r["NOTA"])
                 )
             )
 
@@ -2672,6 +2679,169 @@ def kml_bytes(
         encoding="utf-8",
         xml_declaration=True
     )
+
+
+# ============================================================
+# LISTA CONTINUA - EXPORTACAO POR EQUIPE MAIS PROXIMA
+# ============================================================
+
+def classificar_tipo_obra(categoria):
+    """Classificacao original da nota, nunca altera sua contagem."""
+    return {
+        CAT_SAN: "SANEAMENTO",
+        CAT_LEV: "LEVANTAMENTO",
+        CAT_DUP: "SANEAMENTO E LEVANTAMENTO",
+    }.get(categoria, str(categoria))
+
+
+def escolher_equipes_proximas(obras, equipes):
+    """Atribui UMA nota a UMA equipe mais proxima elegivel.
+
+    A referencia e Haversine, nao distancia rodoviaria. Para obras
+    de ambas as atividades, compara equipes dos dois grupos e preserva
+    a classificacao original da nota no Excel e no KML.
+    """
+    saida = obras.copy().reset_index(drop=True)
+    for campo in ["TIPO_OBRA", "BASE_ATRIBUIDA", "ID_EQUIPE", "ATIVIDADE_EQUIPE", "CIDADE_BASE", "METODO_DISTANCIA"]:
+        saida[campo] = ""
+    saida["DISTANCIA_EQUIPE_KM"] = np.nan
+    saida["TIPO_OBRA"] = saida["LISTA"].map(classificar_tipo_obra)
+    saida["STATUS_DISTRIBUICAO"] = "SEM COORDENADAS OU EQUIPE"
+    for tipo in ["SANEAMENTO", "LEVANTAMENTO"]:
+        equipe_tipo = equipes.loc[
+            equipes["TIPO_EQUIPE"].eq(tipo),
+            ["ID_EQUIPE", "EQUIPE", "CIDADE_BASE", "LAT_EQUIPE", "LON_EQUIPE"]
+        ].dropna(subset=["LAT_EQUIPE", "LON_EQUIPE"]).reset_index(drop=True)
+        if equipe_tipo.empty:
+            continue
+        mascara = (
+            saida["LISTA"].map(lambda cat: tipo in activity(cat))
+            & saida["LATITUDE"].notna()
+            & saida["LONGITUDE"].notna()
+        )
+        indices = saida.index[mascara].to_numpy()
+        if not len(indices):
+            continue
+        arvore = BallTree(
+            np.radians(equipe_tipo[["LAT_EQUIPE", "LON_EQUIPE"]].to_numpy(float)),
+            metric="haversine",
+        )
+        distancias, posicoes = arvore.query(
+            np.radians(saida.loc[indices, ["LATITUDE", "LONGITUDE"]].to_numpy(float)),
+            k=1,
+        )
+        for i, indice in enumerate(indices):
+            km = float(distancias[i, 0] * R)
+            anterior = saida.at[indice, "DISTANCIA_EQUIPE_KM"]
+            if pd.isna(anterior) or km < float(anterior):
+                equipe = equipe_tipo.iloc[int(posicoes[i, 0])]
+                saida.at[indice, "DISTANCIA_EQUIPE_KM"] = round(km, 2)
+                saida.at[indice, "BASE_ATRIBUIDA"] = equipe["EQUIPE"]
+                saida.at[indice, "ID_EQUIPE"] = equipe["ID_EQUIPE"]
+                saida.at[indice, "ATIVIDADE_EQUIPE"] = tipo
+                saida.at[indice, "CIDADE_BASE"] = equipe["CIDADE_BASE"]
+                saida.at[indice, "METODO_DISTANCIA"] = "LINHA RETA (HAVERSINE)"
+                saida.at[indice, "STATUS_DISTRIBUICAO"] = "EQUIPE MAIS PROXIMA"
+    saida["EQUIPE_PROGRAMADA"] = saida["BASE_ATRIBUIDA"]
+    return saida
+
+
+def agrupar_rota_equipe(df, metros):
+    """DBSCAN por equipe + classificacao: uma linha por superponto KML;
+    Excel mantem uma linha para cada nota e marca superponto e ordem.
+    Segue a organizacao da Lista Continua sem alterar os modulos comuns.
+    """
+    if df.empty:
+        return df.copy(), df.copy()
+    kml_rows, excel_rows = [], []
+    for tipo_obra, subset in df.groupby("TIPO_OBRA", sort=False):
+        rad = np.radians(subset[["LATITUDE", "LONGITUDE"]].to_numpy(float))
+        labels = DBSCAN(
+            eps=float(metros) / 6371000.0,
+            min_samples=1,
+            metric="haversine",
+            algorithm="ball_tree",
+        ).fit_predict(rad)
+        partes = []
+        for _, cluster in subset.assign(_grupo=labels).groupby("_grupo", sort=False):
+            primeira = cluster.iloc[0].drop(labels="_grupo").to_dict()
+            primeira["LATITUDE"] = float(cluster["LATITUDE"].mean())
+            primeira["LONGITUDE"] = float(cluster["LONGITUDE"].mean())
+            primeira["SUPER_PONTO"] = f"SIM ({len(cluster)} Obras)" if len(cluster) > 1 else "NÃO"
+            primeira["NOTAS_AGRUPADAS"] = " | ".join(cluster["NOTA"].astype(str))
+            primeira["_ORIGINAL_ROWS"] = cluster.drop(columns="_grupo").to_dict("records")
+            partes.append(primeira)
+        # Uma rota heuristica de vizinho proximo por equipe, sem alegar OSRM.
+        restante = partes[:]
+        atual = None
+        ordem = 0
+        while restante:
+            if atual is None:
+                pos = min(range(len(restante)), key=lambda j: (str(restante[j]["MUNICIPIO"]), str(restante[j]["NOTA"])))
+                km_anterior = 0.0
+            else:
+                ds = [float(haversine(atual["LATITUDE"], atual["LONGITUDE"], x["LATITUDE"], x["LONGITUDE"])) for x in restante]
+                pos = int(np.argmin(ds))
+                km_anterior = round(ds[pos], 2)
+            item = restante.pop(pos)
+            ordem += 1
+            item["ORDEM"] = ordem
+            item["DISTANCIA_PONTO_ANTERIOR_KM"] = km_anterior
+            kml_rows.append(item)
+            for original in item["_ORIGINAL_ROWS"]:
+                linha = dict(original)
+                linha["ORDEM"] = ordem
+                linha["SUPER_PONTO"] = item["SUPER_PONTO"]
+                linha["NOTAS_AGRUPADAS"] = item["NOTAS_AGRUPADAS"]
+                linha["DISTANCIA_PONTO_ANTERIOR_KM"] = km_anterior
+                linha["DIA_SEMANA"] = "NÃO PROGRAMADA"
+                linha["DIA_MES"] = ""
+                excel_rows.append(linha)
+            atual = item
+    return pd.DataFrame(excel_rows), pd.DataFrame(kml_rows)
+
+
+def nome_seguro_equipe(equipe, identificador):
+    base = n(equipe).replace(" ", "_")
+    base = re.sub(r"[^A-Z0-9_-]", "", base)[:54].strip("_") or "EQUIPE"
+    codigo = hashlib.sha1(str(identificador).encode("utf-8")).hexdigest()[:7]
+    return f"{base}_{codigo}"
+
+
+def gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral):
+    """Retorna ZIP Excel/KML + resumo usando TODO o backlog pendente."""
+    distribuicao = escolher_equipes_proximas(obras, equipes)
+    com_eq = distribuicao.loc[
+        distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")
+    ].copy()
+    sem_eq = distribuicao.loc[
+        ~distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")
+    ].copy()
+    resumo = (
+        com_eq.groupby(["ATIVIDADE_EQUIPE", "BASE_ATRIBUIDA", "ID_EQUIPE"], dropna=False)
+        .agg(OBRAS=("NOTA", "nunique"), MUNICIPIOS=("MUNICIPIO", "nunique"))
+        .reset_index()
+    )
+    data_fmt = datetime.now().strftime("%d.%m.%Y")
+    excel_zip = io.BytesIO()
+    kml_zip = io.BytesIO()
+    with zipfile.ZipFile(excel_zip, "w", zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(kml_zip, "w", zipfile.ZIP_DEFLATED) as zk:
+        zx.writestr(f"Resumo_Operacional - {data_fmt}.xlsx", excel_bytes({"Resumo Operacional": resumo, "Sem Equipe": sem_eq}))
+        zx.writestr(f"Demanda_ListaContinua_Total - {data_fmt}.xlsx", excel_bytes({"Obras Roteirizadas": distribuicao}))
+        zk.writestr(f"ROTA_TOTAL - {data_fmt}.kml", kml_geral)
+        for ident, grupo in com_eq.groupby("ID_EQUIPE", sort=True):
+            info = grupo.iloc[0]
+            atividade = info["ATIVIDADE_EQUIPE"]
+            safe = nome_seguro_equipe(info["BASE_ATRIBUIDA"], ident)
+            excel_rows, kml_rows = agrupar_rota_equipe(grupo, metros)
+            # Uma linha por nota original, inclusive as agrupadas em superpontos.
+            primeiras = ["BASE_ATRIBUIDA", "TIPO_OBRA", "ATIVIDADE_EQUIPE", "DIA_SEMANA", "DIA_MES", "SUPER_PONTO", "ORDEM", "DISTANCIA_PONTO_ANTERIOR_KM", "NOTA", "MUNICIPIO", "REGIONAL", "DISTANCIA_EQUIPE_KM", "METODO_DISTANCIA"]
+            outras = [c for c in excel_rows.columns if c not in primeiras and not c.startswith("_")]
+            excel_rows = excel_rows[[c for c in primeiras if c in excel_rows.columns] + outras]
+            zx.writestr(f"Rotas_{data_fmt}/{atividade}/Rota_{safe}.xlsx", excel_bytes({"Obras Roteirizadas": excel_rows}))
+            # O KML da equipe tem um marcador por superponto ou obra individual.
+            zk.writestr(f"KML_{data_fmt}/{atividade}/Rota_{safe}.kml", kml_bytes(kml_rows, name=f"Rota {info['BASE_ATRIBUIDA']}"))
+    return excel_zip.getvalue(), kml_zip.getvalue(), distribuicao, resumo, sem_eq
 
 
 # ============================================================
@@ -4444,120 +4614,38 @@ st.caption(
 
 
 # ============================================================
-# ZIPS POR EQUIPE
+# ZIPS POR EQUIPE - PADRAO LISTA CONTINUA
 # ============================================================
-
-zip_excel = io.BytesIO()
-zip_kml = io.BytesIO()
-
-with zipfile.ZipFile(
-    zip_excel,
-    "w",
-    zipfile.ZIP_DEFLATED
-) as z:
-
-    z.writestr(
-        "Analise_Geral.xlsx",
-        book
+# Este ZIP independe do estado das consultas OSRM, do periodo e das
+# equipes programadas. Cada nota pendente com coordenadas validas
+# e atribuida a uma unica equipe fisicamente mais proxima, dentro da
+# atividade aplicavel, com distancia identificada como LINHA RETA.
+zip_excel_equipes, zip_kml_equipes, distribuicao_geral, resumo_equipes, sem_equipe = (
+    gerar_zips_lista_continua_nip(
+        kml_total_works,
+        teams,
+        super_m,
+        kml,
     )
-
-    programadas = exp_plan[
-        exp_plan[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTÃO")
-    ]
-
-    for (
-        kind,
-        tid
-    ), g in programadas.groupby(
-        [
-            "ATIVIDADE",
-            "ID_EQUIPE"
-        ]
-    ):
-        name = re.sub(
-            "[^a-zA-Z0-9_-]",
-            "_",
-            tid
-        )[:70]
-
-        z.writestr(
-            f"{kind}/{name}.xlsx",
-            excel_bytes({
-                "Obras Roteirizadas": g
-            })
-        )
-
-with zipfile.ZipFile(
-    zip_kml,
-    "w",
-    zipfile.ZIP_DEFLATED
-) as z:
-
-    z.writestr(
-        "Obras_Geral.kml",
-        kml
+)
+st.caption(
+    f"Distribuição Lista Contínua: {len(distribuicao_geral) - len(sem_equipe):,} "
+    f"notas atribuídas à equipe mais próxima | "
+    f"{len(sem_equipe):,} sem equipe | "
+    f"{resumo_equipes['ID_EQUIPE'].nunique() if not resumo_equipes.empty else 0} equipes. "
+    "Uma nota classificada como SANEAMENTO E LEVANTAMENTO fica em apenas "
+    "um arquivo de equipe nesta distribuição de proximidade. "
+    "Distâncias indicadas são em linha reta."
+)
+with st.expander("👥 Conferir distribuição por equipe (Lista Contínua)"):
+    st.dataframe(resumo_equipes, hide_index=True, use_container_width=True)
+    if not sem_equipe.empty:
+        st.warning(f"{len(sem_equipe)} notas sem coordenada ou equipe elegível; constam no Excel geral.")
+    st.dataframe(
+        distribuicao_geral[[c for c in ["NOTA", "TIPO_OBRA", "BASE_ATRIBUIDA", "ATIVIDADE_EQUIPE", "CIDADE_BASE", "DISTANCIA_EQUIPE_KM", "METODO_DISTANCIA", "STATUS_DISTRIBUICAO"] if c in distribuicao_geral.columns]],
+        hide_index=True,
+        use_container_width=True,
     )
-
-    programadas = exp_plan[
-        exp_plan[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTÃO")
-    ]
-
-    for (
-        kind,
-        tid
-    ), g in programadas.groupby(
-        [
-            "ATIVIDADE",
-            "ID_EQUIPE"
-        ]
-    ):
-        name = re.sub(
-            "[^a-zA-Z0-9_-]",
-            "_",
-            tid
-        )[:70]
-
-        w = exp_works[
-            exp_works[
-                "NOTA"
-            ].isin(
-                g["NOTA"]
-            )
-        ]
-
-        sp = (
-            exp_sp[
-                exp_sp[
-                    "ID_EQUIPE"
-                ].eq(tid)
-            ]
-            if not exp_sp.empty
-            else None
-        )
-
-        p = (
-            paths[
-                paths[
-                    "ID_EQUIPE"
-                ].eq(tid)
-            ]
-            if not paths.empty
-            else None
-        )
-
-        z.writestr(
-            f"{kind}/{name}.kml",
-            kml_bytes(
-                w,
-                sp,
-                p,
-                f"Equipe {tid}"
-            )
-        )
 
 
 # ============================================================
@@ -4586,16 +4674,16 @@ with second:
 
 with third:
     st.download_button(
-        "📦 ZIP Excel equipes",
-        zip_excel.getvalue(),
+        "📦 ZIP Excel equipes (Lista Contínua)",
+        zip_excel_equipes,
         "NIP_Excel_Equipes.zip",
         use_container_width=True
     )
 
 with fourth:
     st.download_button(
-        "📦 ZIP KML equipes",
-        zip_kml.getvalue(),
+        "📦 ZIP KML equipes (Lista Contínua)",
+        zip_kml_equipes,
         "NIP_KML_Equipes.zip",
         use_container_width=True
     )
