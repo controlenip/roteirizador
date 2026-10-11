@@ -2320,6 +2320,9 @@ def popup(r):
         ("BASE_ATRIBUIDA", "Equipe mais próxima"),
         ("ATIVIDADE_EQUIPE", "Atividade da equipe"),
         ("DISTANCIA_EQUIPE_KM", "Distância da equipe (km, linha reta)"),
+        ("STATUS_DISTRIBUICAO", "Situação de distribuição"),
+        ("METODO_DISTANCIA", "Método de distância"),
+        ("CIDADE_BASE", "Base da equipe"),
         ("ORDEM", "Ordem da visita"),
         ("SUPER_PONTO", "Superponto"),
         ("NOTAS_AGRUPADAS", "Notas agrupadas"),
@@ -2808,7 +2811,7 @@ def nome_seguro_equipe(equipe, identificador):
     return f"{base}_{codigo}"
 
 
-def gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral):
+def gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral, progresso=None):
     """Retorna ZIP Excel/KML + resumo usando TODO o backlog pendente."""
     distribuicao = escolher_equipes_proximas(obras, equipes)
     com_eq = distribuicao.loc[
@@ -2823,13 +2826,16 @@ def gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral):
         .reset_index()
     )
     data_fmt = datetime.now().strftime("%d.%m.%Y")
+    total_equipes = com_eq["ID_EQUIPE"].nunique()
+    if progresso is not None:
+        progresso(0, total_equipes, "Iniciando arquivos gerais")
     excel_zip = io.BytesIO()
     kml_zip = io.BytesIO()
     with zipfile.ZipFile(excel_zip, "w", zipfile.ZIP_DEFLATED) as zx, zipfile.ZipFile(kml_zip, "w", zipfile.ZIP_DEFLATED) as zk:
         zx.writestr(f"Resumo_Operacional - {data_fmt}.xlsx", excel_bytes({"Resumo Operacional": resumo, "Sem Equipe": sem_eq}))
         zx.writestr(f"Demanda_ListaContinua_Total - {data_fmt}.xlsx", excel_bytes({"Obras Roteirizadas": distribuicao}))
         zk.writestr(f"ROTA_TOTAL - {data_fmt}.kml", kml_geral)
-        for ident, grupo in com_eq.groupby("ID_EQUIPE", sort=True):
+        for numero_eq, (ident, grupo) in enumerate(com_eq.groupby("ID_EQUIPE", sort=True), start=1):
             info = grupo.iloc[0]
             atividade = info["ATIVIDADE_EQUIPE"]
             safe = nome_seguro_equipe(info["BASE_ATRIBUIDA"], ident)
@@ -2841,7 +2847,125 @@ def gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral):
             zx.writestr(f"Rotas_{data_fmt}/{atividade}/Rota_{safe}.xlsx", excel_bytes({"Obras Roteirizadas": excel_rows}))
             # O KML da equipe tem um marcador por superponto ou obra individual.
             zk.writestr(f"KML_{data_fmt}/{atividade}/Rota_{safe}.kml", kml_bytes(kml_rows, name=f"Rota {info['BASE_ATRIBUIDA']}"))
+            if progresso is not None:
+                progresso(numero_eq, total_equipes, str(info["BASE_ATRIBUIDA"]))
     return excel_zip.getvalue(), kml_zip.getvalue(), distribuicao, resumo, sem_eq
+
+
+# ============================================================
+# CONTROLE E CONFERENCIA DA DISTRIBUICAO
+# ============================================================
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def distribuicao_lista_cache(obras, equipes):
+    """Somente memoriza a funcao original de equipe mais proxima."""
+    return escolher_equipes_proximas(obras, equipes)
+
+
+def conferir_distribuicao(obras, distribuicao):
+    """Nao altera nenhuma nota: so confere a particao e a integridade."""
+    originais = obras["NOTA"].astype(str).tolist()
+    atribuidas = distribuicao["NOTA"].astype(str).tolist()
+    com = distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")
+    qtd_origem = len(set(originais))
+    qtd_dist = int(com.sum())
+    qtd_sem = int((~com).sum())
+    duplicadas = int(pd.Series(atribuidas).duplicated().sum())
+    faltantes = sorted(set(originais) - set(atribuidas))
+    extras = sorted(set(atribuidas) - set(originais))
+    correto = (qtd_origem == qtd_dist + qtd_sem and duplicadas == 0
+               and not faltantes and not extras and len(originais) == qtd_origem)
+    return {"OK": correto, "PENDENTES": qtd_origem, "DISTRIBUIDAS": qtd_dist,
+            "SEM_EQUIPE": qtd_sem, "DUPLICADAS_INDEVIDAS": duplicadas,
+            "FALTANTES": faltantes, "EXTRAS": extras}
+
+
+def resumo_detalhado_equipes(distribuicao, equipes):
+    """Um registro por equipe, inclusive quando tem zero notas."""
+    resumo = equipes[["ID_EQUIPE", "EQUIPE", "TIPO_EQUIPE", "CIDADE_BASE"]].copy()
+    atrib = distribuicao[distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")].copy()
+    if not atrib.empty:
+        agrupado = atrib.groupby("ID_EQUIPE").agg(
+            OBRAS=("NOTA", "nunique"), MUNICIPIOS=("MUNICIPIO", "nunique"),
+            DISTANCIA_MEDIA_LINHA_RETA_KM=("DISTANCIA_EQUIPE_KM", "mean"),
+            DISTANCIA_MAX_LINHA_RETA_KM=("DISTANCIA_EQUIPE_KM", "max")
+        ).reset_index()
+        tipos = atrib.groupby(["ID_EQUIPE", "TIPO_OBRA"]).size().unstack(fill_value=0)
+        tipos = tipos.rename(columns={
+            "SANEAMENTO": "OBRAS_SANEAMENTO",
+            "LEVANTAMENTO": "OBRAS_LEVANTAMENTO",
+            "SANEAMENTO E LEVANTAMENTO": "OBRAS_AMBAS"
+        }).reset_index()
+        resumo = resumo.merge(agrupado, on="ID_EQUIPE", how="left").merge(tipos, on="ID_EQUIPE", how="left")
+    for nome in ["OBRAS", "MUNICIPIOS", "OBRAS_SANEAMENTO", "OBRAS_LEVANTAMENTO", "OBRAS_AMBAS"]:
+        if nome not in resumo.columns:
+            resumo[nome] = 0
+        resumo[nome] = resumo[nome].fillna(0).astype(int)
+    for nome in ["DISTANCIA_MEDIA_LINHA_RETA_KM", "DISTANCIA_MAX_LINHA_RETA_KM"]:
+        if nome not in resumo.columns:
+            resumo[nome] = np.nan
+        resumo[nome] = resumo[nome].round(1)
+    total = max(int(resumo["OBRAS"].sum()), 1)
+    resumo["PARTICIPACAO_PERCENTUAL"] = (100 * resumo["OBRAS"] / total).round(1)
+    return resumo.sort_values(["TIPO_EQUIPE", "OBRAS"], ascending=[True, False]).reset_index(drop=True)
+
+
+def tabela_sem_equipe(distribuicao):
+    sem = distribuicao[~distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")].copy()
+    if sem.empty:
+        sem["MOTIVO_SEM_EQUIPE"] = pd.Series(dtype="str")
+        return sem
+    coords = sem["LATITUDE"].notna() & sem["LONGITUDE"].notna()
+    sem["MOTIVO_SEM_EQUIPE"] = np.where(coords, "SEM EQUIPE ELEGIVEL COM LOCALIZACAO", "SEM COORDENADAS VALIDAS")
+    return sem
+
+
+def parametros_analise(registro):
+    return pd.DataFrame([{"PARAMETRO": k, "VALOR": str(v)} for k, v in registro.items()])
+
+
+def inventario_zips(distribuicao, equipes, data_fmt):
+    com = distribuicao[distribuicao["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")]
+    rows = [
+        {"PACOTE":"EXCEL", "ARQUIVO":f"Resumo_Operacional - {data_fmt}.xlsx", "NOTAS":len(distribuicao)},
+        {"PACOTE":"EXCEL", "ARQUIVO":f"Demanda_ListaContinua_Total - {data_fmt}.xlsx", "NOTAS":len(distribuicao)},
+        {"PACOTE":"KML", "ARQUIVO":f"ROTA_TOTAL - {data_fmt}.kml", "NOTAS":len(distribuicao)}
+    ]
+    for ident, grupo in com.groupby("ID_EQUIPE", sort=True):
+        primeira = grupo.iloc[0]
+        safe = nome_seguro_equipe(primeira["BASE_ATRIBUIDA"], ident)
+        caminho = f"{primeira['ATIVIDADE_EQUIPE']}"
+        rows.append({"PACOTE":"EXCEL", "ARQUIVO":f"Rotas_{data_fmt}/{caminho}/Rota_{safe}.xlsx", "NOTAS":len(grupo)})
+        rows.append({"PACOTE":"KML", "ARQUIVO":f"KML_{data_fmt}/{caminho}/Rota_{safe}.kml", "NOTAS":len(grupo)})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def gerar_zips_lista_cache(obras, equipes, metros, kml_geral, _indicador=None):
+    """Mesmo gerador original; cache pela entrada e raio dos superpontos."""
+    return gerar_zips_lista_continua_nip(obras, equipes, metros, kml_geral, progresso=_indicador)
+
+
+def montar_zips_com_progresso(obras, equipes, metros, kml_geral):
+    inicio = time.monotonic()
+    barra = st.progress(0, text="Iniciando exportação por equipe...")
+    relogio = st.empty()
+
+    def progresso(concluidas, total, equipe):
+        decorrido = time.monotonic() - inicio
+        percentual = concluidas / total if total else 1.0
+        restante = decorrido / concluidas * (total - concluidas) if concluidas else None
+        barra.progress(min(1.0, percentual), text=f"Equipe: {equipe} — {concluidas}/{total}")
+        relogio.caption(
+            f"⏱️ Decorrido: {tempo_legivel(decorrido)} | "
+            f"⌛ Restante estimado: {tempo_legivel(restante)}"
+        )
+
+    arquivos = gerar_zips_lista_cache(obras, equipes, metros, kml_geral, _indicador=progresso)
+    decorrido = time.monotonic() - inicio
+    barra.progress(1.0, text="ZIPs concluídos (100%)")
+    relogio.caption(f"⏱️ Tempo total: {tempo_legivel(decorrido)} | Restante: 00:00")
+    return arquivos
 
 
 # ============================================================
@@ -2908,6 +3032,7 @@ def zerar_analise_nip():
             chave.startswith("nip_analise_widget_")
             or chave in {
                 "nipbase", "niproutes", "nipgeom", "capacity_editor",
+                "nip_zip_resultado", "nip_zip_chave", "nip_export_cronometro",
             }
         ):
             del st.session_state[chave]
@@ -4577,7 +4702,12 @@ book = excel_bytes({
     "CANC": canc,
     "JA EM CAMPO": field,
     "NOVAS": new,
-    "SAIRAM": gone
+    "SAIRAM": gone,
+    "PARAMETROS": parametros,
+    "DISTRIBUICAO POR EQUIPE": distribuicao_geral,
+    "CARGA DETALHADA": resumo_equipes_detalhado,
+    "SEM EQUIPE": sem_equipe_relatorio,
+    "VALIDACAO": pd.DataFrame([conferencia]),
 })
 
 # KML GERAL: todas as obras PENDENTES, independentemente dos filtros
@@ -4620,32 +4750,119 @@ st.caption(
 # equipes programadas. Cada nota pendente com coordenadas validas
 # e atribuida a uma unica equipe fisicamente mais proxima, dentro da
 # atividade aplicavel, com distancia identificada como LINHA RETA.
-zip_excel_equipes, zip_kml_equipes, distribuicao_geral, resumo_equipes, sem_equipe = (
-    gerar_zips_lista_continua_nip(
-        kml_total_works,
-        teams,
-        super_m,
-        kml,
-    )
+# A distribuicao de notas nao depende da geracao dos arquivos ZIP.
+# Mantem a mesma funcao Haversine do codigo original.
+distribuicao_geral = distribuicao_lista_cache(kml_total_works, teams)
+conferencia = conferir_distribuicao(kml_total_works, distribuicao_geral)
+resumo_equipes_detalhado = resumo_detalhado_equipes(distribuicao_geral, teams)
+sem_equipe = tabela_sem_equipe(distribuicao_geral)
+resumo_equipes = resumo_equipes_detalhado
+# Incluir no relatorio gerencial tambem obras fora da distribuicao por falta
+# de coordenadas, sem alterar o ZIP e a logica original de distribuicao.
+sem_coordenadas = pending[pending["LATITUDE"].isna() | pending["LONGITUDE"].isna()].copy()
+if not sem_coordenadas.empty:
+    sem_coordenadas["MOTIVO_SEM_EQUIPE"] = "SEM COORDENADAS VALIDAS"
+    sem_coordenadas["STATUS_DISTRIBUICAO"] = "SEM COORDENADAS"
+sem_equipe_relatorio = pd.concat([sem_equipe, sem_coordenadas], ignore_index=True)
+
+st.markdown("### ✅ Conferência automática da distribuição")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Notas pendentes com coordenadas", conferencia["PENDENTES"])
+c2.metric("Distribuídas", conferencia["DISTRIBUIDAS"])
+c3.metric("Sem equipe", conferencia["SEM_EQUIPE"])
+c4.metric("Repetições indevidas", conferencia["DUPLICADAS_INDEVIDAS"])
+if conferencia["OK"]:
+    st.success("Conferência aprovada: nenhuma nota perdida ou repetida na distribuição.")
+else:
+    st.error("A distribuição apresenta divergências. Geração de ZIPs bloqueada até correção.")
+    st.write("Faltantes:", conferencia["FALTANTES"][:20], "Extras:", conferencia["EXTRAS"][:20])
+
+st.markdown("### 📊 Carga operacional detalhada por equipe")
+filtra_tipo_eq = st.multiselect(
+    "Tipos de equipe no painel", ["SANEAMENTO", "LEVANTAMENTO"],
+    default=["SANEAMENTO", "LEVANTAMENTO"], key=f"nip_analise_widget_{versao_analise}_painel_tipo"
 )
-st.caption(
-    f"Distribuição Lista Contínua: {len(distribuicao_geral) - len(sem_equipe):,} "
-    f"notas atribuídas à equipe mais próxima | "
-    f"{len(sem_equipe):,} sem equipe | "
-    f"{resumo_equipes['ID_EQUIPE'].nunique() if not resumo_equipes.empty else 0} equipes. "
-    "Uma nota classificada como SANEAMENTO E LEVANTAMENTO fica em apenas "
-    "um arquivo de equipe nesta distribuição de proximidade. "
-    "Distâncias indicadas são em linha reta."
-)
-with st.expander("👥 Conferir distribuição por equipe (Lista Contínua)"):
-    st.dataframe(resumo_equipes, hide_index=True, use_container_width=True)
-    if not sem_equipe.empty:
-        st.warning(f"{len(sem_equipe)} notas sem coordenada ou equipe elegível; constam no Excel geral.")
-    st.dataframe(
-        distribuicao_geral[[c for c in ["NOTA", "TIPO_OBRA", "BASE_ATRIBUIDA", "ATIVIDADE_EQUIPE", "CIDADE_BASE", "DISTANCIA_EQUIPE_KM", "METODO_DISTANCIA", "STATUS_DISTRIBUICAO"] if c in distribuicao_geral.columns]],
-        hide_index=True,
-        use_container_width=True,
-    )
+painel_eq = resumo_equipes_detalhado[resumo_equipes_detalhado["TIPO_EQUIPE"].isin(filtra_tipo_eq)]
+st.dataframe(painel_eq, hide_index=True, use_container_width=True)
+if not painel_eq.empty:
+    st.bar_chart(painel_eq.set_index("EQUIPE")["OBRAS"])
+
+with st.expander("🔎 Consultar uma nota e a equipe atribuída"):
+    pesquisa_nota = st.text_input("Número da nota", key=f"nip_analise_widget_{versao_analise}_nota_atribuida")
+    if pesquisa_nota.strip():
+        found = distribuicao_geral[distribuicao_geral["NOTA"].astype(str).str.contains(
+            re.escape(pesquisa_nota.strip()), na=False, case=False
+        )]
+        if found.empty:
+            st.info("Nota não encontrada nas obras pendentes com coordenadas.")
+        else:
+            st.dataframe(found[[x for x in ["NOTA", "TIPO_OBRA", "MUNICIPIO", "BASE_ATRIBUIDA", "ATIVIDADE_EQUIPE", "CIDADE_BASE", "DISTANCIA_EQUIPE_KM", "METODO_DISTANCIA", "STATUS_DISTRIBUICAO"] if x in found.columns]], hide_index=True, use_container_width=True)
+
+with st.expander(f"⚠️ Relatório de obras sem equipe ou sem coordenadas ({len(sem_equipe_relatorio)})"):
+    if sem_equipe_relatorio.empty:
+        st.success("Todas as notas do conjunto de distribuição foram atribuídas.")
+    else:
+        st.dataframe(sem_equipe_relatorio, hide_index=True, use_container_width=True)
+        st.download_button("📥 Excel - sem equipe", excel_bytes({"SEM EQUIPE":sem_equipe_relatorio}), "NIP_Sem_Equipe.xlsx", key=f"nip_analise_widget_{versao_analise}_sem_eq")
+
+parametros = parametros_analise({
+    "Gerado em": datetime.now().isoformat(timespec="seconds"),
+    "Base saneamento": data["san_name"],
+    "Base levantamento": data["lev_info"]["aba"],
+    "Raio rodoviario km": radius,
+    "Candidatos por atividade": k,
+    "Superponto metros": super_m,
+    "Prioridade media dias": medium_days,
+    "Modalidade programacao": mode,
+    "Periodo capacidade": period_cap,
+    "Capacidade diaria": daily_cap,
+    "Numero de periodos": periods,
+    "Inicio": first_day,
+    "OSRM endpoint": server,
+    "KML com geometria OSRM": kml_osrm,
+    "Filtro regional": reg,
+    "Filtro municipio": city,
+    "Filtro prioridade": prio,
+    "Filtro pesquisa": search,
+    "Metodo distribuicao ZIP": "HAVERSINE - EQUIPE MAIS PROXIMA",
+    "Pendentes totais": len(pending),
+    "Pendentes com coordenadas": len(kml_total_works),
+    "Pendentes sem coordenadas": len(pending) - len(kml_total_works),
+})
+with st.expander("🧾 Parâmetros utilizados nesta análise"):
+    st.dataframe(parametros, hide_index=True, use_container_width=True)
+    st.download_button("📥 Exportar parâmetros", excel_bytes({"PARAMETROS": parametros}), "NIP_Parametros.xlsx", key=f"nip_analise_widget_{versao_analise}_params")
+
+stamp_zip = datetime.now().strftime("%d.%m.%Y")
+inventario = inventario_zips(distribuicao_geral, teams, stamp_zip)
+with st.expander("📁 Prévia de todos os arquivos do ZIP"):
+    st.dataframe(inventario, hide_index=True, use_container_width=True)
+    if not inventario.empty:
+        st.caption(f"Excel: {(inventario['PACOTE']=='EXCEL').sum()} arquivos | KML: {(inventario['PACOTE']=='KML').sum()} arquivos")
+
+# A chave inclui conteudo relevante, equipes, superpontos e bytes do KML.
+zip_chave = hashlib.sha256((
+    distribuicao_geral.to_json(orient="records", date_format="iso")
+    + teams.to_json(orient="records") + str(super_m)
+).encode("utf-8") + kml).hexdigest()
+if st.session_state.get("nip_zip_chave") != zip_chave:
+    st.session_state.pop("nip_zip_resultado", None)
+    st.session_state["nip_zip_chave"] = zip_chave
+
+st.markdown("### 📦 ZIPs por equipe — gerar somente quando solicitado")
+st.caption("A distribuição acima é calculada de modo independente; somente a criação dos arquivos ZIP depende do botão.")
+if st.button("⚙️ Gerar ZIPs Excel e KML por equipe", disabled=not conferencia["OK"],
+             key=f"nip_analise_widget_{versao_analise}_gerar_zip", type="primary"):
+    with st.spinner("Preparando os arquivos por equipe..."):
+        st.session_state["nip_zip_resultado"] = montar_zips_com_progresso(
+            kml_total_works, teams, super_m, kml
+        )
+
+zip_excel_equipes = None
+zip_kml_equipes = None
+if st.session_state.get("nip_zip_resultado") is not None:
+    zip_excel_equipes, zip_kml_equipes, _, _, _ = st.session_state["nip_zip_resultado"]
+    st.success(f"ZIPs preparados: Excel {len(zip_excel_equipes)/1024/1024:.1f} MB | KML {len(zip_kml_equipes)/1024/1024:.1f} MB")
 
 
 # ============================================================
@@ -4673,20 +4890,24 @@ with second:
     )
 
 with third:
-    st.download_button(
-        "📦 ZIP Excel equipes (Lista Contínua)",
-        zip_excel_equipes,
-        "NIP_Excel_Equipes.zip",
-        use_container_width=True
-    )
+    if zip_excel_equipes is not None:
+        st.download_button(
+            "📦 ZIP Excel equipes (Lista Contínua)",
+            zip_excel_equipes, "NIP_Excel_Equipes.zip",
+            use_container_width=True
+        )
+    else:
+        st.info("Gere o ZIP Excel no botão acima.")
 
 with fourth:
-    st.download_button(
-        "📦 ZIP KML equipes (Lista Contínua)",
-        zip_kml_equipes,
-        "NIP_KML_Equipes.zip",
-        use_container_width=True
-    )
+    if zip_kml_equipes is not None:
+        st.download_button(
+            "📦 ZIP KML equipes (Lista Contínua)",
+            zip_kml_equipes, "NIP_KML_Equipes.zip",
+            use_container_width=True
+        )
+    else:
+        st.info("Gere o ZIP KML no botão acima.")
 
 # Este download respeita filtros e programacao; o KML geral acima nao.
 st.download_button(
