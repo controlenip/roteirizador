@@ -3131,17 +3131,117 @@ if st.session_state.get("nipv2_signature")!=signature:
         st.session_state.pop(k,None)
     st.session_state["nipv2_signature"]=signature
 
-if st.button("🚀 Cruzar e validar as três bases",type="primary"):
-    with st.spinner("Lendo arquivos, aplicando exclusões e cruzando as notas..."):
-        try:
-            san,san_name=load_san(san_file)
-            lev,lev_info=load_lev(lev_file)
-            teams=load_teams(team_file)
-            audit=consolidate(san,lev)
-            issues=anomalies(san,lev,audit,teams)
-            st.session_state["nipv2_data"]={"audit":audit,"teams":teams,"issues":issues,"san_name":san_name,"lev_info":lev_info}
-        except Exception as exc:
-            st.error(f"Falha ao processar as bases: {exc}")
+# Contador de processamento: o trabalho ocorre em uma thread sem comandos Streamlit.
+# A interface principal atualiza o progresso enquanto as planilhas sao processadas.
+ETAPAS_CRUZAMENTO = [
+    ("Lendo base Saneamento", 0.15),
+    ("Lendo base Levantamento", 0.65),
+    ("Lendo localizacao das equipes", 0.06),
+    ("Cruzando e classificando as notas", 0.10),
+    ("Auditando inconsistencias", 0.04),
+]
+
+
+def formatar_tempo_cruzamento(segundos):
+    if segundos is None:
+        return "Calculando..."
+    total = max(0, int(segundos))
+    horas, resto = divmod(total, 3600)
+    minutos, segundos = divmod(resto, 60)
+    if horas:
+        return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
+    return f"{minutos:02d}:{segundos:02d}"
+
+
+def cruzar_bases_monitorado(arquivos, status):
+    # O processamento usa bytes independentes dos widgets do Streamlit.
+    class ArquivoLocal:
+        def __init__(self, conteudo, nome):
+            self._conteudo = conteudo
+            self.name = nome
+
+        def getvalue(self):
+            return self._conteudo
+
+    def avancar(etapa):
+        status["etapa"] = etapa
+
+    avancar(0)
+    san, san_name = load_san(ArquivoLocal(*arquivos[0]))
+    avancar(1)
+    lev, lev_info = load_lev(ArquivoLocal(*arquivos[1]))
+    avancar(2)
+    teams = load_teams(ArquivoLocal(*arquivos[2]))
+    avancar(3)
+    audit = consolidate(san, lev)
+    avancar(4)
+    issues = anomalies(san, lev, audit, teams)
+    avancar(len(ETAPAS_CRUZAMENTO))
+    return {"audit": audit, "teams": teams, "issues": issues,
+            "san_name": san_name, "lev_info": lev_info}
+
+
+if st.button("🚀 Cruzar e validar as três bases", type="primary"):
+    # Mesmo que a analise anterior exista, nunca exibir dados antigos apos uma falha.
+    st.session_state.pop("nipv2_data", None)
+    st.session_state.pop("nipv2_candidates", None)
+    st.session_state.pop("nipv2_zip", None)
+
+    inicio_cruzamento = time.monotonic()
+    status_cruzamento = {"etapa": 0}
+    caixa_etapa = st.empty()
+    caixa_barra = st.empty()
+    caixa_tempos = st.empty()
+    arquivos_cruzamento = (
+        (san_file.getvalue(), san_file.name),
+        (lev_file.getvalue(), lev_file.name),
+        (team_file.getvalue(), team_file.name),
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            tarefa = executor.submit(
+                cruzar_bases_monitorado, arquivos_cruzamento, status_cruzamento
+            )
+            while not tarefa.done():
+                indice = min(status_cruzamento["etapa"], len(ETAPAS_CRUZAMENTO) - 1)
+                concluido = sum(peso for _, peso in ETAPAS_CRUZAMENTO[:indice])
+                decorrido = time.monotonic() - inicio_cruzamento
+                restante = (
+                    decorrido * (1 - concluido) / concluido
+                    if concluido > 0 else None
+                )
+                caixa_etapa.info(
+                    f"⏳ {ETAPAS_CRUZAMENTO[indice][0]} "
+                    f"— etapa {indice + 1} de {len(ETAPAS_CRUZAMENTO)}"
+                )
+                caixa_barra.progress(
+                    min(0.99, max(0.01, concluido)),
+                    text=f"Progresso estimado: {concluido:.0%}",
+                )
+                caixa_tempos.markdown(
+                    f"**⏱️ Tempo decorrido:** {formatar_tempo_cruzamento(decorrido)}"
+                    f"　 |　 **⌛ Tempo restante estimado:** "
+                    f"{formatar_tempo_cruzamento(restante)}"
+                )
+                time.sleep(0.3)
+            resultado = tarefa.result()
+        duracao = time.monotonic() - inicio_cruzamento
+        resultado["tempo_processamento_s"] = duracao
+        st.session_state["nipv2_data"] = resultado
+        caixa_etapa.success("✅ Três bases cruzadas e validadas com sucesso.")
+        caixa_barra.progress(1.0, text="Progresso: 100% — concluído")
+        caixa_tempos.markdown(
+            f"**⏱️ Tempo total:** {formatar_tempo_cruzamento(duracao)}"
+            "　 |　 **⌛ Tempo restante:** 00:00"
+        )
+    except Exception as exc:
+        caixa_etapa.error(f"Falha ao processar as bases: {exc}")
+        caixa_barra.empty()
+        caixa_tempos.markdown(
+            "**⏱️ Tempo decorrido até o erro:** "
+            + formatar_tempo_cruzamento(time.monotonic() - inicio_cruzamento)
+        )
+
 if "nipv2_data" not in st.session_state:
     st.stop()
 
