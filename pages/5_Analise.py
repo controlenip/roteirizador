@@ -2275,118 +2275,66 @@ def excel_bytes(sheets):
 # ============================================================
 
 def popup(r):
-    """Cartao para Folium e Google Earth, no estilo de referencia do NIP.
-
-    Mantem equipes candidatas e informa que a distancia e em linha reta.
-    """
-    def readable(value):
-        if value is None:
-            return ""
+    """Mesmo cartão HTML no mapa Folium e na descrição do KML."""
+    def value(key, default="Não informado"):
+        x = r.get(key, default)
         try:
-            if pd.isna(value):
-                return ""
-        except (TypeError, ValueError):
+            if pd.isna(x):
+                return default
+        except (ValueError, TypeError):
             pass
-        return str(value).strip()
-
-    def esc(value):
-        return html.escape(readable(value), quote=True)
-
-    categoria = readable(r.get("LISTA", ""))
-    cor = COLORS.get(categoria, "#9333ea")
-    numero = readable(r.get("NOTA", ""))
-
-    # O titulo do Placemark continua "Nota XXXXX"; abaixo reproduzimos
-    # o cabecalho para uso tanto no Google Earth quanto no Folium.
-    itens = [
-        ("Nota", r.get("NOTA", "")),
-        ("Município", r.get("MUNICIPIO", "")),
-        ("Tipo", r.get("LISTA", "")),
-    ]
-
-    for chave, titulo in [
-        ("EQUIPES_SANEAMENTO", "Equipes SANEAMENTO"),
-        ("EQUIPES_LEVANTAMENTO", "Equipes LEVANTAMENTO"),
-    ]:
-        valor = readable(r.get(chave, ""))
-        if valor and n(valor) not in ("NAO APLICAVEL", "NAN"):
-            itens.append((titulo, valor))
-
-    for chave, titulo in [
-        ("PRIORIDADE_PLANEJAMENTO", "Prioridade"),
-        ("EQUIPE_PROGRAMADA", "Equipe programada"),
-        ("DATA_PROGRAMADA", "Data programada"),
-        ("TIPO_OBRA", "Classificação da obra"),
-        ("BASE_ATRIBUIDA", "Equipe mais próxima"),
-        ("ATIVIDADE_EQUIPE", "Atividade da equipe"),
-        ("DISTANCIA_EQUIPE_KM", "Distância da equipe (km, linha reta)"),
-        ("STATUS_DISTRIBUICAO", "Situação de distribuição"),
-        ("METODO_DISTANCIA", "Método de distância"),
-        ("CIDADE_BASE", "Base da equipe"),
-        ("ORDEM", "Ordem da visita"),
-        ("SUPER_PONTO", "Superponto"),
-        ("NOTAS_AGRUPADAS", "Notas agrupadas"),
-    ]:
-        valor = readable(r.get(chave, ""))
-        if valor and n(valor) not in ("NAN", "NAO APLICAVEL"):
-            itens.append((titulo, valor))
-
-    linhas = "".join(
-        '<tr>'
-        '<td style="padding:5px 7px 5px 3px;vertical-align:top;'
-        'font-size:11px;font-weight:700;white-space:nowrap;width:94px;">'
-        f'{esc(titulo)}</td>'
-        '<td style="padding:5px 3px;vertical-align:top;'
-        'font-size:11px;line-height:1.4;overflow-wrap:anywhere;">'
-        f'{esc(valor)}</td>'
-        '</tr>'
-        for titulo, valor in itens
-    )
-
-    links = ""
+        return str(x).strip() or default
+    def esc(x):
+        return html.escape(str(x), quote=True)
+    cat = value("LISTA", "")
+    color = COLORS.get(cat, "#173d59")
+    status = value("STATUS_LIST", "Pendente")
+    nota_id = value("NOTA", "")
+    nearest = value("EQUIPE_MAIS_PROXIMA", "Não consultada")
+    attributed = value("BASE_ATRIBUIDA", "Sem equipe")
+    km = value("DISTANCIA_EQUIPE_KM", "Sem rota OSRM")
+    method = value("METODO_DISTANCIA", "OSRM pendente")
     try:
-        lat = float(r.get("LATITUDE"))
-        lon = float(r.get("LONGITUDE"))
-        if np.isfinite(lat) and np.isfinite(lon):
-            destino = (
-                'https://www.google.com/maps/dir/?api=1&destination='
-                f'{lat:.7f}%2C{lon:.7f}'
-            )
-            origem = (
-                'https://www.google.com/maps/dir/?api=1&origin='
-                f'{lat:.7f}%2C{lon:.7f}'
-            )
-            links = (
-                '<div style="font-size:11px;margin-top:12px;">'
-                'Rotas: '
-                f'<a href="{destino}" target="_blank">Até aqui</a>'
-                ' - '
-                f'<a href="{origem}" target="_blank">Daqui</a>'
-                '</div>'
-            )
+        km = f"{float(km):.2f} km"
     except (TypeError, ValueError):
         pass
-
+    fields = [
+        ("Regional", value("REGIONAL")), ("Município", value("MUNICIPIO")),
+        ("Levantador", value("EQUIPE_CAMPO", "SEM LEVANTADOR")),
+        ("Contrato", value("CONTRATO", "NIP GLOBAL LTDA - EQTL MARANHÃO")),
+        ("Status SAP", value("STATUS_SAP")), ("Status LIST", status),
+        ("Equipe mais próxima", nearest), ("Equipe atribuída", attributed),
+        ("Atividade da equipe", value("ATIVIDADE_EQUIPE")),
+        ("Base da equipe", value("CIDADE_BASE")),
+        ("Distância rodoviária", km), ("Fonte da distância", method),
+        ("Situação", value("STATUS_DISTRIBUICAO")),
+        ("Superponto 50 m", value("SUPER_PONTO", "Não informado")),
+        ("Notas no agrupamento", value("NOTAS_AGRUPADAS", nota_id)),
+        ("Equipes próximas / OSRM", value("RANKING_EQUIPES", "Aguardando consulta")),
+    ]
+    rows = "".join(
+        '<div style="display:grid;grid-template-columns:42% 58%;gap:0;border-bottom:1px solid #dfe5eb;padding:8px 3px">'
+        f'<span style="color:#4b5563">{esc(k)}</span><strong style="overflow-wrap:anywhere">{esc(v)}</strong></div>'
+        for k,v in fields
+    )
+    lat,lon = r.get("LATITUDE"),r.get("LONGITUDE")
+    links = ""
+    try:
+        lat,lon=float(lat),float(lon)
+        if np.isfinite(lat) and np.isfinite(lon):
+            gm=f"https://www.google.com/maps/search/?api=1&query={lat:.7f}%2C{lon:.7f}"
+            earth=f"https://earth.google.com/web/search/{lat:.7f},{lon:.7f}"
+            links=(f'<a target="_blank" style="display:block;background:#087e90;color:white;padding:11px;text-align:center;margin-top:9px;text-decoration:none;font-weight:bold" href="{gm}">ABRIR IMAGEM DE SATÉLITE ↗</a>'
+                   f'<a target="_blank" style="display:block;background:#e5eef2;color:#13607c;padding:9px;text-align:center;margin-top:7px;text-decoration:none" href="{earth}">Abrir no Google Earth Web</a>'
+                   f'<a target="_blank" style="display:block;background:#e5eef2;color:#13607c;padding:9px;text-align:center;margin-top:7px;text-decoration:none" href="{gm}">Abrir no Google Maps</a>')
+    except (TypeError, ValueError):
+        pass
     return (
-        '<div style="background:#fff;color:#171717;'
-        'font-family:Arial,Helvetica,sans-serif;font-size:11px;'
-        'padding:4px 3px 6px;max-width:440px;min-width:260px;">'
-        '<div style="font-weight:700;font-size:12px;'
-        'margin:0 0 10px;">Nota '
-        + esc(numero)
-        + '</div>'
-        + f'<div style="background:{cor};color:white;'
-          'font-weight:700;font-size:11px;padding:8px 9px;'
-          'margin:0 0 3px;">INFORMAÇÕES DA OBRA</div>'
-        + '<table style="width:100%;border-collapse:collapse;'
-          'table-layout:auto;">'
-        + linhas
-        + '</table>'
-        + '<div style="font-size:10px;color:#697386;'
-          'margin-top:7px;line-height:1.3;">'
-          'Distâncias das equipes: linha reta (não OSRM).</div>'
-        + links
-        + '</div>'
+        '<div style="font:12px Arial,sans-serif;color:#26313c;width:315px;max-height:500px;overflow-y:auto;background:white">'
+        f'<div style="background:#173d59;color:white;padding:14px"><small>OBRA / NOTA</small><div style="font-size:21px;font-weight:bold">{esc(nota_id)}</div>'
+        f'<small>{esc(cat)}</small></div>'
+        f'<div style="padding:10px"><div style="display:inline-block;background:{color};color:white;padding:5px 8px;border-radius:3px;margin-bottom:7px">{esc(status)}</div>'
+        f'{rows}{links}</div></div>'
     )
 
 
@@ -2968,2028 +2916,432 @@ def montar_zips_com_progresso(obras, equipes, metros, kml_geral):
     return arquivos
 
 
+
 # ============================================================
-# INTERFACE PRINCIPAL
+# MOTOR DE DISTRIBUICAO: OSRM + GRUPOS INSEPARAVEIS DE 50 M
 # ============================================================
 
-st.markdown(
+def preparar_grupos_50m(obras, metros=50):
+    """Agrupa pontos de todas as categorias ANTES de escolher a equipe.
+
+    Um cluster com atividades incompatíveis só pode ser distribuído
+    integralmente se houver uma equipe apta a ambas (quando existir).
     """
-    <div class="nip-title">
-        📍 NIP | Análise Cruzada e Planejamento
-    </div>
-    <div class="nip-muted">
-        Backlog | Equipes | OSRM |
-        Superpontos | Excel e KML
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
-# REGRAS
-# ============================================================
-
-with st.expander(
-    "📘 Regras de contagem"
-):
-    st.markdown("""
-    **STATUS SAP:** somente FINL e CANC excluídos.
-
-    **STATUS LIST aceitos:**
-    0, Em levantamento e Correção de levantamento.
-
-    **Contratos aceitos:**
-    0 ou NIP GLOBAL LTDA - EQTL MARANHÃO.
-
-    **Colunas M e N:** precisam estar iguais a zero.
-
-    **Colunas B e C:**
-    se B contém equipe diferente de SEM LEVANTADOR
-    e C contém data válida, a nota fica fora
-    da contagem.
-
-    **Duplicadas:** contam uma única vez na
-    volumetria, podendo gerar tarefas distintas.
-
-    **Distância:** a alocação exige rota
-    rodoviária OSRM confirmada.
-
-    **Sem rota confirmada:** a tarefa permanece
-    sem alocação.
-    """)
-
-
-# ============================================================
-# ZERAR ANALISE - NAO ALTERA OUTRAS PAGINAS DO ROTEIRIZADOR
-# ============================================================
-
-def zerar_analise_nip():
-    # A callback ocorre ANTES de criar os widgets nesta execucao.
-    versao_atual = st.session_state.get("nip_analise_versao", 0)
-    for chave in list(st.session_state.keys()):
-        if (
-            chave.startswith("nip_analise_widget_")
-            or chave in {
-                "nipbase", "niproutes", "nipgeom", "capacity_editor",
-                "nip_zip_resultado", "nip_zip_chave", "nip_export_cronometro",
-            }
-        ):
-            del st.session_state[chave]
-    # Novas chaves recriam os uploaders e todos os filtros vazios/padrao.
-    st.session_state["nip_analise_versao"] = versao_atual + 1
-
-
-versao_analise = st.session_state.get("nip_analise_versao", 0)
-
-col_acoes, col_instrucoes = st.columns([1, 3], vertical_alignment="center")
-with col_acoes:
-    st.button(
-        "🗑️ Zerar análise",
-        key="nip_analise_botao_zerar",
-        type="secondary",
-        use_container_width=True,
-        on_click=zerar_analise_nip,
-        help="Remove os arquivos anexados, bases processadas, filtros, programação e progresso OSRM desta análise.",
-    )
-with col_instrucoes:
-    st.caption("Limpa somente a Análise Cruzada; não apaga os arquivos do seu computador nem altera a Lista Contínua.")
-
-
-# ============================================================
-# UPLOAD DAS BASES
-# ============================================================
-
-st.subheader(
-    "📂 Importação das bases"
-)
-
-a, b, c = st.columns(3)
-
-with a:
-    san_file = st.file_uploader(
-        "BASE_SANEAMENTO",
-        type=[
-            "xlsx",
-            "csv"
-        ],
-        key=f"nip_analise_widget_{versao_analise}_0"
-)
-
-with b:
-    lev_file = st.file_uploader(
-        "BASE_LEVANTAMENTO_ATUALIZADA",
-        type=["xlsx"],
-        key=f"nip_analise_widget_{versao_analise}_1"
-)
-
-with c:
-    team_file = st.file_uploader(
-        "LOCALIDADE LEVANTADORES-SANEAMENTO",
-        type=["xlsx"],
-        key=f"nip_analise_widget_{versao_analise}_2"
-)
-
-if not all([
-    san_file,
-    lev_file,
-    team_file
-]):
-    st.info(
-        "Envie os três arquivos obrigatórios."
-    )
-    st.stop()
-
-
-# ============================================================
-# ASSINATURA DOS ARQUIVOS
-# ============================================================
-
-sig = tuple(
-    hashlib.sha256(
-        f.getvalue()
-    ).hexdigest()
-    for f in [
-        san_file,
-        lev_file,
-        team_file
-    ]
-)
-
-
-# ============================================================
-# PROCESSAMENTO - CRONOMETRO COM ATUALIZACAO EM TEMPO REAL
-# ============================================================
-
-PROCESS_STAGES = [
-    ("Lendo a base de Saneamento", 0.13),
-    ("Lendo a base de Levantamento", 0.73),
-    ("Lendo a base de equipes", 0.05),
-    ("Cruzando notas e classificando obras", 0.07),
-    ("Verificando inconsistencias", 0.02),
-]
-
-
-def tempo_legivel(segundos):
-    if segundos is None:
-        return "Calculando..."
-    total = max(0, int(round(segundos)))
-    horas, resto = divmod(total, 3600)
-    minutos, secs = divmod(resto, 60)
-    return (
-        f"{horas:02d}:{minutos:02d}:{secs:02d}"
-        if horas else f"{minutos:02d}:{secs:02d}"
-    )
-
-
-def processar_bases_em_thread(san_bytes, lev_bytes, team_bytes, estado):
-    # Nenhuma chamada st.* dentro da thread: apenas leitura/processamento.
-    class ArquivoMemoria:
-        def __init__(self, dados, nome):
-            self._dados = dados
-            self.name = nome
-
-        def getvalue(self):
-            return self._dados
-
-    def etapa(indice):
-        estado["indice"] = indice
-        estado["inicio_etapa"] = time.monotonic()
-
-    etapa(0)
-    san, sa = load_san(ArquivoMemoria(*san_bytes))
-    etapa(1)
-    lev, info = load_lev(ArquivoMemoria(*lev_bytes))
-    etapa(2)
-    teams = load_teams(ArquivoMemoria(*team_bytes))
-    etapa(3)
-    audit = consolidate(san, lev)
-    etapa(4)
-    errors = anomalies(san, lev, audit, teams)
-    estado["indice"] = len(PROCESS_STAGES)
-    return {
-        "audit": audit,
-        "teams": teams,
-        "san_name": sa,
-        "lev_info": info,
-        "issues": errors,
-    }
-
-
-if st.button(
-    "🚀 Processar bases",
-    type="primary",
-    use_container_width=True
-):
-    inicio_processamento = time.monotonic()
-    estado_progresso = {"indice": 0, "inicio_etapa": inicio_processamento}
-    linha_status = st.empty()
-    barra_status = st.empty()
-    linha_tempo = st.empty()
-
-    # Se os arquivos mudaram, nao utilizar resultados anteriores ao clicar.
-    st.session_state.pop("nipbase", None)
-
-    arquivos = (
-        (san_file.getvalue(), san_file.name),
-        (lev_file.getvalue(), lev_file.name),
-        (team_file.getvalue(), team_file.name),
-    )
-
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                processar_bases_em_thread,
-                *arquivos,
-                estado_progresso
-            )
-
-            while not future.done():
-                decorrido = time.monotonic() - inicio_processamento
-                indice = min(estado_progresso["indice"], len(PROCESS_STAGES)-1)
-                percentual = sum(peso for _, peso in PROCESS_STAGES[:indice])
-                etapa_nome = PROCESS_STAGES[indice][0]
-
-                # A ETA e uma projecao por etapa, nao uma promessa exata.
-                # Primeira etapa: aguarda dados para estimar o restante.
-                restante = (
-                    decorrido / percentual * (1 - percentual)
-                    if percentual >= 0.01 else None
-                )
-                linha_status.info(f"⏳ {etapa_nome}...")
-                barra_status.progress(
-                    max(0.01, min(0.99, percentual)),
-                    text=f"Etapas concluídas: {indice}/{len(PROCESS_STAGES)}"
-                )
-                linha_tempo.markdown(
-                    f"**⏱️ Tempo decorrido:** {tempo_legivel(decorrido)}"
-                    f"　 |　 **⌛ Tempo restante estimado:** {tempo_legivel(restante)}"
-                )
-                time.sleep(0.4)
-
-            # Propaga erros da thread para o tratamento abaixo.
-            resultado = future.result()
-
-        total = time.monotonic() - inicio_processamento
-        resultado.update({
-            "sig": sig,
-            "seconds": total,
-        })
-        st.session_state["nipbase"] = resultado
-        st.session_state.pop("niproutes", None)
-        st.session_state.pop("nipgeom", None)
-
-        linha_status.success("✅ Bases processadas com sucesso.")
-        barra_status.progress(1.0, text="Processamento concluído")
-        linha_tempo.markdown(
-            f"**⏱️ Tempo total:** {tempo_legivel(total)}"
-            "　 |　 **⌛ Tempo restante:** 00:00"
-        )
-
-    except Exception as e:
-        linha_status.error(f"Erro no processamento: {e}")
-        barra_status.empty()
-        linha_tempo.markdown(
-            f"**⏱️ Tempo decorrido:** "
-            f"{tempo_legivel(time.monotonic() - inicio_processamento)}"
-        )
-
-if "nipbase" not in st.session_state:
-    st.stop()
-
-data = st.session_state[
-    "nipbase"
-]
-
-if data["sig"] != sig:
-    st.warning(
-        "Os arquivos mudaram. Processe novamente."
-    )
-    st.stop()
-
-audit = data["audit"]
-teams = data["teams"]
-issues = data["issues"]
-
-st.caption(
-    f"Abas: Saneamento = "
-    f"{data['san_name']} | "
-    f"Levantamento = "
-    f"{data['lev_info']['aba']} | "
-    f"B: {data['lev_info']['B']} | "
-    f"C: {data['lev_info']['C']} | "
-    f"Leitura: {data['seconds']:.1f}s"
-)
-
-
-# ============================================================
-# CONFIGURACOES LATERAIS
-# ============================================================
-
-with st.sidebar:
-    st.header(
-        "⚙️ Planejamento"
-    )
-
-    radius = st.select_slider(
-        "Raio máximo rodoviário (km)",
-        options=list(
-            range(
-                200,
-                501,
-                25
-            )
-        ),
-        value=200,
-        key=f"nip_analise_widget_{versao_analise}_3"
-)
-
-    k = st.slider(
-        "Equipes candidatas por atividade",
-        1,
-        5,
-        3,
-        key=f"nip_analise_widget_{versao_analise}_4"
-)
-
-    super_m = st.slider(
-        "Raio de superponto (m)",
-        5,
-        500,
-        50,
-        5,
-        key=f"nip_analise_widget_{versao_analise}_5"
-)
-
-    medium_days = st.number_input(
-        "Dias para prioridade média",
-        1,
-        365,
-        14,
-        key=f"nip_analise_widget_{versao_analise}_6"
-)
-
-    st.divider()
-
-    st.subheader(
-        "📅 Capacidade"
-    )
-
-    mode = st.selectbox(
-        "Programação",
-        [
-            "POR QUANTIDADE",
-            "POR DIA",
-            "POR SEMANA",
-            "POR MÊS"
-        ],
-        key=f"nip_analise_widget_{versao_analise}_7"
-)
-
-    period_cap = st.number_input(
-        "Tarefas por equipe no período",
-        1,
-        10000,
-        20,
-        key=f"nip_analise_widget_{versao_analise}_8"
-)
-
-    daily_cap = st.number_input(
-        "Tarefas por dia (padrão)",
-        1,
-        100,
-        8,
-        key=f"nip_analise_widget_{versao_analise}_9"
-)
-
-    periods = st.number_input(
-        "Quantidade de períodos",
-        1,
-        52,
-        5,
-        key=f"nip_analise_widget_{versao_analise}_10"
-)
-
-    first_day = st.date_input(
-        "Data inicial",
-        value=datetime.today().date(),
-        key=f"nip_analise_widget_{versao_analise}_11"
-)
-
-    st.divider()
-
-    st.subheader(
-        "🛣️ Rotas reais"
-    )
-
-    server = st.text_input(
-        "OSRM",
-        OSRM,
-        key=f"nip_analise_widget_{versao_analise}_12"
-)
-
-    batch = st.slider(
-        "Consultas por lote",
-        1,
-        25,
-        5,
-        key=f"nip_analise_widget_{versao_analise}_13"
-)
-
-    kml_osrm = st.checkbox(
-        "Incluir traçados reais OSRM no KML",
-        value=False,
-        key=f"nip_analise_widget_{versao_analise}_14"
-)
-
-    geom_batch = st.slider(
-        "Traçados por lote",
-        1,
-        15,
-        4,
-        key=f"nip_analise_widget_{versao_analise}_15"
-)
-
-    st.divider()
-
-    previous = st.file_uploader(
-        "Análise anterior (opcional)",
-        type=["xlsx"],
-        key=f"nip_analise_widget_{versao_analise}_16"
-)
-
-
-# ============================================================
-# DADOS OPERACIONAIS
-# ============================================================
-
-pending = priority(
-    audit[
-        audit[
-            "PENDENTE_CONTAGEM"
-        ].eq("SIM")
-    ].copy(),
-    medium_days
-)
-
-finl = audit[
-    audit[
-        "SAP_FINL"
-    ].eq("SIM")
-]
-
-canc = audit[
-    audit[
-        "SAP_CANC"
-    ].eq("SIM")
-]
-
-field = audit[
-    audit[
-        "JA_EM_CAMPO"
-    ].eq("SIM")
-]
-
-dup = audit[
-    audit[
-        "DUPLICADA"
-    ].eq("SIM")
-]
-
-
-# ============================================================
-# INDICADORES
-# ============================================================
-
-metrics = [
-    (
-        "Saneamento",
-        int(
-            pending[
-                "LISTA"
-            ].eq(CAT_SAN).sum()
-        ),
-        "#2563eb"
-    ),
-    (
-        "Levantamento",
-        int(
-            pending[
-                "LISTA"
-            ].eq(CAT_LEV).sum()
-        ),
-        "#16a34a"
-    ),
-    (
-        "Duplicadas",
-        int(
-            pending[
-                "LISTA"
-            ].eq(CAT_DUP).sum()
-        ),
-        "#9333ea"
-    ),
-    (
-        "Total pendente",
-        len(pending),
-        "#0d256c"
-    ),
-    (
-        "Excluídas",
-        int(
-            audit[
-                "PENDENTE_CONTAGEM"
-            ].eq("NÃO").sum()
-        ),
-        "#dc2626"
-    )
-]
-
-metric_groups = [
-    metrics,
-    [
-        (
-            "FINL",
-            len(finl),
-            "#64748b"
-        ),
-        (
-            "CANC",
-            len(canc),
-            "#ea580c"
-        ),
-        (
-            "Já em campo",
-            len(field),
-            "#0891b2"
-        ),
-        (
-            "Inconsistências",
-            len(issues),
-            "#d97706"
-        )
-    ]
-]
-
-for block in metric_groups:
-    cols = st.columns(
-        len(block)
-    )
-
-    for cn, (
-        label,
-        value,
-        color
-    ) in zip(cols, block):
-
-        cn.markdown(
-            (
-                '<div class="nip-card" '
-                f'style="--accent:{color}">'
-                '<div class="nip-label">'
-                f'{label}'
-                '</div>'
-                '<div class="nip-value">'
-                f'{value:,}'
-                '</div>'
-                '</div>'
-            ),
-            unsafe_allow_html=True
-        )
-
-
-# ============================================================
-# FILTROS OPERACIONAIS
-# ============================================================
-
-st.subheader(
-    "🔎 Filtros operacionais"
-)
-
-f1, f2, f3 = st.columns(3)
-
-with f1:
-    reg = st.multiselect(
-        "Regional",
-        sorted(
-            pending[
-                "REGIONAL"
-            ].fillna("").unique()
-        ),
-        key=f"nip_analise_widget_{versao_analise}_17"
-)
-
-with f2:
-    city = st.multiselect(
-        "Município",
-        sorted(
-            pending[
-                "MUNICIPIO"
-            ].fillna("").unique()
-        ),
-        key=f"nip_analise_widget_{versao_analise}_18"
-)
-
-with f3:
-    prio = st.multiselect(
-        "Prioridade",
-        [
-            "ALTA",
-            "MEDIA",
-            "BAIXA"
-        ],
-        key=f"nip_analise_widget_{versao_analise}_19"
-)
-
-search = st.text_input(
-    "Pesquisar nota",
-        key=f"nip_analise_widget_{versao_analise}_20"
-).strip()
-
-view = pending.copy()
-
-if reg:
-    view = view[
-        view[
-            "REGIONAL"
-        ].isin(reg)
-    ]
-
-if city:
-    view = view[
-        view[
-            "MUNICIPIO"
-        ].isin(city)
-    ]
-
-if prio:
-    view = view[
-        view[
-            "PRIORIDADE_PLANEJAMENTO"
-        ].isin(prio)
-    ]
-
-if search:
-    view = view[
-        view[
-            "NOTA"
-        ].astype(str).str.contains(
-            re.escape(search),
-            case=False,
-            na=False
-        )
-    ]
-
-view = view.reset_index(
-    drop=True
-)
-
-
-# ============================================================
-# CANDIDATOS
-# ============================================================
-
-view, candidates = team_candidates(
-    view,
-    teams,
-    k
-)
-
-if candidates.empty:
-    st.warning(
-        "Nenhuma equipe candidata para "
-        "as obras filtradas."
-    )
-
-
-# ============================================================
-# METAS POR EQUIPE
-# ============================================================
-
-st.subheader(
-    "👥 Metas por equipe"
-)
-
-capacity = teams[
-    [
-        "ID_EQUIPE",
-        "TIPO_EQUIPE",
-        "EQUIPE",
-        "CIDADE_BASE"
-    ]
-].copy()
-
-capacity["CAPACIDADE_DIA"] = int(
-    daily_cap
-)
-
-capacity = st.data_editor(
-    capacity,
-    hide_index=True,
-    use_container_width=True,
-    disabled=[
-        "ID_EQUIPE",
-        "TIPO_EQUIPE",
-        "EQUIPE",
-        "CIDADE_BASE"
-    ],
-    key=f"nip_analise_widget_{versao_analise}_21"
-)
-
-capacity["CAPACIDADE_DIA"] = (
-    pd.to_numeric(
-        capacity["CAPACIDADE_DIA"],
-        errors="coerce"
-    )
-    .fillna(daily_cap)
-    .clip(lower=1)
-    .astype(int)
-)
-
-
-# ============================================================
-# ASSINATURA DAS ROTAS
-# ============================================================
-
-route_key = hashlib.sha256(
-    (
-        candidates.to_json(
-            orient="records"
-        )
-        + str(radius)
-        + server
-    ).encode()
-).hexdigest()
-
-if (
-    "niproutes" not in st.session_state
-    or st.session_state[
-        "niproutes"
-    ]["key"] != route_key
-):
-    st.session_state[
-        "niproutes"
-    ] = {
-        "key": route_key,
-        "df": initial_routes(
-            candidates,
-            radius
-        ),
-        "elapsed": 0.0
-    }
-
-rs = st.session_state[
-    "niproutes"
-]
-
-routes = rs["df"]
-
-waiting = int(
-    routes[
-        "ROTA_STATUS"
-    ].eq("NÃO CONSULTADA").sum()
-)
-
-outside = int(
-    routes[
-        "ROTA_STATUS"
-    ].eq("FORA RAIO GEOGRÁFICO").sum()
-)
-
-done = (
-    len(routes)
-    - waiting
-    - outside
-)
-
-total = done + waiting
-
-
-# ============================================================
-# CONSULTAS RODOVIARIAS
-# ============================================================
-
-st.subheader(
-    "🛣️ Validação rodoviária antes da distribuição"
-)
-
-if total:
-    remaining = (
-        rs["elapsed"]
-        / done
-        * waiting
-        if done
-        else None
-    )
-
-    st.progress(
-        done / total
-    )
-
-    texto_restante = (
-        f"{remaining:.1f}s"
-        if remaining is not None
-        else "calculando"
-    )
-
-    st.caption(
-        f"Consultas: {done}/{total} | "
-        f"Decorrido: {rs['elapsed']:.1f}s | "
-        f"Restante estimado: {texto_restante}"
-    )
-
-else:
-    st.info(
-        "Sem candidatos para consultar."
-    )
-
-if waiting:
-    if st.button(
-        "🚗 Consultar próximo lote OSRM",
-        type="primary"
-    ):
-        msg = st.empty()
-
-        new, processed, spent = (
-            compute_route_batch(
-                routes,
-                0,
-                batch,
-                server,
-                msg
-            )
-        )
-
-        rs["df"] = new
-        rs["elapsed"] += spent
-
-        st.session_state[
-            "niproutes"
-        ] = rs
-
-        st.rerun()
-
-if not waiting and total:
-    st.success(
-        "Consultas rodoviárias concluídas."
-    )
-
-routes = rs["df"]
-
-
-# ============================================================
-# PROGRAMACAO
-# ============================================================
-
-filtered_tasks = tasks_for(
-    view
-)
-
-plan, load = schedule_tasks(
-    filtered_tasks,
-    routes,
-    teams,
-    capacity,
-    mode,
-    periods,
-    first_day,
-    period_cap,
-    daily_cap,
-    radius,
-    True
-)
-
-allocated = (
-    plan[
-        plan[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTÃO")
-    ]
-    if not plan.empty
-    else pd.DataFrame()
-)
-
-
-# ============================================================
-# SUPERPONTOS
-# ============================================================
-
-superpoints, reduction = (
-    merge_superpoints(
-        allocated,
-        super_m
-    )
-)
-
-
-# ============================================================
-# MEDIA DE OBRAS POR ATIVIDADE
-# ============================================================
-
-st.subheader(
-    "📊 Cobertura e médias por atividade"
-)
-
-summary = []
-
-for kind, categories in [
-    (
-        "SANEAMENTO",
-        [
-            CAT_SAN,
-            CAT_DUP
-        ]
-    ),
-    (
-        "LEVANTAMENTO",
-        [
-            CAT_LEV,
-            CAT_DUP
-        ]
-    )
-]:
-    nteam = int(
-        teams[
-            "TIPO_EQUIPE"
-        ].eq(kind).sum()
-    )
-
-    nwork = int(
-        view[
-            "LISTA"
-        ].isin(categories).sum()
-    )
-
-    nalloc = (
-        int(
-            allocated[
-                "ATIVIDADE"
-            ].eq(kind).sum()
-        )
-        if not allocated.empty
-        else 0
-    )
-
-    summary.append({
-        "ATIVIDADE": kind,
-        "EQUIPES": nteam,
-        "OBRAS_DISPONÍVEIS": nwork,
-        "MÉDIA_POR_EQUIPE": (
-            round(
-                nwork / nteam,
-                2
-            )
-            if nteam
-            else 0
-        ),
-        "TAREFAS_ALOCADAS": nalloc,
-        "MÉDIA_PROGRAMADA": (
-            round(
-                nalloc / nteam,
-                2
-            )
-            if nteam
-            else 0
-        )
-    })
-
-summary = pd.DataFrame(
-    summary
-)
-
-st.dataframe(
-    summary,
-    hide_index=True,
-    use_container_width=True
-)
-
-actual_load = (
-    allocated.groupby(
-        "ID_EQUIPE"
-    ).size().to_dict()
-    if not allocated.empty
-    else {}
-)
-
-capacity["TAREFAS_PROGRAMADAS"] = (
-    capacity[
-        "ID_EQUIPE"
-    ].map(actual_load)
-    .fillna(0)
-    .astype(int)
-)
-
-
-# ============================================================
-# HISTORICO
-# ============================================================
-
-new = pd.DataFrame(
-    columns=["NOTA"]
-)
-
-gone = pd.DataFrame(
-    columns=["NOTA"]
-)
-
-if previous is not None:
-    try:
-        new, gone = compare_history(
-            pending,
-            previous
-        )
-
-    except Exception as e:
-        st.warning(
-            f"Histórico não comparado: {e}"
-        )
-
-
-# ============================================================
-# FILTROS DE EXPORTACAO
-# ============================================================
-
-st.subheader(
-    "📦 Escopo das exportações"
-)
-
-exp1, exp2, exp3 = st.columns(3)
-
-with exp1:
-    exp_kind = st.multiselect(
-        "Atividade para exportar",
-        [
-            "SANEAMENTO",
-            "LEVANTAMENTO"
-        ],
-        default=[
-            "SANEAMENTO",
-            "LEVANTAMENTO"
-        ],
-        key=f"nip_analise_widget_{versao_analise}_22"
-)
-
-with exp2:
-    equipes_exportaveis = (
-        sorted(
-            allocated[
-                "EQUIPE_PROGRAMADA"
-            ].dropna().unique().tolist()
-        )
-        if not allocated.empty
-        else []
-    )
-
-    exp_team = st.multiselect(
-        "Equipe para exportar",
-        equipes_exportaveis,
-        key=f"nip_analise_widget_{versao_analise}_23"
-)
-
-with exp3:
-    exp_dates = st.date_input(
-        "Período da programação",
-        value=(
-            first_day,
-            first_day
-            + timedelta(days=30)
-        ),
-        key=f"nip_analise_widget_{versao_analise}_24"
-)
-
-exp_plan = plan.copy()
-
-if not exp_plan.empty:
-    if exp_kind:
-        exp_plan = exp_plan[
-            exp_plan[
-                "ATIVIDADE"
-            ].isin(exp_kind)
-        ]
-
-    else:
-        exp_plan = (
-            exp_plan.iloc[0:0]
-        )
-
-    if exp_team:
-        exp_plan = exp_plan[
-            exp_plan[
-                "EQUIPE_PROGRAMADA"
-            ].isin(exp_team)
-        ]
-
-    if (
-        isinstance(
-            exp_dates,
-            (tuple, list)
-        )
-        and len(exp_dates) == 2
-    ):
-        # Normalize both sides to pandas Timestamp (no date/datetime64 mismatch).
-        dat = pd.to_datetime(
-            exp_plan["DATA_PROGRAMADA"],
-            errors="coerce"
-        ).dt.normalize()
-
-        data_inicial = pd.Timestamp(exp_dates[0]).normalize()
-        data_final = pd.Timestamp(exp_dates[1]).normalize()
-
-        if data_final < data_inicial:
-            data_inicial, data_final = data_final, data_inicial
-
-        mascara_datas = dat.between(
-            data_inicial,
-            data_final,
-            inclusive="both"
-        ).fillna(False)
-
-        exp_plan = exp_plan.loc[mascara_datas].copy()
-
-exp_notas = (
-    set(
-        exp_plan[
-            "NOTA"
-        ].astype(str)
-    )
-    if not exp_plan.empty
-    else set()
-)
-
-if (
-    exp_team
-    or (
-        isinstance(
-            exp_dates,
-            (tuple, list)
-        )
-        and len(exp_dates) == 2
-    )
-):
-    exp_works = view[
-        view[
-            "NOTA"
-        ].astype(str).isin(
-            exp_notas
-        )
-    ]
-
-else:
-    exp_works = view
-
-exp_sp = (
-    superpoints[
-        superpoints[
-            "NOTA"
-        ].astype(str).isin(
-            exp_notas
-        )
-    ]
-    if not superpoints.empty
-    else superpoints
-)
-
-
-# ============================================================
-# PREPARACAO DE TRECHOS PARA KML
-# ============================================================
-
-def build_segments(p):
-    rows = []
-
-    if p.empty:
-        return pd.DataFrame()
-
-    validas = p[
-        p[
-            "STATUS_PROGRAMACAO"
-        ].eq("SUGESTÃO")
-    ]
-
-    for (
-        tid,
-        day
-    ), g in validas.groupby(
-        [
-            "ID_EQUIPE",
-            "DATA_PROGRAMADA"
-        ]
-    ):
-        eq = teams[
-            teams[
-                "ID_EQUIPE"
-            ].eq(tid)
-        ]
-
-        if eq.empty:
+    df = obras.drop_duplicates("NOTA").copy().reset_index(drop=True)
+    df["GRUPO_50M"] = ""
+    ok = df["LATITUDE"].notna() & df["LONGITUDE"].notna()
+    if ok.any():
+        coords = np.radians(df.loc[ok, ["LATITUDE", "LONGITUDE"]].to_numpy(float))
+        labels = DBSCAN(eps=float(metros) / 6371008.8, min_samples=1,
+                        metric="haversine", algorithm="ball_tree").fit_predict(coords)
+        df.loc[ok, "GRUPO_50M"] = [f"G{int(i)+1:06d}" for i in labels]
+    df.loc[~ok, "GRUPO_50M"] = [f"SEM_COORD_{i}" for i in df.index[~ok]]
+    return df
+
+
+def candidatos_grupos(grupos, equipes, quantidade=3):
+    """Pré-seleção geográfica. Nunca confundir esta métrica com distância OSRM."""
+    result = []
+    valid_teams = equipes.dropna(subset=["LAT_EQUIPE", "LON_EQUIPE"])
+    for group_id, sub in grupos.groupby("GRUPO_50M", sort=False):
+        if sub["LATITUDE"].isna().any() or sub["LONGITUDE"].isna().any():
             continue
-
-        lat = float(
-            eq.iloc[0][
-                "LAT_EQUIPE"
-            ]
-        )
-
-        lon = float(
-            eq.iloc[0][
-                "LON_EQUIPE"
-            ]
-        )
-
-        rest = g.to_dict(
-            "records"
-        )
-
-        order = 0
-
-        while rest:
-            distances = [
-                float(
-                    haversine(
-                        lat,
-                        lon,
-                        float(
-                            r["LATITUDE"]
-                        ),
-                        float(
-                            r["LONGITUDE"]
-                        )
-                    )
-                )
-                for r in rest
-            ]
-
-            idx = int(
-                np.argmin(
-                    distances
-                )
-            )
-
-            r = rest.pop(idx)
-
-            order += 1
-
-            rows.append({
-                "NOTA": r["NOTA"],
-                "ATIVIDADE": r["ATIVIDADE"],
-                "EQUIPE": r["EQUIPE_PROGRAMADA"],
-                "ID_EQUIPE": tid,
-                "DATA": day,
-                "ORDEM": order,
-                "LAT1": lat,
-                "LON1": lon,
-                "LAT2": float(r["LATITUDE"]),
-                "LON2": float(r["LONGITUDE"])
-            })
-
-            lat = float(
-                r["LATITUDE"]
-            )
-
-            lon = float(
-                r["LONGITUDE"]
-            )
-
-    return pd.DataFrame(rows)
-
-
-segments = build_segments(
-    exp_plan
-)
-
-
-# ============================================================
-# ASSINATURA DO KML OSRM
-# ============================================================
-
-geom_key = hashlib.sha256(
-    (
-        segments.to_json(
-            orient="records"
-        )
-        + server
-    ).encode()
-).hexdigest()
-
-if (
-    "nipgeom" not in st.session_state
-    or st.session_state[
-        "nipgeom"
-    ]["key"] != geom_key
-):
-    st.session_state[
-        "nipgeom"
-    ] = {
-        "key": geom_key,
-        "cursor": 0,
-        "items": [],
-        "elapsed": 0.0
-    }
-
-geom = st.session_state[
-    "nipgeom"
-]
-
-
-# ============================================================
-# PROCESSAMENTO DOS TRACADOS OSRM
-# ============================================================
-
-if (
-    kml_osrm
-    and not segments.empty
-):
-    st.markdown(
-        "**Traçados OSRM para KML**"
-    )
-
-    nseg = len(segments)
-
-    processed = geom["cursor"]
-
-    left = (
-        geom["elapsed"]
-        / processed
-        * (nseg - processed)
-        if processed
-        else None
-    )
-
-    st.progress(
-        processed / nseg
-    )
-
-    restante_texto = (
-        f"{left:.1f}s"
-        if left is not None
-        else "calculando"
-    )
-
-    st.caption(
-        f"{processed}/{nseg} trechos | "
-        f"Decorrido: {geom['elapsed']:.1f}s | "
-        f"Restante: {restante_texto}"
-    )
-
-    if (
-        processed < nseg
-        and st.button(
-            "🗺️ Traçar próximo lote"
-        )
-    ):
-        t0 = time.monotonic()
-
-        fim = min(
-            processed + geom_batch,
-            nseg
-        )
-
-        for idx in range(
-            processed,
-            fim
-        ):
-            s = segments.iloc[idx]
-
-            resp = osrm_route(
-                round(
-                    s["LAT1"],
-                    6
-                ),
-                round(
-                    s["LON1"],
-                    6
-                ),
-                round(
-                    s["LAT2"],
-                    6
-                ),
-                round(
-                    s["LON2"],
-                    6
-                ),
-                server,
-                True
-            )
-
-            if (
-                resp["ok"]
-                and resp["geometry"]
-            ):
-                geom["items"].append({
-                    **s.to_dict(),
-                    "GEOMETRIA": resp["geometry"],
-                    "KM_RODOVIARIO": resp["km"]
-                })
-
-        geom["cursor"] = fim
-
-        geom["elapsed"] += (
-            time.monotonic()
-            - t0
-        )
-
-        st.session_state[
-            "nipgeom"
-        ] = geom
-
-        st.rerun()
-
-paths = (
-    pd.DataFrame(
-        geom["items"]
-    )
-    if kml_osrm
-    else pd.DataFrame()
-)
-
-
-# ============================================================
-# ABAS
-# ============================================================
-
-names = [
-    "🔵 SANEAMENTO",
-    "🟢 LEVANTAMENTO",
-    "🟣 DUPLICADAS",
-    "📅 PROGRAMAÇÃO",
-    "🏢 SUPERPONTOS",
-    "⚠️ AUDITORIA",
-    "📊 HISTÓRICO",
-    "🗺️ MAPA"
-]
-
-tabs = st.tabs(
-    names
-)
-
-
-# ============================================================
-# CATEGORIAS
-# ============================================================
-
-for tab, kind in zip(
-    tabs[:3],
-    CATS
-):
-    with tab:
-        x = view[
-            view[
-                "LISTA"
-            ].eq(kind)
-        ]
-
-        st.write(
-            f"**{len(x)} obras**"
-        )
-
-        st.dataframe(
-            x,
-            hide_index=True,
-            use_container_width=True
-        )
-
-
-# ============================================================
-# PROGRAMACAO
-# ============================================================
-
-with tabs[3]:
-    st.metric(
-        "Alocadas com OSRM confirmado",
-        len(allocated)
-    )
-
-    st.metric(
-        "Ainda sem alocação",
-        len(plan) - len(allocated)
-    )
-
-    st.dataframe(
-        plan,
-        hide_index=True,
-        use_container_width=True
-    )
-
-    st.dataframe(
-        load,
-        hide_index=True,
-        use_container_width=True
-    )
-
-
-# ============================================================
-# SUPERPONTOS
-# ============================================================
-
-with tabs[4]:
-    quantidade_super = (
-        int(
-            superpoints[
-                "SUPER_PONTO"
-            ].astype(str).str.startswith(
-                "SIM"
-            ).sum()
-        )
-        if not superpoints.empty
-        else 0
-    )
-
-    st.metric(
-        "Superpontos com múltiplas tarefas",
-        quantidade_super
-    )
-
-    st.metric(
-        "Tarefas agrupadas",
-        reduction
-    )
-
-    st.dataframe(
-        safe_excel(
-            superpoints
-        ),
-        hide_index=True,
-        use_container_width=True
-    )
-
-
-# ============================================================
-# AUDITORIA
-# ============================================================
-
-with tabs[5]:
-    t = st.tabs([
-        "Excluídas",
-        "FINL",
-        "CANC",
-        "Já em campo",
-        "Duplicadas totais",
-        "Inconsistências"
-    ])
-
-    frames = [
-        audit[
-            audit[
-                "PENDENTE_CONTAGEM"
-            ].eq("NÃO")
-        ],
-        finl,
-        canc,
-        field,
-        dup,
-        issues
-    ]
-
-    for tab, frame in zip(
-        t,
-        frames
-    ):
-        with tab:
-            st.dataframe(
-                frame,
-                hide_index=True,
-                use_container_width=True
-            )
-
-
-# ============================================================
-# HISTORICO
-# ============================================================
-
-with tabs[6]:
-    st.metric(
-        "Notas novas",
-        len(new)
-    )
-
-    st.metric(
-        "Notas que saíram",
-        len(gone)
-    )
-
-    st.dataframe(
-        new,
-        hide_index=True
-    )
-
-    st.dataframe(
-        gone,
-        hide_index=True
-    )
-
-
-# ============================================================
-# MAPA
-# ============================================================
-
-with tabs[7]:
-    if st.checkbox(
-        "Carregar mapa",
-        key=f"nip_analise_widget_{versao_analise}_25"
-):
-        geo = view.dropna(
-            subset=[
-                "LATITUDE",
-                "LONGITUDE"
-            ]
-        )
-
-        if geo.empty:
-            st.warning(
-                "Sem coordenadas válidas."
-            )
-
-        else:
-            m = folium.Map(
-                location=[
-                    geo[
-                        "LATITUDE"
-                    ].mean(),
-                    geo[
-                        "LONGITUDE"
-                    ].mean()
-                ],
-                zoom_start=7
-            )
-
-            for cat in CATS:
-                fg = folium.FeatureGroup(
-                    name=cat
-                )
-
-                cl = MarkerCluster().add_to(
-                    fg
-                )
-
-                subset = geo[
-                    geo[
-                        "LISTA"
-                    ].eq(cat)
-                ]
-
-                for _, r in subset.iterrows():
-                    folium.Marker(
-                        [
-                            r["LATITUDE"],
-                            r["LONGITUDE"]
-                        ],
-                        popup=folium.Popup(
-                            popup(r),
-                            max_width=450
-                        ),
-                        icon=folium.Icon(
-                            color=MAP_COLORS[
-                                cat
-                            ]
-                        )
-                    ).add_to(cl)
-
-                fg.add_to(m)
-
-            if not paths.empty:
-                fg = folium.FeatureGroup(
-                    name=(
-                        "Traçados rodoviários OSRM"
-                    )
-                )
-
-                for _, s in paths.iterrows():
-                    folium.PolyLine(
-                        [
-                            [
-                                v[1],
-                                v[0]
-                            ]
-                            for v in s["GEOMETRIA"]
-                        ],
-                        color="blue",
-                        weight=3
-                    ).add_to(fg)
-
-                fg.add_to(m)
-
-            folium.LayerControl().add_to(
-                m
-            )
-
-            st_folium(
-                m,
-                use_container_width=True,
-                height=570
-            )
-
-
-# ============================================================
-# EXPORTACOES
-# ============================================================
-
-st.subheader(
-    "📥 Exportações"
-)
-
-book = excel_bytes({
-    "RESUMO": summary,
-    "CONSOLIDADO": view,
-    "PROGRAMACAO": exp_plan,
-    "CARGA": load,
-    "SUPERPONTOS": exp_sp,
-    "EQUIPES": capacity,
-    "CANDIDATOS OSRM": routes,
-    "AUDITORIA COMPLETA": audit,
-    "INCONSISTENCIAS": issues,
-    "DUPLICADAS": dup,
-    "FINL": finl,
-    "CANC": canc,
-    "JA EM CAMPO": field,
-    "NOVAS": new,
-    "SAIRAM": gone,
-    "PARAMETROS": parametros,
-    "DISTRIBUICAO POR EQUIPE": distribuicao_geral,
-    "CARGA DETALHADA": resumo_equipes_detalhado,
-    "SEM EQUIPE": sem_equipe_relatorio,
-    "VALIDACAO": pd.DataFrame([conferencia]),
-})
-
-# KML GERAL: todas as obras PENDENTES, independentemente dos filtros
-# de programacao, equipe, periodo e prioridade. Exporta apenas notas
-# com coordenadas validas. Nao cria trajetos/rotas inventados.
-# Enriquece TODAS as notas pendentes para o KML geral, não apenas
-# as notas selecionadas nos filtros de programação. O cálculo inicial
-# de proximidade é geográfico e não se confunde com distância OSRM.
-kml_total_works, _ = team_candidates(
-    pending.dropna(subset=["LATITUDE", "LONGITUDE"]).copy(),
-    teams,
-    k
-)
-kml = kml_bytes(
-    kml_total_works,
-    name="NIP - Todas as Obras Pendentes"
-)
-
-# KML FILTRADO: mantem o comportamento anterior, inclusive
-# superpontos e trajetos calculados para a programacao selecionada.
-kml_filtrado = kml_bytes(
-    exp_works,
-    exp_sp,
-    paths,
-    name="NIP - Obras Programadas / Filtradas"
-)
-
-st.caption(
-    f"KML geral: {len(kml_total_works):,} notas pendentes com coordenadas | "
-    f"Notas pendentes sem coordenadas: "
-    f"{len(pending) - len(kml_total_works):,} | "
-    f"KML filtrado: {len(exp_works.dropna(subset=['LATITUDE', 'LONGITUDE'])):,} notas"
-)
-
-
-# ============================================================
-# ZIPS POR EQUIPE - PADRAO LISTA CONTINUA
-# ============================================================
-# Este ZIP independe do estado das consultas OSRM, do periodo e das
-# equipes programadas. Cada nota pendente com coordenadas validas
-# e atribuida a uma unica equipe fisicamente mais proxima, dentro da
-# atividade aplicavel, com distancia identificada como LINHA RETA.
-# A distribuicao de notas nao depende da geracao dos arquivos ZIP.
-# Mantem a mesma funcao Haversine do codigo original.
-distribuicao_geral = distribuicao_lista_cache(kml_total_works, teams)
-conferencia = conferir_distribuicao(kml_total_works, distribuicao_geral)
-resumo_equipes_detalhado = resumo_detalhado_equipes(distribuicao_geral, teams)
-sem_equipe = tabela_sem_equipe(distribuicao_geral)
-resumo_equipes = resumo_equipes_detalhado
-# Incluir no relatorio gerencial tambem obras fora da distribuicao por falta
-# de coordenadas, sem alterar o ZIP e a logica original de distribuicao.
-sem_coordenadas = pending[pending["LATITUDE"].isna() | pending["LONGITUDE"].isna()].copy()
-if not sem_coordenadas.empty:
-    sem_coordenadas["MOTIVO_SEM_EQUIPE"] = "SEM COORDENADAS VALIDAS"
-    sem_coordenadas["STATUS_DISTRIBUICAO"] = "SEM COORDENADAS"
-sem_equipe_relatorio = pd.concat([sem_equipe, sem_coordenadas], ignore_index=True)
-
-st.markdown("### ✅ Conferência automática da distribuição")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Notas pendentes com coordenadas", conferencia["PENDENTES"])
-c2.metric("Distribuídas", conferencia["DISTRIBUIDAS"])
-c3.metric("Sem equipe", conferencia["SEM_EQUIPE"])
-c4.metric("Repetições indevidas", conferencia["DUPLICADAS_INDEVIDAS"])
-if conferencia["OK"]:
-    st.success("Conferência aprovada: nenhuma nota perdida ou repetida na distribuição.")
-else:
-    st.error("A distribuição apresenta divergências. Geração de ZIPs bloqueada até correção.")
-    st.write("Faltantes:", conferencia["FALTANTES"][:20], "Extras:", conferencia["EXTRAS"][:20])
-
-st.markdown("### 📊 Carga operacional detalhada por equipe")
-filtra_tipo_eq = st.multiselect(
-    "Tipos de equipe no painel", ["SANEAMENTO", "LEVANTAMENTO"],
-    default=["SANEAMENTO", "LEVANTAMENTO"], key=f"nip_analise_widget_{versao_analise}_painel_tipo"
-)
-painel_eq = resumo_equipes_detalhado[resumo_equipes_detalhado["TIPO_EQUIPE"].isin(filtra_tipo_eq)]
-st.dataframe(painel_eq, hide_index=True, use_container_width=True)
-if not painel_eq.empty:
-    st.bar_chart(painel_eq.set_index("EQUIPE")["OBRAS"])
-
-with st.expander("🔎 Consultar uma nota e a equipe atribuída"):
-    pesquisa_nota = st.text_input("Número da nota", key=f"nip_analise_widget_{versao_analise}_nota_atribuida")
-    if pesquisa_nota.strip():
-        found = distribuicao_geral[distribuicao_geral["NOTA"].astype(str).str.contains(
-            re.escape(pesquisa_nota.strip()), na=False, case=False
+        tipos = [set(activity(cat)) for cat in sub["LISTA"]]
+        admissible = set.intersection(*tipos) if tipos else set()
+        elig = valid_teams[valid_teams["TIPO_EQUIPE"].isin(admissible)].copy()
+        if elig.empty:
+            continue
+        lat = float(sub["LATITUDE"].mean())
+        lon = float(sub["LONGITUDE"].mean())
+        elig["KM_RETA_PREFILTRO"] = haversine(lat, lon, elig["LAT_EQUIPE"].to_numpy(float), elig["LON_EQUIPE"].to_numpy(float))
+        for _, e in elig.nsmallest(int(quantidade), "KM_RETA_PREFILTRO").iterrows():
+            result.append({"GRUPO_50M":group_id,"ID_EQUIPE":e["ID_EQUIPE"],
+                           "EQUIPE":e["EQUIPE"],"TIPO_EQUIPE":e["TIPO_EQUIPE"],
+                           "CIDADE_BASE":e["CIDADE_BASE"],"LAT_OBRA":lat,"LON_OBRA":lon,
+                           "LAT_EQUIPE":float(e["LAT_EQUIPE"]),"LON_EQUIPE":float(e["LON_EQUIPE"]),
+                           "KM_RETA_PREFILTRO":float(e["KM_RETA_PREFILTRO"]),
+                           "NOTAS_GRUPO":len(sub),"KM_OSRM":np.nan,"MIN_OSRM":np.nan,
+                           "STATUS_OSRM":"PENDENTE"})
+    return pd.DataFrame(result, columns=["GRUPO_50M","ID_EQUIPE","EQUIPE","TIPO_EQUIPE","CIDADE_BASE",
+                                         "LAT_OBRA","LON_OBRA","LAT_EQUIPE","LON_EQUIPE",
+                                         "KM_RETA_PREFILTRO","NOTAS_GRUPO","KM_OSRM","MIN_OSRM","STATUS_OSRM"])
+
+
+def atribuir_por_osrm(grupos, candidatos, equipes, limite=999, balancear=True, limite_km=300):
+    """Alocação atômica por cluster, exclusivamente com OSRM confirmado.
+
+    Limites configuraveis de obras e km por equipe. O consumo em km e uma
+    estimativa conservadora de ida e volta BASE-GRUPO-BASE (2 x OSRM).
+    Nao e quilometragem de uma rota sequencial otimizada.
+    Nenhuma distancia Haversine e usada como km rodoviario.
+    """
+    out = grupos.copy()
+    for col_name in ["BASE_ATRIBUIDA","ID_EQUIPE","ATIVIDADE_EQUIPE","CIDADE_BASE",
+                     "EQUIPE_MAIS_PROXIMA","RANKING_EQUIPES","METODO_DISTANCIA"]:
+        out[col_name] = ""
+    out["DISTANCIA_EQUIPE_KM"] = np.nan
+    out["KM_IDA_VOLTA_GRUPO"] = np.nan
+    out["KM_TOTAL_ESTIMADO_EQUIPE"] = np.nan
+    out["STATUS_DISTRIBUICAO"] = "SEM ROTA OSRM CONFIRMADA"
+    out["TIPO_OBRA"] = out["LISTA"].map(classificar_tipo_obra)
+    out["SUPER_PONTO"] = out["GRUPO_50M"]
+    out["NOTAS_AGRUPADAS"] = out.groupby("GRUPO_50M")["NOTA"].transform(lambda x: ", ".join(x.astype(str)))
+    load = {str(k):0 for k in equipes["ID_EQUIPE"]}
+    km_load = {str(k):0.0 for k in equipes["ID_EQUIPE"]}
+    if candidatos.empty:
+        return out
+    valid = candidatos[(candidatos["STATUS_OSRM"] == "CONFIRMADA") & candidatos["KM_OSRM"].notna()].copy()
+    # Grupos com menos opções primeiro; grupos grandes antes de pequenos.
+    count = valid.groupby("GRUPO_50M").size().to_dict()
+    order = sorted(out["GRUPO_50M"].unique(), key=lambda g:(count.get(g,0), -int((out["GRUPO_50M"]==g).sum()),g))
+    for gid in order:
+        mask = out["GRUPO_50M"].eq(gid)
+        size = int(mask.sum())
+        options = valid[valid["GRUPO_50M"].eq(gid)].sort_values("KM_OSRM")
+        if options.empty:
+            out.loc[mask,"STATUS_DISTRIBUICAO"] = "SEM ROTA OSRM CONFIRMADA"
+            continue
+        ranking = " | ".join(f"{r.EQUIPE}: {r.KM_OSRM:.2f} km" for r in options.itertuples())
+        out.loc[mask,"RANKING_EQUIPES"] = ranking
+        out.loc[mask,"EQUIPE_MAIS_PROXIMA"] = str(options.iloc[0]["EQUIPE"])
+        capacidade_ok = options[options["ID_EQUIPE"].map(
+            lambda i: load[str(i)] + size <= int(limite)
         )]
-        if found.empty:
-            st.info("Nota não encontrada nas obras pendentes com coordenadas.")
+        if capacidade_ok.empty:
+            out.loc[mask,"STATUS_DISTRIBUICAO"] = "LIMITE DE OBRAS / GRUPO INSEPARÁVEL"
+            continue
+        # Cada grupo de ate 50 m constitui uma visita. Para nao subestimar
+        # deslocamento quando falta a rota sequencial, reservar ida e volta
+        # entre a base da equipe e o centro do grupo, com distancia OSRM.
+        eligible = capacidade_ok[capacidade_ok.apply(
+            lambda r: km_load[str(r["ID_EQUIPE"])] + 2.0 * float(r["KM_OSRM"])
+            <= float(limite_km) + 1e-9, axis=1
+        )]
+        if eligible.empty:
+            out.loc[mask,"STATUS_DISTRIBUICAO"] = "LIMITE DE KM ESTIMADOS DA EQUIPE"
+            continue
+        if balancear:
+            minimum = float(options.iloc[0]["KM_OSRM"])
+            # Não deslocar a equipe para um destino muito distante só para equilibrar.
+            competitive = eligible[eligible["KM_OSRM"] <= max(minimum*1.25, minimum+2.0)]
+            if not competitive.empty:
+                eligible = competitive
+            chosen = min((r for _,r in eligible.iterrows()),
+                         key=lambda r:(load[str(r["ID_EQUIPE"])],float(r["KM_OSRM"])))
         else:
-            st.dataframe(found[[x for x in ["NOTA", "TIPO_OBRA", "MUNICIPIO", "BASE_ATRIBUIDA", "ATIVIDADE_EQUIPE", "CIDADE_BASE", "DISTANCIA_EQUIPE_KM", "METODO_DISTANCIA", "STATUS_DISTRIBUICAO"] if x in found.columns]], hide_index=True, use_container_width=True)
+            chosen = eligible.iloc[0]
+        eq_id = str(chosen["ID_EQUIPE"])
+        load[eq_id] += size
+        km_visita = 2.0 * float(chosen["KM_OSRM"])
+        km_load[eq_id] += km_visita
+        out.loc[mask,"KM_IDA_VOLTA_GRUPO"] = round(km_visita, 2)
+        out.loc[mask,"BASE_ATRIBUIDA"] = chosen["EQUIPE"]
+        out.loc[mask,"ID_EQUIPE"] = eq_id
+        out.loc[mask,"ATIVIDADE_EQUIPE"] = chosen["TIPO_EQUIPE"]
+        out.loc[mask,"CIDADE_BASE"] = chosen["CIDADE_BASE"]
+        out.loc[mask,"DISTANCIA_EQUIPE_KM"] = float(chosen["KM_OSRM"])
+        out.loc[mask,"METODO_DISTANCIA"] = "OSRM RODOVIÁRIO CONFIRMADO"
+        out.loc[mask,"STATUS_DISTRIBUICAO"] = "EQUIPE MAIS PROXIMA"  # Compatibilidade com exports originais
+    # Repetir o total por equipe nos registros apenas para consulta/exportacao.
+    # Nao somar esta coluna por NOTA, pois um grupo pode conter varias notas.
+    out["KM_TOTAL_ESTIMADO_EQUIPE"] = out["ID_EQUIPE"].map(km_load)
+    out.loc[out["ID_EQUIPE"].eq(""), "KM_TOTAL_ESTIMADO_EQUIPE"] = np.nan
+    out["EQUIPE_PROGRAMADA"] = out["BASE_ATRIBUIDA"]
+    return out
 
-with st.expander(f"⚠️ Relatório de obras sem equipe ou sem coordenadas ({len(sem_equipe_relatorio)})"):
-    if sem_equipe_relatorio.empty:
-        st.success("Todas as notas do conjunto de distribuição foram atribuídas.")
-    else:
-        st.dataframe(sem_equipe_relatorio, hide_index=True, use_container_width=True)
-        st.download_button("📥 Excel - sem equipe", excel_bytes({"SEM EQUIPE":sem_equipe_relatorio}), "NIP_Sem_Equipe.xlsx", key=f"nip_analise_widget_{versao_analise}_sem_eq")
 
-parametros = parametros_analise({
-    "Gerado em": datetime.now().isoformat(timespec="seconds"),
-    "Base saneamento": data["san_name"],
-    "Base levantamento": data["lev_info"]["aba"],
-    "Raio rodoviario km": radius,
-    "Candidatos por atividade": k,
-    "Superponto metros": super_m,
-    "Prioridade media dias": medium_days,
-    "Modalidade programacao": mode,
-    "Periodo capacidade": period_cap,
-    "Capacidade diaria": daily_cap,
-    "Numero de periodos": periods,
-    "Inicio": first_day,
-    "OSRM endpoint": server,
-    "KML com geometria OSRM": kml_osrm,
-    "Filtro regional": reg,
-    "Filtro municipio": city,
-    "Filtro prioridade": prio,
-    "Filtro pesquisa": search,
-    "Metodo distribuicao ZIP": "HAVERSINE - EQUIPE MAIS PROXIMA",
-    "Pendentes totais": len(pending),
-    "Pendentes com coordenadas": len(kml_total_works),
-    "Pendentes sem coordenadas": len(pending) - len(kml_total_works),
-})
-with st.expander("🧾 Parâmetros utilizados nesta análise"):
-    st.dataframe(parametros, hide_index=True, use_container_width=True)
-    st.download_button("📥 Exportar parâmetros", excel_bytes({"PARAMETROS": parametros}), "NIP_Parametros.xlsx", key=f"nip_analise_widget_{versao_analise}_params")
+def validar_distribuicao_nova(pendentes, distribuicao, limite, limite_km=300):
+    base = set(pendentes["NOTA"].astype(str))
+    dest = distribuicao["NOTA"].astype(str)
+    alocados = distribuicao[distribuicao["STATUS_DISTRIBUICAO"]=="EQUIPE MAIS PROXIMA"]
+    cargas = alocados.groupby("ID_EQUIPE")["NOTA"].nunique()
+    split = alocados.groupby("GRUPO_50M")["ID_EQUIPE"].nunique()
+    # Um superponto e uma visita: nao somar os km para cada nota agrupada.
+    visitas = alocados.drop_duplicates(["ID_EQUIPE", "GRUPO_50M"])
+    km_equipes = visitas.groupby("ID_EQUIPE")["KM_IDA_VOLTA_GRUPO"].sum()
+    return {"Notas originais":len(base),"Notas únicas no resultado":len(set(dest)),
+            "Duplicações indevidas":int(dest.duplicated().sum()),
+            "Notas ausentes":len(base-set(dest)),
+            "Equipes acima do limite":int((cargas>limite).sum()),
+            "Equipes acima do limite KM":int((km_equipes>float(limite_km)+1e-6).sum()),
+            "KM estimados reservados":round(float(km_equipes.sum()),2),
+            "Grupos 50 m divididos":int((split>1).sum()),
+            "Alocadas com OSRM":len(alocados),"Sem alocação":len(distribuicao)-len(alocados)}
 
-stamp_zip = datetime.now().strftime("%d.%m.%Y")
-inventario = inventario_zips(distribuicao_geral, teams, stamp_zip)
-with st.expander("📁 Prévia de todos os arquivos do ZIP"):
-    st.dataframe(inventario, hide_index=True, use_container_width=True)
-    if not inventario.empty:
-        st.caption(f"Excel: {(inventario['PACOTE']=='EXCEL').sum()} arquivos | KML: {(inventario['PACOTE']=='KML').sum()} arquivos")
 
-# A chave inclui conteudo relevante, equipes, superpontos e bytes do KML.
-zip_chave = hashlib.sha256((
-    distribuicao_geral.to_json(orient="records", date_format="iso")
-    + teams.to_json(orient="records") + str(super_m)
-).encode("utf-8") + kml).hexdigest()
-if st.session_state.get("nip_zip_chave") != zip_chave:
-    st.session_state.pop("nip_zip_resultado", None)
-    st.session_state["nip_zip_chave"] = zip_chave
-
-st.markdown("### 📦 ZIPs por equipe — gerar somente quando solicitado")
-st.caption("A distribuição acima é calculada de modo independente; somente a criação dos arquivos ZIP depende do botão.")
-if st.button("⚙️ Gerar ZIPs Excel e KML por equipe", disabled=not conferencia["OK"],
-             key=f"nip_analise_widget_{versao_analise}_gerar_zip", type="primary"):
-    with st.spinner("Preparando os arquivos por equipe..."):
-        st.session_state["nip_zip_resultado"] = montar_zips_com_progresso(
-            kml_total_works, teams, super_m, kml
-        )
-
-zip_excel_equipes = None
-zip_kml_equipes = None
-if st.session_state.get("nip_zip_resultado") is not None:
-    zip_excel_equipes, zip_kml_equipes, _, _, _ = st.session_state["nip_zip_resultado"]
-    st.success(f"ZIPs preparados: Excel {len(zip_excel_equipes)/1024/1024:.1f} MB | KML {len(zip_kml_equipes)/1024/1024:.1f} MB")
+def zip_distribuicao_osrm(df, equipes, metros, kml_geral, progresso=None):
+    """ZIPs são produzidos da atribuição OSRM já validada; nunca recalcular por Haversine."""
+    distrib = df.copy()
+    com = distrib[distrib["STATUS_DISTRIBUICAO"]=="EQUIPE MAIS PROXIMA"].copy()
+    sem = distrib[distrib["STATUS_DISTRIBUICAO"]!="EQUIPE MAIS PROXIMA"].copy()
+    resumo = resumo_detalhado_equipes(distrib,equipes)
+    stamp = datetime.now().strftime("%d.%m.%Y")
+    ex,km=io.BytesIO(),io.BytesIO()
+    total=int(com["ID_EQUIPE"].nunique())
+    with zipfile.ZipFile(ex,"w",zipfile.ZIP_DEFLATED) as zx,zipfile.ZipFile(km,"w",zipfile.ZIP_DEFLATED) as zk:
+        zx.writestr(f"Resumo_Operacional - {stamp}.xlsx",excel_bytes({"Resumo":resumo,"Sem equipe":sem}))
+        zx.writestr(f"Demanda_ListaContinua_Total - {stamp}.xlsx",excel_bytes({"Distribuicao":distrib}))
+        zk.writestr(f"ROTA_TOTAL - {stamp}.kml",kml_geral)
+        for idx,(eqid,group) in enumerate(com.groupby("ID_EQUIPE",sort=True),start=1):
+            r=group.iloc[0]
+            tipo=str(r["ATIVIDADE_EQUIPE"])
+            filename=nome_seguro_equipe(r["BASE_ATRIBUIDA"],eqid)
+            excel_rows,kml_rows=agrupar_rota_equipe(group,metros)
+            zx.writestr(f"Rotas_{stamp}/{tipo}/Rota_{filename}.xlsx",excel_bytes({"Obras Roteirizadas":excel_rows}))
+            zk.writestr(f"KML_{stamp}/{tipo}/Rota_{filename}.kml",kml_bytes(kml_rows,name=f"Equipe {r['BASE_ATRIBUIDA']}"))
+            if progresso: progresso(idx,total,str(r["BASE_ATRIBUIDA"]))
+    return ex.getvalue(),km.getvalue()
 
 
 # ============================================================
-# DOWNLOADS GERAIS
+# NOVA INTERFACE
 # ============================================================
 
-first, second, third, fourth = (
-    st.columns(4)
-)
+st.title("📍 NIP | Análise Cruzada e Distribuição Rodoviária")
+st.caption("Saneamento + Levantamento + equipes | OSRM real | 50 m inseparáveis | distribuição controlada")
 
-with first:
-    st.download_button(
-        "📊 Excel geral",
-        book,
-        "NIP_Analise.xlsx",
-        use_container_width=True
+def zerar_tudo():
+    for k in list(st.session_state):
+        if k.startswith("nipv2_"):
+            del st.session_state[k]
+    st.session_state["nipv2_versao"] = st.session_state.get("nipv2_versao",0)+1
+
+versao = st.session_state.get("nipv2_versao",0)
+st.button("🗑️ Zerar análise",on_click=zerar_tudo,help="Limpa arquivos, rotas OSRM e distribuição desta página")
+with st.expander("Regras de inclusão e atribuição"):
+    st.markdown("""As bases são cruzadas por **NOTA = PROTOCOLO**, contando a nota uma única vez.
+    FINL e CANC são excluídas; permanecem os demais filtros originais de LIST, contrato,
+    colunas M/N e obras já em campo (B/C). Obras a até **50 m** formam grupos inseparáveis.
+    Distâncias exibidas como rodoviárias só aparecem após confirmação OSRM.
+    A distribuição equilibra a carga entre equipes com rotas competitivas, respeitando os limites de obras e quilometragem selecionados.
+    **Não há garantia matemática de trajetos sem cruzamentos** sem otimização global das rotas;
+    esta versão minimiza deslocamentos pela proximidade rodoviária e agrupamento territorial.""")
+
+up1,up2,up3=st.columns(3)
+with up1: san_file=st.file_uploader("Base SANEAMENTO",type=["xlsx","csv"],key=f"nipv2_san_{versao}")
+with up2: lev_file=st.file_uploader("Base LEVANTAMENTO",type=["xlsx"],key=f"nipv2_lev_{versao}")
+with up3: team_file=st.file_uploader("Localização das EQUIPES",type=["xlsx"],key=f"nipv2_team_{versao}")
+if not all((san_file,lev_file,team_file)):
+    st.info("Envie as três bases para iniciar a análise.")
+    st.stop()
+
+signature=hashlib.sha256(san_file.getvalue()+lev_file.getvalue()+team_file.getvalue()).hexdigest()
+if st.session_state.get("nipv2_signature")!=signature:
+    for k in ["nipv2_data","nipv2_candidates","nipv2_zip","nipv2_signature"]:
+        st.session_state.pop(k,None)
+    st.session_state["nipv2_signature"]=signature
+
+if st.button("🚀 Cruzar e validar as três bases",type="primary"):
+    with st.spinner("Lendo arquivos, aplicando exclusões e cruzando as notas..."):
+        try:
+            san,san_name=load_san(san_file)
+            lev,lev_info=load_lev(lev_file)
+            teams=load_teams(team_file)
+            audit=consolidate(san,lev)
+            issues=anomalies(san,lev,audit,teams)
+            st.session_state["nipv2_data"]={"audit":audit,"teams":teams,"issues":issues,"san_name":san_name,"lev_info":lev_info}
+        except Exception as exc:
+            st.error(f"Falha ao processar as bases: {exc}")
+if "nipv2_data" not in st.session_state:
+    st.stop()
+
+data=st.session_state["nipv2_data"]
+audit,teams=data["audit"],data["teams"]
+pending=audit[audit["PENDENTE_CONTAGEM"].eq("SIM")].copy().reset_index(drop=True)
+finl=audit[audit["SAP_FINL"].eq("SIM")]
+canc=audit[audit["SAP_CANC"].eq("SIM")]
+field=audit[audit["JA_EM_CAMPO"].eq("SIM")]
+duplicadas=pending[pending["DUPLICADA"].eq("SIM")]
+
+cols=st.columns(6)
+for c,(title,val) in zip(cols,[
+    ("Saneamento",int((pending["LISTA"]==CAT_SAN).sum())),
+    ("Levantamento",int((pending["LISTA"]==CAT_LEV).sum())),
+    ("Nas duas bases",len(duplicadas)),("Pendentes únicas",len(pending)),
+    ("SAP FINL",len(finl)),("SAP CANC",len(canc))]):
+    c.metric(title,f"{val:,}".replace(",","."))
+
+st.subheader("1. Agrupamento e cálculo de distância OSRM")
+a,b=st.columns(2)
+with a:
+    limit=int(st.number_input(
+        "Quantidade máxima de obras por equipe",
+        min_value=1,max_value=999,value=999,step=1,
+        help="Selecione de 1 a 999 notas por equipe. Notas a ate 50 m permanecem juntas."
+    ))
+with b:
+    distancia_extra=st.checkbox(
+        "Permitir distância extra (acima de 300 km)",value=False,
+        help="Desbloqueia valores acima do limite padrao de 300 km por equipe."
     )
-
-with second:
-    st.download_button(
-        "🗺️ KML TODAS AS OBRAS PENDENTES",
-        kml,
-        "NIP_Obras.kml",
-        use_container_width=True
-    )
-
-with third:
-    if zip_excel_equipes is not None:
-        st.download_button(
-            "📦 ZIP Excel equipes (Lista Contínua)",
-            zip_excel_equipes, "NIP_Excel_Equipes.zip",
-            use_container_width=True
-        )
-    else:
-        st.info("Gere o ZIP Excel no botão acima.")
-
-with fourth:
-    if zip_kml_equipes is not None:
-        st.download_button(
-            "📦 ZIP KML equipes (Lista Contínua)",
-            zip_kml_equipes, "NIP_KML_Equipes.zip",
-            use_container_width=True
-        )
-    else:
-        st.info("Gere o ZIP KML no botão acima.")
-
-# Este download respeita filtros e programacao; o KML geral acima nao.
-st.download_button(
-    "🗺️ KML filtrado / programado",
-    kml_filtrado,
-    "NIP_Obras_Filtradas.kml",
-    mime="application/vnd.google-earth.kml+xml",
-    use_container_width=True
-)
-
-
-# ============================================================
-# DOWNLOADS ESPECIFICOS
-# ============================================================
-
-c1, c2, c3, c4 = (
-    st.columns(4)
-)
-
-with c1:
-    st.download_button(
-        "Duplicadas Excel",
-        excel_bytes({
-            "DUPLICADAS": dup
-        }),
-        "Duplicadas.xlsx",
-        use_container_width=True
-    )
-
-with c2:
-    st.download_button(
-        "FINL Excel",
-        excel_bytes({
-            "FINL": finl
-        }),
-        "FINL.xlsx",
-        use_container_width=True
-    )
-
-with c3:
-    st.download_button(
-        "CANC Excel",
-        excel_bytes({
-            "CANC": canc
-        }),
-        "CANC.xlsx",
-        use_container_width=True
-    )
-
-with c4:
-    st.download_button(
-        "Já em campo Excel",
-        excel_bytes({
-            "JA EM CAMPO": field
-        }),
-        "Em_Campo.xlsx",
-        use_container_width=True
-    )
-
-# Também inclui a relação de equipes no KML exclusivo de duplicadas.
-dup_com_equipes, _ = team_candidates(
-    dup,
-    teams,
-    k
-)
-st.download_button(
-    "🟣 KML de duplicadas",
-    kml_bytes(
-        dup_com_equipes,
-        name="NIP - Duplicadas"
-    ),
-    "NIP_Duplicadas.kml"
-)
-
-
-# ============================================================
-# RODAPE
-# ============================================================
-
+    limite_km=int(st.number_input(
+        "Quilometragem máxima estimada por equipe (km)",
+        min_value=1,max_value=10000 if distancia_extra else 300,
+        value=500 if distancia_extra else 300,step=1,
+        help="Reserva 2 x distancia OSRM base-grupo para cada grupo atendido. "
+             "Nao equivale ao total de uma rota sequencial otimizada."
+    ))
 st.caption(
-    "Distâncias de alocação exigem confirmação "
-    "OSRM. A programação é sugestiva, considera "
-    "dias úteis (sem feriados) e requer "
-    "revisão operacional."
+    f"Limites selecionados: **{limit} obras/equipe** e **{limite_km} km/equipe**. "
+    "Os km representam ida e volta rodoviaria estimada entre a base e cada grupo "
+    "de obras (ate 50 m), e nao um roteiro sequencial definitivo."
 )
+a,b=st.columns(2)
+with a: n_near=st.slider("Equipes candidatas por grupo",1,8,3)
+with b: batch=st.slider("Consultas OSRM por lote",10,200,50,step=10)
+server=st.text_input("Servidor OSRM",value=OSRM)
+balance=st.checkbox("Equilibrar equipes quando as distâncias OSRM forem competitivas",value=True)
+
+clusters=preparar_grupos_50m(pending,50)
+route_key=hashlib.sha256((signature+str(n_near)+server).encode()).hexdigest()
+if st.session_state.get("nipv2_route_key")!=route_key:
+    st.session_state["nipv2_candidates"]=candidatos_grupos(clusters,teams,n_near)
+    st.session_state["nipv2_route_key"]=route_key
+    st.session_state.pop("nipv2_zip",None)
+candidates=st.session_state["nipv2_candidates"]
+if not candidates.empty:
+    remaining=candidates.index[candidates["STATUS_OSRM"].eq("PENDENTE")].tolist()
+    completed=len(candidates)-len(remaining)
+    st.progress(completed/max(1,len(candidates)),text=f"Consultas OSRM concluídas: {completed}/{len(candidates)}")
+    st.caption(f"Restantes: {len(remaining)}. Consultas são realizadas somente ao clicar no botão, para evitar sobrecarregar o OSRM público.")
+    if remaining and st.button("🛣️ Consultar próximo lote OSRM",type="primary"):
+        start=time.monotonic()
+        todo=remaining[:batch]
+        progress=st.progress(0.0)
+        for i,idx in enumerate(todo,1):
+            r=candidates.loc[idx]
+            answer=osrm_route(round(float(r["LAT_EQUIPE"]),6),round(float(r["LON_EQUIPE"]),6),
+                              round(float(r["LAT_OBRA"]),6),round(float(r["LON_OBRA"]),6),server)
+            candidates.at[idx,"STATUS_OSRM"]="CONFIRMADA" if answer.get("ok") else "FALHOU"
+            if answer.get("ok"):
+                candidates.at[idx,"KM_OSRM"]=answer["km"]
+                candidates.at[idx,"MIN_OSRM"]=answer["min"]
+            progress.progress(i/len(todo),text=f"OSRM {i}/{len(todo)} | {time.monotonic()-start:.1f}s")
+        st.session_state["nipv2_candidates"]=candidates
+        st.session_state.pop("nipv2_zip",None)
+        st.rerun()
+    with st.expander("Conferir consultas e distâncias"):
+        st.dataframe(candidates,hide_index=True,use_container_width=True)
+else:
+    st.warning("Não há equipes elegíveis com coordenadas para os grupos encontrados.")
+
+assigned=atribuir_por_osrm(clusters,candidates,teams,limit,balance,limite_km)
+checks=validar_distribuicao_nova(pending,assigned,limit,limite_km)
+if any(checks[k] for k in ["Duplicações indevidas","Notas ausentes","Equipes acima do limite","Equipes acima do limite KM","Grupos 50 m divididos"]):
+    st.error("A validação encontrou divergências. Não exporte antes de corrigir.")
+else:
+    st.success("Contagem única, capacidade máxima e grupos de 50 m validados.")
+
+st.subheader("2. Distribuição, equipes e notas sem atendimento")
+a,b,c,d=st.columns(4)
+for box,(label,key) in zip([a,b,c,d],[
+    ("Notas pendentes","Notas originais"),("Alocadas com OSRM","Alocadas com OSRM"),
+    ("Sem equipe confirmada","Sem alocação"),("Grupos de 50 m divididos","Grupos 50 m divididos")]):
+    box.metric(label,checks[key])
+
+load_panel=resumo_detalhado_equipes(assigned,teams)
+if not load_panel.empty:
+    visitas = assigned.loc[assigned["STATUS_DISTRIBUICAO"].eq("EQUIPE MAIS PROXIMA")].drop_duplicates(
+        ["ID_EQUIPE", "GRUPO_50M"]
+    )
+    dist_por_equipe = visitas.groupby("ID_EQUIPE")["KM_IDA_VOLTA_GRUPO"].sum()
+    load_panel["KM_ESTIMADOS_IDA_VOLTA"] = load_panel["ID_EQUIPE"].map(dist_por_equipe).fillna(0).round(2)
+    load_panel["LIMITE_OBRAS"] = limit
+    load_panel["LIMITE_KM"] = limite_km
+    load_panel["OBRAS_RESTANTES"] = limit - load_panel["OBRAS"]
+    load_panel["KM_RESTANTES_ESTIMADOS"] = (limite_km - load_panel["KM_ESTIMADOS_IDA_VOLTA"]).round(2)
+st.dataframe(load_panel,hide_index=True,use_container_width=True)
+if not load_panel.empty:
+    st.bar_chart(load_panel.set_index("EQUIPE")["OBRAS"])
+
+q=st.text_input("🔎 Consultar uma nota e a equipe mais próxima",placeholder="Digite o número da nota")
+if q.strip():
+    matched=assigned[assigned["NOTA"].astype(str).str.contains(re.escape(q.strip()),na=False)]
+    if matched.empty:
+        st.info("Nota não encontrada entre as pendentes. Verifique as excluídas na auditoria.")
+    else:
+        st.dataframe(matched[[x for x in ["NOTA","LISTA","MUNICIPIO","EQUIPE_MAIS_PROXIMA","BASE_ATRIBUIDA","DISTANCIA_EQUIPE_KM","RANKING_EQUIPES","STATUS_DISTRIBUICAO"] if x in matched]],hide_index=True,use_container_width=True)
+
+without=assigned[assigned["STATUS_DISTRIBUICAO"]!="EQUIPE MAIS PROXIMA"].copy()
+with st.expander(f"⚠️ Relatório detalhado de notas sem equipe ({len(without)})"):
+    st.dataframe(without,hide_index=True,use_container_width=True)
+
+st.subheader("3. Mapa interativo — cartões idênticos ao KML")
+if st.checkbox("🗺️ Carregar mapa interativo",value=False):
+    geo=assigned.dropna(subset=["LATITUDE","LONGITUDE"])
+    if not geo.empty:
+        mp=folium.Map(location=[float(geo["LATITUDE"].mean()),float(geo["LONGITUDE"].mean())],zoom_start=7,tiles="OpenStreetMap")
+        folium.TileLayer("CartoDB positron",name="Mapa claro").add_to(mp)
+        for cat in CATS:
+            layer=folium.FeatureGroup(name=cat)
+            cluster=MarkerCluster().add_to(layer)
+            for _,r in geo[geo["LISTA"].eq(cat)].iterrows():
+                folium.Marker([float(r["LATITUDE"]),float(r["LONGITUDE"])],
+                              popup=folium.Popup(popup(r),max_width=355),
+                              icon=folium.Icon(color=MAP_COLORS[cat])).add_to(cluster)
+            layer.add_to(mp)
+        team_layer=folium.FeatureGroup(name="Bases das equipes")
+        for _,t in teams.iterrows():
+            folium.Marker([float(t["LAT_EQUIPE"]),float(t["LON_EQUIPE"])],
+                          tooltip=f"{t['EQUIPE']} — {t['TIPO_EQUIPE']}",
+                          icon=folium.Icon(color="orange",icon="home")).add_to(team_layer)
+        team_layer.add_to(mp)
+        folium.LayerControl(collapsed=False).add_to(mp)
+        st_folium(mp,height=610,use_container_width=True,key=f"nipv2_map_{versao}")
+    else:
+        st.warning("Nenhuma obra pendente tem coordenadas válidas.")
+
+st.subheader("4. Exportações e auditoria")
+params=pd.DataFrame([{"PARÂMETRO":k,"VALOR":str(v)} for k,v in {
+    "Data/hora":datetime.now().isoformat(timespec="seconds"),"Arquivo saneamento":san_file.name,
+    "Arquivo levantamento":lev_file.name,"Arquivo equipes":team_file.name,
+    "Hash das três bases":signature,"Servidor OSRM":server,
+    "Raio agrupamento metros":50,"Equipes candidatas":n_near,
+    "Capacidade máxima de obras":limit,"Limite de km por equipe":limite_km,
+    "Distancia extra habilitada":distancia_extra,
+    "Calculo km": "Soma de 2 x OSRM base-grupo por visita/grupo de 50 m (nao rota sequencial)",
+    "Equilibrar cargas":balance,
+    "Método": "OSRM rodoviário confirmado; Haversine somente pré-filtro",
+    "Garantia não cruzamento": "Não garantida; exige otimização de trajetos",
+    **checks}.items()])
+with st.expander("Parâmetros e auditoria de exclusões"):
+    st.dataframe(params,hide_index=True,use_container_width=True)
+    st.dataframe(audit,hide_index=True,use_container_width=True)
+
+kml_general=kml_bytes(assigned.dropna(subset=["LATITUDE","LONGITUDE"]),name="NIP — Obras pendentes e equipes OSRM")
+valid_export=not any(checks[k] for k in ["Duplicações indevidas","Notas ausentes","Equipes acima do limite","Equipes acima do limite KM","Grupos 50 m divididos"])
+
+stamp=datetime.now().strftime("%d.%m.%Y")
+preview=inventario_zips(assigned,teams,stamp)
+with st.expander("📁 Prévia dos arquivos dos ZIPs"):
+    st.dataframe(preview,hide_index=True,use_container_width=True)
+
+zip_key=hashlib.sha256((assigned.to_json(orient="records",date_format="iso")+str(limit)+str(limite_km)+str(balance)).encode()).hexdigest()
+if st.session_state.get("nipv2_zip_key")!=zip_key:
+    st.session_state.pop("nipv2_zip",None)
+    st.session_state["nipv2_zip_key"]=zip_key
+if st.button("📦 Gerar ZIPs por equipe",disabled=not valid_export):
+    bar=st.progress(0.0)
+    timer=st.empty()
+    start=time.monotonic()
+    def progress_export(current,total,team):
+        elapsed=time.monotonic()-start
+        eta=elapsed/current*(total-current) if current else None
+        bar.progress(current/max(1,total),text=f"Equipe {current}/{total}: {team}")
+        timer.caption(f"Decorrido {elapsed:.1f}s | Restante estimado {eta:.1f}s" if eta is not None else f"Decorrido {elapsed:.1f}s")
+    try:
+        st.session_state["nipv2_zip"]=zip_distribuicao_osrm(assigned,teams,50,kml_general,progress_export)
+        st.success(f"ZIPs concluídos em {time.monotonic()-start:.1f}s")
+    except Exception as exc:
+        st.error(f"Falha na geração: {exc}")
+
+if st.session_state.get("nipv2_zip"):
+    zex,zkm=st.session_state["nipv2_zip"]
+    z1,z2=st.columns(2)
+    z1.download_button("📥 ZIP Excel por equipe",zex,file_name=f"NIP_Equipes_Excel_{stamp}.zip",mime="application/zip")
+    z2.download_button("📥 ZIP KML por equipe",zkm,file_name=f"NIP_Equipes_KML_{stamp}.zip",mime="application/zip")
+
+x1,x2,x3=st.columns(3)
+x1.download_button("🌍 KML geral",kml_general,file_name="NIP_Obras_Equipes_OSRM.kml",mime="application/vnd.google-earth.kml+xml")
+x2.download_button("📊 Excel consolidado",excel_bytes({"PENDENTES":assigned,"EQUIPES":load_panel,"SEM EQUIPE":without,"OSRM":candidates,"AUDITORIA":audit,"PARAMETROS":params,"INCONSISTENCIAS":data["issues"]}),file_name="NIP_Analise_Completa.xlsx")
+x3.download_button("📋 Excel FINL / CANC / Campo",excel_bytes({"FINL":finl,"CANC":canc,"CAMPO":field,"DUPLICADAS":duplicadas}),file_name="NIP_Exclusoes.xlsx")
