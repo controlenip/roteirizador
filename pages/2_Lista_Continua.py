@@ -10,7 +10,6 @@ import time
 import gc
 import os
 import requests
-import math
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -58,28 +57,65 @@ def injetar_logo():
             break
 
 def adaptar_planilha_nip(df):
-    # Exige o layout da planilha fornecida: K = COLABORADOR PLANEJADO.
-    df=df.copy()
-    if len(df.columns)<12:
-        raise ValueError('A planilha deve possuir ao menos 12 colunas, incluindo COLABORADOR PLANEJADO na K e MATRICULA na L.')
-    if df.columns[10] != 'COLABORADOR PLANEJADO':
-        raise ValueError('A coluna K deve ser COLABORADOR PLANEJADO.')
-    mapa={'MUNICIPIO':'MUNICIPIO','REGIONAL SERVICO':'REGIONAL',
-          'ENDERECO':'ENDEREÇO','MATRICULA':'MATRICULA',
-          'COLABORADOR PLANEJADO':'COLABORADOR',
-          'TIPO DEMANDA':'TIPO DEMANDA'}
-    df=df.rename(columns=mapa)
-    required=['NOTA','STATUS','TIPO DEMANDA','MUNICIPIO','REGIONAL','ENDEREÇO',
-              'BAIRRO','LATITUDE','LONGITUDE','COLABORADOR','MATRICULA']
-    missing=[x for x in required if x not in df.columns]
-    if missing: raise ValueError('Colunas ausentes: '+', '.join(missing))
-    df=df[required].copy()
-    df['PROTOCOLO']=df['NOTA'].astype('string').str.replace(r'\.0$','',regex=True)
-    df['BASE_ATRIBUIDA']=df['COLABORADOR'].fillna('').astype(str).str.strip().str.upper()
-    df['PRIORIDADE']='Não'
-    # Compatibilidade com os campos do gerador original de cards e KML.
-    df['TIPO NOTA']=df['TIPO DEMANDA']
-    df['LOCALIDADE']=df['BAIRRO']
+    """Adapta tanto a planilha Saneamento quanto a Lista Continua original.
+
+    O campo COLABORADOR PLANEJADO (K) vale somente para Saneamento;
+    a Lista Continua original utiliza LEVANTADOR (A).
+    """
+    df = df.copy()
+    df.columns = normalize_cols(df.columns)
+    cols = set(df.columns)
+
+    if 'COLABORADOR PLANEJADO' in cols:
+        # Modelo Saneamento: a coluna K identifica o colaborador planejado.
+        if len(df.columns) < 11 or df.columns[10] != 'COLABORADOR PLANEJADO':
+            raise ValueError('Na base de Saneamento, a coluna K deve ser COLABORADOR PLANEJADO.')
+        rename = {
+            'MUNICIPIO': 'MUNICIPIO', 'REGIONAL SERVICO': 'REGIONAL',
+            'ENDERECO': 'ENDEREÇO', 'MATRICULA': 'MATRICULA',
+            'COLABORADOR PLANEJADO': 'COLABORADOR',
+        }
+        df = df.rename(columns=rename)
+        needed = ['NOTA', 'STATUS', 'TIPO DEMANDA', 'MUNICIPIO', 'REGIONAL',
+                  'ENDEREÇO', 'BAIRRO', 'LATITUDE', 'LONGITUDE', 'COLABORADOR']
+        missing = [c for c in needed if c not in df.columns]
+        if missing:
+            raise ValueError('Colunas ausentes na base Saneamento: ' + ', '.join(missing))
+        if 'MATRICULA' not in df.columns:
+            df['MATRICULA'] = ''
+        df['PRIORIDADE'] = 'Não'
+    elif {'LEVANTADOR', 'PROTOCOLO', 'LATITUDE', 'LONGITUDE'}.issubset(cols):
+        # Modelo original Lista Continua: nao exigir COLABORADOR PLANEJADO na K.
+        df['NOTA'] = df['PROTOCOLO']
+        df['STATUS'] = df['STATUS LIST'] if 'STATUS LIST' in df.columns else (
+            df['STATUS SISCO'] if 'STATUS SISCO' in df.columns else '')
+        df['TIPO DEMANDA'] = df['TIPO NOTA'] if 'TIPO NOTA' in df.columns else ''
+        df['COLABORADOR'] = df['LEVANTADOR']
+        df['BAIRRO'] = df['LOCALIDADE'] if 'LOCALIDADE' in df.columns else ''
+        if 'ENDERECO' in df.columns and 'ENDEREÇO' not in df.columns:
+            df = df.rename(columns={'ENDERECO': 'ENDEREÇO'})
+        if 'MATRICULA' not in df.columns:
+            df['MATRICULA'] = ''
+        if 'REGIONAL' not in df.columns:
+            df['REGIONAL'] = ''
+        if 'PRIORIDADE' not in df.columns:
+            df['PRIORIDADE'] = 'Não'
+    else:
+        raise ValueError(
+            'Formato nao reconhecido. Envie a base Saneamento com COLABORADOR PLANEJADO '
+            'na coluna K ou a Lista Continua com LEVANTADOR e PROTOCOLO.'
+        )
+
+    # Mantem os dados operacionais originais para os cards e exportadores.
+    for c in CAMPOS_VISIVEIS_NIP:
+        if c not in df.columns:
+            df[c] = ''
+    df['PROTOCOLO'] = df['NOTA'].astype('string').str.replace(r'\.0$', '', regex=True)
+    df['BASE_ATRIBUIDA'] = df['COLABORADOR'].fillna('').astype(str).str.strip().str.upper()
+    if 'TIPO NOTA' not in df.columns:
+        df['TIPO NOTA'] = df['TIPO DEMANDA']
+    if 'LOCALIDADE' not in df.columns:
+        df['LOCALIDADE'] = df['BAIRRO']
     return df
 
 
@@ -604,78 +640,36 @@ def ordenar_rota_rapida(obras, lat_inicial, lon_inicial, reversa=False):
     return ordem
 
 
-class FalhaRoteamentoOSRM(Exception):
-    """O servico viario nao conseguiu produzir um trajeto valido entre os pontos."""
+def obter_rota_ruas_segura(lat1, lon1, lat2, lon2, url_osrm_base, velocidade_media_kmh, timeout_s=5):
+    """Consulta OSRM com timeout curto; em qualquer falha retorna linha reta e tempo estimado."""
+    dist_km = haversine_scalar(lat1, lon1, lat2, lon2) * 1.3
+    fallback = ([[lon1, lat1], [lon2, lat2]], (dist_km / max(float(velocidade_media_kmh), 1.0)) * 3600.0)
 
+    if not url_osrm_base:
+        return fallback
 
-def obter_rota_ruas_segura(lat1, lon1, lat2, lon2, url_osrm_base, velocidade_media_kmh, timeout_s=15):
-    """Obtem geometria [longitude,latitude] e distancia real do OSRM.
-
-    Nunca devolve linha reta em lugar de rota viaria: uma falha interrompe o
-    motor para evitar que o mapa e o KML informem erroneamente um arruamento.
-    Retorno: (geometria_lon_lat, duracao_segundos, distancia_km).
-    """
     try:
-        lat1, lon1 = float(lat1), float(lon1)
-        lat2, lon2 = float(lat2), float(lon2)
-    except (ValueError, TypeError) as exc:
-        raise FalhaRoteamentoOSRM('Coordenadas de origem ou destino invalidas.') from exc
-
-    distancia_direta_km = float(haversine_scalar(lat1, lon1, lat2, lon2))
-    if distancia_direta_km < 0.003:
-        # Pontos coincidentes nao necessitam de consulta; nenhum trecho ficticio.
-        return [[lon1, lat1], [lon2, lat2]], 0.0, 0.0
-
-    base = str(url_osrm_base or '').strip().rstrip('/')
-    # O endpoint publico do OSRM precisa ser acessado por HTTPS no Streamlit Cloud.
-    if base.lower().startswith('http://router.project-osrm.org'):
-        base = 'https://' + base[7:]
-    if not base.startswith(('https://', 'http://')):
-        raise FalhaRoteamentoOSRM('Endpoint OSRM invalido. Utilize uma URL HTTPS valida.')
-
-    url = f'{base}/route/v1/driving/{lon1:.7f},{lat1:.7f};{lon2:.7f},{lat2:.7f}'
-    params = {'overview': 'full', 'geometries': 'geojson', 'steps': 'false'}
-    last_error = None
-    for tentativa in range(2):
-        try:
-            resp = requests.get(
-                url, params=params, timeout=(5, max(8, timeout_s)),
-                headers={'User-Agent': 'NIP-Roteirizacao/1.0', 'Accept': 'application/json'}
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            codigo = data.get('code')
-            if codigo != 'Ok':
-                descricao = data.get('message') or codigo or 'resposta sem codigo'
-                raise FalhaRoteamentoOSRM(f'OSRM retornou {descricao}. Verifique a rede viaria dos pontos.')
-            rotas = data.get('routes') or []
-            if not rotas:
-                raise FalhaRoteamentoOSRM('O OSRM nao encontrou uma rota rodoviaria entre os pontos.')
-            rota = rotas[0]
-            geom = (rota.get('geometry') or {}).get('coordinates') or []
-            if len(geom) < 2 or not all(
-                isinstance(p, (list, tuple)) and len(p) >= 2
-                and all(math.isfinite(float(v)) for v in p[:2]) for p in geom
-            ):
-                raise FalhaRoteamentoOSRM('O OSRM nao retornou uma geometria viaria valida.')
-            metros = float(rota.get('distance', -1))
-            if not math.isfinite(metros) or metros < 0:
-                raise FalhaRoteamentoOSRM('O OSRM nao informou uma distancia de rota valida.')
-            duracao = float(rota.get('duration', 0) or 0)
-            return [[float(p[0]), float(p[1])] for p in geom], duracao, metros / 1000.0
-        except FalhaRoteamentoOSRM:
-            raise
-        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError) as exc:
-            last_error = exc
-            # Repetir apenas falhas temporarias de rede/HTTP; nao falsificar trajetos.
-            if tentativa == 0:
-                time.sleep(1.0)
-                continue
-    raise FalhaRoteamentoOSRM(
-        f'Falha de comunicacao com {base}: {last_error}. '
-        'Confira o endpoint, o acesso HTTPS e a disponibilidade da rede do OSRM.'
-    ) from last_error
-
+        base = str(url_osrm_base).rstrip('/')
+        url = f"{base}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+        resp = requests.get(
+            url,
+            params={'overview': 'full', 'geometries': 'geojson', 'steps': 'false'},
+            timeout=timeout_s,
+            headers={'User-Agent': 'ListaContinua/1.0'}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rotas = data.get('routes') or []
+        if not rotas:
+            return fallback
+        rota = rotas[0]
+        geom = ((rota.get('geometry') or {}).get('coordinates')) or []
+        if len(geom) < 2:
+            return fallback
+        duracao = float(rota.get('duration') or fallback[1])
+        return geom, duracao
+    except Exception:
+        return fallback
 
 def tentar_rerun():
     if hasattr(st, 'rerun'): st.rerun()
@@ -711,7 +705,7 @@ with st.sidebar:
         raio_sp = st.slider("Raio Super Ponto (m):", 10, 500, 50, 10, disabled=is_locked)
         
     with st.expander("📡 Conexão de Rede", expanded=False):
-        url_osrm = st.text_input("Endpoint OSRM:", value="https://router.project-osrm.org", disabled=is_locked)
+        url_osrm = st.text_input("Endpoint OSRM:", value="http://router.project-osrm.org", disabled=is_locked)
         usa_osrm = st.checkbox("🛣️ Traçado de Ruas Real (Lento)", value=False, disabled=is_locked, help="Ative apenas quando precisar do traçado viário real. Desativado, o motor usa distância geográfica e fica muito mais rápido.")
 
     sb_html = st.empty()
@@ -920,19 +914,6 @@ elif status_exec == "IDLE":
         st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
-if status_exec == "OSRM_ERROR":
-    st.error("🚧 O traçado por ruas foi interrompido: o OSRM não conseguiu traçar um segmento. Nenhum KML/GPX em linha reta será exportado como rota viária.")
-    st.warning(st.session_state.vrp_state_lista.get('osrm_error', 'Erro de roteamento não identificado.'))
-    c_retry, c_abort = st.columns(2)
-    with c_retry:
-        if st.button("🔄 Tentar novamente com OSRM", type="primary", use_container_width=True):
-            st.session_state.vrp_status_lista = "RUNNING"
-            tentar_rerun()
-    with c_abort:
-        if st.button("⏹️ Abortar roteirização", use_container_width=True):
-            limpar_roteirizador()
-    st.stop()
-
 if status_exec == "RUNNING":
     st.markdown("## 🚀 Execução do Motor Contínuo")
     if st.button("⏹️ Abortar Execução", use_container_width=True): limpar_roteirizador()
@@ -991,27 +972,14 @@ if status_exec == "RUNNING":
                 if not cfg.get('tracado_real'):
                     gd.append(fallback)
                 else:
-                    if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i+1}/{len(rf)})")
+                    if i % 5 == 0: sgt.info(f"🛣️ Traçando arruamento **{bn}**... ({i}/{len(rf)})")
                     render_t(b_i, i, len(rf))
+                    time.sleep(0.02)
                     try:
-                        geometria, segundos, km_ruas = obter_rota_ruas_segura(
-                            it['la'], it['La'], it['lt'], it['Lt'],
-                            cfg['url_osrm_base'], cfg['velocidade_media_kmh'], timeout_s=15
-                        )
-                    except FalhaRoteamentoOSRM as exc:
-                        # Manter o que ja foi roteirizado e repetir apenas o trecho falho.
-                        st_v['c_idx'] = i
-                        st_v['current_geoms'] = gd
-                        st_v['osrm_error'] = (
-                            f"Colaborador: {bn} | Trecho {i+1}/{len(rf)} | "
-                            f"NOTA: {it['o'].get('PROTOCOLO', '-')} | {exc}"
-                        )
-                        st.session_state.vrp_state_lista = st_v
-                        st.session_state.vrp_status_lista = 'OSRM_ERROR'
-                        tentar_rerun()
-                        st.stop()
-                    it['dk'] = km_ruas  # Distancia da rota nas ruas, e nao haversine * 1.3.
-                    gd.append((geometria, segundos))
+                        res = obter_rota_ruas_segura(it['la'], it['La'], it['lt'], it['Lt'], cfg['url_osrm_base'], cfg['velocidade_media_kmh'], timeout_s=5)
+                        if not res or len(res) == 0 or len(res[0]) == 0: gd.append(fallback)
+                        else: gd.append(res)
+                    except: gd.append(fallback)
                 
             st_v['c_idx'], st_v['current_geoms'] = ei, gd
             if ei < len(rf): st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
