@@ -25,7 +25,7 @@ from sklearn.cluster import DBSCAN
 from openpyxl.styles import PatternFill, Font, Alignment
 
 CAMPOS_VISIVEIS_NIP = [
-    'NOTA','STATUS','TIPO DEMANDA','MUNICIPIO','REGIONAL','ENDEREÇO',
+    'NOTA','NOME','STATUS','TIPO DEMANDA','MUNICIPIO','REGIONAL','ENDEREÇO',
     'BAIRRO','LATITUDE','LONGITUDE','COLABORADOR','MATRICULA'
 ]
 
@@ -66,6 +66,18 @@ def adaptar_planilha_nip(df):
     df = df.copy()
     df.columns = normalize_cols(df.columns)
     cols = set(df.columns)
+
+    # Padroniza o nome do cliente sem depender da posicao das colunas.
+    # Mantem a coluna original e agrega a informacao em NOME para exportacoes.
+    nomes_alternativos = ('NOME', 'NOME DO CLIENTE', 'NOME CLIENTE',
+                          'CLIENTE', 'NOME SOLICITANTE', 'SOLICITANTE')
+    if 'NOME' not in df.columns:
+        df['NOME'] = pd.Series('', index=df.index, dtype='object')
+    for coluna_nome in nomes_alternativos:
+        if coluna_nome != 'NOME' and coluna_nome in cols:
+            atual = df['NOME'].astype('string').fillna('').str.strip()
+            vazio = atual.eq('') | atual.str.upper().isin(['NAN', 'NONE', 'NULL', '-'])
+            df.loc[vazio, 'NOME'] = df.loc[vazio, coluna_nome]
 
     if 'COLABORADOR PLANEJADO' in cols:
         # Modelo Saneamento: a coluna K identifica o colaborador planejado.
@@ -498,8 +510,20 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 dist_prox = f"{r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)} KM"
 
                 if is_sp:
-                    prot_list = [orig.get('PROTOCOLO', orig.get('NOTA', '')) for orig in r['_ORIGINAL_ROWS']]
-                    prot_html = "<div style='max-height:95px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:3px;'><b>[{i+1}]</b> {html.escape(str(pr))}</li>" for i, pr in enumerate(prot_list)]) + "</ul></div>"
+                    # Identifica cada nota e o respectivo cliente no superponto.
+                    entradas_super = []
+                    for i, orig in enumerate(r['_ORIGINAL_ROWS'], start=1):
+                        protocolo = orig.get('PROTOCOLO', orig.get('NOTA', ''))
+                        cliente = orig.get('NOME', orig.get('NOME DO CLIENTE', orig.get('CLIENTE', '')))
+                        cliente_txt = str(cliente).strip() if pd.notna(cliente) else ''
+                        if cliente_txt.upper() in ('NAN', 'NONE', 'NULL'): cliente_txt = ''
+                        entradas_super.append(
+                            f"<li style='margin-bottom:5px;'><b>[{i}]</b> "
+                            f"{html.escape(str(protocolo))}"
+                            + (f"<br><span style='color:#22526b'>Cliente: {html.escape(cliente_txt)}</span>" if cliente_txt else '')
+                            + "</li>"
+                        )
+                    prot_html = "<div style='max-height:160px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join(entradas_super) + "</ul></div>"
                 else:
                     prot_html = html.escape(str(r.get('PROTOCOLO', r.get('NOTA', ''))))
 
@@ -511,7 +535,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 '''
 
                 for c in colunas_exibir:
-                    if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES']: continue
+                    if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES'] or (is_sp and c.upper() == 'NOME'): continue
                     
                     if c.upper() == 'SUPER_PONTO':
                         val_html = f"SIM ({qty} Obras)" if is_sp else "NÃO"
@@ -1198,6 +1222,8 @@ if status_exec == "PACKAGING":
                     df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
 
             col_exibir = st.session_state.colunas_exibir_lista.copy()
+            # O nome do cliente integra todas as exportacoes.
+            if 'NOME' not in col_exibir: col_exibir.append('NOME')
             if 'DIA_SEMANA' not in col_exibir: col_exibir.insert(0, 'DIA_SEMANA')
             if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
             if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
