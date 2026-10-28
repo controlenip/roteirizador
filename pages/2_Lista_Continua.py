@@ -73,6 +73,16 @@ def adaptar_planilha_nip(df):
     df.columns = normalize_cols(df.columns)
     cols = set(df.columns)
 
+    # A normalizacao retira acentos dos cabecalhos Excel: INSTALAÇÃO -> INSTALACAO.
+    # Recupera o nome usado no seletor de KML sem perder os dados da base.
+    # Executado antes da fusao de superpontos, preservando cada instalacao individual.
+    if 'INSTALACAO' in df.columns:
+        if 'INSTALAÇÃO' not in df.columns:
+            df['INSTALAÇÃO'] = df['INSTALACAO']
+        else:
+            sem_instalacao = df['INSTALAÇÃO'].isna() | df['INSTALAÇÃO'].astype(str).str.strip().str.upper().isin(['', 'NAN', 'NONE', 'NULL', '-'])
+            df.loc[sem_instalacao, 'INSTALAÇÃO'] = df.loc[sem_instalacao, 'INSTALACAO']
+
     # Algumas bases fornecidas usam ID ISCO em vez de ID SISCO.
     # A coluna original e mantida; o nome padrao e usado nos cards/KML.
     if 'ID SISCO' not in df.columns:
@@ -627,6 +637,11 @@ injetar_logo()
 
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
+    # Identificadores de instalacao/contrato nao sao quantidades ou medidas.
+    if c.upper() in ['INSTALAÇÃO', 'INSTALACAO', 'CONTA CONTRATO', 'ID SISCO']:
+        if isinstance(v, (float, np.floating)) and float(v).is_integer():
+            return html.escape(str(int(v)))
+        return html.escape(str(v).strip())
     try:
         if 'POSTE' in c.upper(): return str(int(float(v)))
         
