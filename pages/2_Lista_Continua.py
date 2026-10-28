@@ -24,9 +24,15 @@ import unicodedata
 from sklearn.cluster import DBSCAN
 from openpyxl.styles import PatternFill, Font, Alignment
 
-CAMPOS_VISIVEIS_NIP = [
-    'NOTA','NOME','STATUS','TIPO DEMANDA','MUNICIPIO','REGIONAL','ENDEREÇO',
-    'BAIRRO','LATITUDE','LONGITUDE','COLABORADOR','MATRICULA'
+# Ordem solicitada para os detalhes das obras nos cards do KML.
+CAMPOS_KML_SOLICITADOS = [
+    'TIPO NOTA', 'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALAÇÃO',
+    'NOME', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE',
+    'LATITUDE', 'LONGITUDE', 'FASE'
+]
+# Preserva os campos anteriores como escolhas adicionais no seletor.
+CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS + [
+    'NOTA', 'STATUS', 'TIPO DEMANDA', 'BAIRRO', 'COLABORADOR', 'MATRICULA'
 ]
 
 def normalize_cols(columns):
@@ -66,6 +72,14 @@ def adaptar_planilha_nip(df):
     df = df.copy()
     df.columns = normalize_cols(df.columns)
     cols = set(df.columns)
+
+    # Algumas bases fornecidas usam ID ISCO em vez de ID SISCO.
+    # A coluna original e mantida; o nome padrao e usado nos cards/KML.
+    if 'ID SISCO' not in df.columns:
+        df['ID SISCO'] = df['ID ISCO'] if 'ID ISCO' in df.columns else ''
+    elif 'ID ISCO' in df.columns:
+        vazio_id = df['ID SISCO'].isna() | df['ID SISCO'].astype(str).str.strip().isin(['', 'nan', 'None'])
+        df.loc[vazio_id, 'ID SISCO'] = df.loc[vazio_id, 'ID ISCO']
 
     # Padroniza o nome do cliente sem depender da posicao das colunas.
     # Mantem a coluna original e agrega a informacao em NOME para exportacoes.
@@ -118,6 +132,25 @@ def adaptar_planilha_nip(df):
             'Formato nao reconhecido. Envie a base Saneamento com COLABORADOR PLANEJADO '
             'na coluna K ou a Lista Continua com LEVANTADOR e PROTOCOLO.'
         )
+
+    # A BASE_LISTA_CONTINUA_LEVANTAMENTO pode conter latitude e longitude
+    # trocadas nos CABECALHOS. Corrige por linha apenas quando os valores
+    # correspondem inequivocamente a uma localizacao no Brasil (sem presumir
+    # que todas as planilhas possuem essa inversao).
+    if 'LATITUDE' in df.columns and 'LONGITUDE' in df.columns:
+        lat_num = pd.to_numeric(df['LATITUDE'].astype('string').str.replace(',', '.', regex=False), errors='coerce')
+        lon_num = pd.to_numeric(df['LONGITUDE'].astype('string').str.replace(',', '.', regex=False), errors='coerce')
+        # Latitude brasileira: -34 a +6. Longitude brasileira: -75 a -30.
+        # Para evitar trocas ambiguas, exige latitude aparente fora da faixa
+        # brasileira e longitude aparente dentro da faixa de latitude.
+        invertidas = (lat_num.between(-75, -34, inclusive='both')
+                      & lon_num.between(-34, 6, inclusive='both'))
+        if invertidas.any():
+            df.loc[invertidas, 'LATITUDE'] = lon_num.loc[invertidas].to_numpy()
+            df.loc[invertidas, 'LONGITUDE'] = lat_num.loc[invertidas].to_numpy()
+        df.attrs['coordenadas_invertidas_corrigidas'] = int(invertidas.sum())
+    else:
+        df.attrs['coordenadas_invertidas_corrigidas'] = 0
 
     # Mantem os dados operacionais originais para os cards e exportadores.
     for c in CAMPOS_VISIVEIS_NIP:
@@ -528,14 +561,15 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     prot_html = html.escape(str(r.get('PROTOCOLO', r.get('NOTA', ''))))
 
                 desc += f'''
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">Nota/Protocolo:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
+                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">PROTOCOLO:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{html.escape(str(ordem_txt))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{dist_ant}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
                 '''
 
                 for c in colunas_exibir:
-                    if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES'] or (is_sp and c.upper() == 'NOME'): continue
+                    # O protocolo ja aparece no topo junto a seu cliente nos superpontos.
+                    if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES']: continue
                     
                     if c.upper() == 'SUPER_PONTO':
                         val_html = f"SIM ({qty} Obras)" if is_sp else "NÃO"
@@ -877,15 +911,19 @@ elif status_exec == "IDLE":
     if not task_files: st.stop()
     
     dfs = []
+    qtd_coords_corrigidas = 0
     for f in task_files:
         dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
         dft.columns = normalize_cols(dft.columns)
         dft = adaptar_planilha_nip(dft)
+        qtd_coords_corrigidas += dft.attrs.get('coordenadas_invertidas_corrigidas', 0)
         if not dfs: st.session_state.colunas_originais_lista = CAMPOS_VISIVEIS_NIP.copy()
         for cc in ['NOTA', 'PROTOCOLO', 'OS']:
             if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
         dfs.append(dft)
     
+    if qtd_coords_corrigidas:
+        st.info(f"📍 {qtd_coords_corrigidas} obra(s) com LATITUDE/LONGITUDE invertidas na planilha tiveram as coordenadas corrigidas automaticamente para a roteirização e os arquivos exportados.")
     df_tasks = pd.concat(dfs, ignore_index=True)
     if 'PROTOCOLO' in df_tasks.columns:
         df_tasks['PROTOCOLO'] = df_tasks['PROTOCOLO'].astype(str).str.split(r'\s*\|\s*')
@@ -988,7 +1026,7 @@ elif status_exec == "IDLE":
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
         cd = CAMPOS_VISIVEIS_NIP.copy()
         cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_VISIVEIS_NIP)
+        colunas_exibir = st.multiselect("Colunas Visíveis no Card do KML:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_KML_SOLICITADOS, help="Escolha os campos dos detalhes de cada obra no mapa KML. Os 13 campos solicitados estão pré-selecionados.")
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
