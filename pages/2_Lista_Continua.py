@@ -78,11 +78,28 @@ def texto_seguro_maps(valor):
     return '' if resultado.upper() in ('NAN', 'NONE', 'NULL') else resultado
 
 
-def pontos_equipe_google_maps(df_equipe):
-    """Converte pontos da equipe na ordem do motor, preservando superpontos.
+def numero_obra_explicito_maps(linha):
+    """Nao confunde o numero da obra com a nota CCS ou com o ID SISCO.
 
-    Cada registro representa uma parada fisica, e as notas agregadas de um
-    superponto continuam visiveis no painel e no CSV de importacao.
+    So identifica numero da obra quando existe coluna explicita na base.
+    """
+    opcoes = (
+        'NUMERO DA OBRA', 'NUMERO OBRA', 'N OBRA', 'Nº OBRA',
+        'OBRA SGO', 'NUMERO OS', 'OS', 'OBRA',
+    )
+    for coluna in opcoes:
+        valor = texto_seguro_maps(linha.get(coluna))
+        if valor and valor not in ('-', '0'):
+            return valor
+    return ''
+
+
+def pontos_equipe_google_maps(df_equipe):
+    """Cada parada conserva cliente, protocolo e referencias de CADA obra.
+
+    No modelo fornecido: PROTOCOLO e nota CCS, NOME e cliente, ID SISCO
+    e o identificador SISCO. Numero da obra so e usado quando existe
+    campo explicito para ele, nunca inferido a partir de outros campos.
     """
     pontos = []
     df_equipe = df_equipe.sort_values('ORDEM', kind='stable')
@@ -96,26 +113,45 @@ def pontos_equipe_google_maps(df_equipe):
             continue
         if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
             continue
+
         originais = linha.get('_ORIGINAL_ROWS')
-        notas = []
-        if isinstance(originais, list):
-            for item in originais:
-                if isinstance(item, dict):
-                    codigo = texto_seguro_maps(item.get('PROTOCOLO', item.get('NOTA', '')))
-                    if codigo and codigo not in notas:
-                        notas.append(codigo)
-        if not notas:
-            notas = [protocolo] if protocolo else []
-        nota_resumo = ' | '.join(notas)
+        registros = originais if isinstance(originais, list) and originais else [linha]
+        detalhes = []
+        for registro in registros:
+            if not isinstance(registro, (dict, pd.Series)):
+                continue
+            nota = texto_seguro_maps(registro.get('PROTOCOLO', registro.get('NOTA', protocolo)))
+            if not nota: nota = protocolo
+            cliente = texto_seguro_maps(registro.get('NOME', registro.get('NOME DO CLIENTE', '')))
+            id_sisco = texto_seguro_maps(registro.get('ID SISCO', registro.get('ID ISCO', '')))
+            numero_obra = numero_obra_explicito_maps(registro)
+            detalhes.append({'nota': nota, 'cliente': cliente,
+                             'id_sisco': id_sisco, 'numero_obra': numero_obra})
+        if not detalhes:
+            detalhes = [{'nota': protocolo, 'cliente': texto_seguro_maps(linha.get('NOME')),
+                         'id_sisco': texto_seguro_maps(linha.get('ID SISCO')),
+                         'numero_obra': numero_obra_explicito_maps(linha)}]
+
+        def distintos(campo):
+            return list(dict.fromkeys(x[campo] for x in detalhes if x[campo]))
+
+        notas = distintos('nota')
+        clientes = distintos('cliente')
+        ids_sisco = distintos('id_sisco')
+        numeros_obra = distintos('numero_obra')
         pontos.append({
             'ordem': int(linha['ORDEM']),
-            'nota': nota_resumo,
+            'nota': ' | '.join(notas) if notas else protocolo,
+            'cliente': ' | '.join(clientes),
+            'id_sisco': ' | '.join(ids_sisco),
+            'numero_obra': ' | '.join(numeros_obra),
+            'detalhes': detalhes,
             'municipio': texto_seguro_maps(linha.get('MUNICIPIO')),
             'localidade': texto_seguro_maps(linha.get('LOCALIDADE')),
             'endereco': texto_seguro_maps(linha.get('ENDEREÇO')),
             'prioridade': eh_prioridade(linha.get('PRIORIDADE')),
             'lat': lat, 'lon': lon,
-            'qtd_obras': len(originais) if isinstance(originais, list) else 1,
+            'qtd_obras': len(originais) if isinstance(originais, list) and originais else 1,
         })
     return pontos
 
@@ -188,26 +224,47 @@ def gerar_etapas_google_maps(origem, obras, tamanho=GOOGLE_MAPS_MAX_OBRAS_ETAPA)
 
 
 def gerar_csv_google_mymaps(df_equipe, equipe, incluir_origem=True):
-    """CSV UTF-8 BOM importavel em Google My Maps, com ordem e coordenadas."""
+    """CSV My Maps: titulo com cliente e nota; detalhes por obra em Descricao.
+
+    Google My Maps permite selecionar 'Nome' como titulo dos marcadores.
+    Google Maps de navegacao mantem coordenadas para nao perder precisao.
+    """
     buffer = io.StringIO(newline='')
-    campos = ['Nome', 'Equipe', 'Ordem', 'Tipo', 'Prioridade', 'Nota CCS',
+    campos = ['Nome', 'Descricao', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
+              'Nota CCS', 'Cliente', 'ID SISCO', 'Numero da Obra',
               'Municipio', 'Localidade', 'Endereco', 'Latitude', 'Longitude', 'Qtd Obras']
     writer = csv.DictWriter(buffer, fieldnames=campos, lineterminator='\r\n')
     writer.writeheader()
     if incluir_origem:
         ori = origem_google_maps(df_equipe)
         writer.writerow({'Nome': f"CASINHA - Origem {equipe} ({ori['municipio']})",
+                         'Descricao': 'Municipio de partida (referencia aproximada, nao endereco residencial)',
                          'Equipe': equipe, 'Ordem': 0, 'Tipo': 'ORIGEM / HOSPEDAGEM',
-                         'Prioridade': '', 'Nota CCS': '', 'Municipio': ori['municipio'],
+                         'Municipio': ori['municipio'],
                          'Latitude': ori['lat'], 'Longitude': ori['lon'], 'Qtd Obras': 0})
     for p in pontos_equipe_google_maps(df_equipe):
-        writer.writerow({'Nome': f"{p['ordem']:03d} - {p['nota']}",
+        primeiro = p['detalhes'][0]
+        titulo = f"{p['ordem']:03d} | Nota {primeiro['nota']} | {primeiro['cliente'] or 'Cliente nao informado'}"
+        if p['qtd_obras'] > 1:
+            titulo = f"{p['ordem']:03d} | SUPERPONTO ({p['qtd_obras']}) | {primeiro['cliente'] or primeiro['nota']}"
+        descricao = [f"Equipe: {equipe}", f"Ordem: {p['ordem']}",
+                     'Prioridade: ' + ('SIM' if p['prioridade'] else 'NAO'),
+                     f"Municipio: {p['municipio']}", f"Endereco: {p['endereco']}"]
+        for i, item in enumerate(p['detalhes'], 1):
+            descricao.extend([f"--- OBRA {i} ---", f"Nota CCS: {item['nota']}",
+                              f"Cliente: {item['cliente'] or 'Nao informado'}"])
+            if item['id_sisco']:
+                descricao.append(f"ID SISCO: {item['id_sisco']}")
+            if item['numero_obra']:
+                descricao.append(f"Numero da obra: {item['numero_obra']}")
+        writer.writerow({'Nome': titulo, 'Descricao': '\n'.join(descricao),
                          'Equipe': equipe, 'Ordem': p['ordem'], 'Tipo': 'OBRA',
                          'Prioridade': 'SIM' if p['prioridade'] else 'NAO',
-                         'Nota CCS': p['nota'], 'Municipio': p['municipio'],
-                         'Localidade': p['localidade'], 'Endereco': p['endereco'],
-                         'Latitude': p['lat'], 'Longitude': p['lon'],
-                         'Qtd Obras': p['qtd_obras']})
+                         'Nota CCS': p['nota'], 'Cliente': p['cliente'],
+                         'ID SISCO': p['id_sisco'], 'Numero da Obra': p['numero_obra'],
+                         'Municipio': p['municipio'], 'Localidade': p['localidade'],
+                         'Endereco': p['endereco'], 'Latitude': p['lat'],
+                         'Longitude': p['lon'], 'Qtd Obras': p['qtd_obras']})
     return buffer.getvalue()
 
 
@@ -216,6 +273,8 @@ def gerar_txt_links_google_maps(df_equipe, equipe):
     pontos = pontos_equipe_google_maps(df_equipe)
     linhas = [f'EQUIPE: {equipe}', f"PARTIDA: {origem['municipio']} (sede municipal)",
               f"PRIMEIRA OBRA: {pontos[0]['nota'] if pontos else '-'}",
+              f"PRIMEIRO CLIENTE: {pontos[0]['cliente'] if pontos else '-'}",
+              f"ID SISCO INICIAL: {pontos[0]['id_sisco'] if pontos else '-'}",
               '', 'ABRIR A PRIMEIRA OBRA NO GOOGLE MAPS:']
     if pontos:
         linhas.append(link_google_maps_primeira_obra(origem, pontos[0]))
@@ -233,7 +292,7 @@ def gerar_txt_links_google_maps(df_equipe, equipe):
         linhas.append('')
         linhas.append('IPHONE / iOS - ABRIR QUALQUER OBRA INDIVIDUALMENTE (GPS ATUAL):')
         for ponto in pontos:
-            linhas.append(f"ORDEM {ponto['ordem']} - NOTA {ponto['nota']}")
+            linhas.append(f"ORDEM {ponto['ordem']} - NOTA {ponto['nota']} | CLIENTE: {ponto['cliente'] or '-'} | ID SISCO: {ponto['id_sisco'] or '-'} | OBRA: {ponto['numero_obra'] or '-'}")
             linhas.append(link_google_maps_primeira_obra(origem, ponto, local_atual=True))
     linhas.extend(['', 'Voce pode alterar a sequencia de visitas no painel HTML da sua equipe.',
                    'No Google Maps, confirme as ruas, tempo de viagem e viabilidade local.',
@@ -251,7 +310,9 @@ def gerar_painel_google_maps(df_equipe, equipe, pwa=False):
     """
     origem = origem_google_maps(df_equipe)
     pontos = pontos_equipe_google_maps(df_equipe)
-    assinatura = hashlib.sha256(json.dumps(pontos, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    identidade_antiga = [{k: p[k] for k in ('ordem', 'nota', 'municipio', 'localidade',
+                        'endereco', 'prioridade', 'lat', 'lon', 'qtd_obras')} for p in pontos]
+    assinatura = hashlib.sha256(json.dumps(identidade_antiga, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:16]
     dados = {'equipe': str(equipe), 'origem': origem, 'obras': pontos, 'versao': assinatura}
     primeira = pontos[0] if pontos else origem
     fallback_primeira = link_google_maps_primeira_obra(origem, primeira)
@@ -265,7 +326,9 @@ def gerar_painel_google_maps(df_equipe, equipe, pwa=False):
         nome = html.escape(pt['nota'])
         mun = html.escape(pt['municipio'])
         url = html.escape(link_google_maps_primeira_obra(origem, pt, local_atual=True), quote=True)
-        linhas_simples.append(f'<li><strong>{i}. Nota {nome}</strong> • {mun} '
+        cliente = html.escape(pt['cliente'] or 'Cliente nao informado')
+        referencia = html.escape(('Obra: ' + pt['numero_obra']) if pt['numero_obra'] else ('ID SISCO: ' + pt['id_sisco'] if pt['id_sisco'] else ''))
+        linhas_simples.append(f'<li><strong>{i}. Nota {nome}</strong> • Cliente: {cliente} • {referencia} • {mun} '
                              f'({pt["lat"]:.6f}, {pt["lon"]:.6f}) '
                              f'<a href="{url}">Maps (online)</a></li>')
     fallback_html = ''.join(linhas_simples) or '<li>Nenhuma obra valida nesta equipe</li>'
@@ -291,12 +354,12 @@ h2{font-size:1.12rem;margin:0 0 10px}h3{font-size:1rem;margin:10px 0}.card{backg
 .btn:disabled{opacity:.45}.actions{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0}.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.kpi{background:#edf3ff;padding:11px;border-radius:9px;text-align:center}.kpi b{display:block;font-size:1.5rem;color:#0d256c}
 .item{border:1px solid #dce4ec;border-left:5px solid #0d256c;border-radius:9px;padding:12px;margin:9px 0}.item.priority{border-left-color:#cf3030}.item.done{opacity:.67;background:#f0f5f0}.row{display:flex;gap:9px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .tag{font-size:.74rem;background:#e8eeff;color:#0d256c;border-radius:100px;padding:4px 9px;font-weight:700}.tag.red{background:#fff0ef;color:#a22}.tag.green{background:#e4f6e9;color:#166e37}
-.muted{color:#586779;font-size:.85rem}.small{font-size:.8rem}.filters{display:flex;gap:8px;flex-wrap:wrap}.filters input{flex:3;min-width:150px}.filters select{flex:1;min-width:140px}input[type=search],select{width:100%;padding:10px;border:1px solid #cbd7e5;border-radius:9px;background:white;color:#123}
+.ident{font-size:.92rem;font-weight:600;color:#173b72;margin:9px 0 5px;line-height:1.4}.muted{color:#586779;font-size:.85rem}.small{font-size:.8rem}.filters{display:flex;gap:8px;flex-wrap:wrap}.filters input{flex:3;min-width:150px}.filters select{flex:1;min-width:140px}input[type=search],select{width:100%;padding:10px;border:1px solid #cbd7e5;border-radius:9px;background:white;color:#123}
 .mode{display:flex;gap:8px;flex-wrap:wrap}.mode button{flex:1}.mode button.active{outline:3px solid #73b9fa}.hidden{display:none!important}
 #toast{min-height:18px;color:#167844;font-weight:650}.links a{overflow-wrap:anywhere}.staticlist{max-height:430px;overflow:auto;padding-left:24px}.staticlist li{padding:5px 0}.coords{font-family:ui-monospace,monospace;font-size:.82rem;user-select:all}
 @media(max-width:580px){.btn{flex:1;padding:12px 9px}.item .btn{flex:1 1 43%}.card{padding:12px}.top{padding:15px 8px}.kpi b{font-size:1.25rem}}
 </style></head><body>
-<header class="top"><div class="wrap"><div>🏠 NIP GLOBAL • Lista Contínua</div><h1 id="titulo">__EQUIPE_HTML__</h1><div>Partida: __ORIGEM_HTML__ / MA</div></div></header>
+<header class="top"><div class="wrap"><div>🏠 NIP GLOBAL • Lista Contínua</div><h1 id="titulo">__EQUIPE_HTML__</h1><div>Partida: __ORIGEM_HTML__</div></div></header>
 <main class="wrap">
 <section class="card"><div class="row"><div><strong>📶 Situação do dispositivo:</strong> <span id="conexao">Verificando</span></div><span class="tag" id="modoTag">PLANEJAMENTO OFFLINE</span></div>
 <p class="note">A lista e o planejamento funcionam sem sinal quando este HTML ja estiver salvo e puder ser aberto num navegador compativel. Os botões do Google Maps dependem do aplicativo e da disponibilidade dos mapas; para navegação offline use o GPX no Organic Maps/OsmAnd, com mapas baixados antes.</p>
@@ -314,7 +377,7 @@ h2{font-size:1.12rem;margin:0 0 10px}h3{font-size:1rem;margin:10px 0}.card{backg
 <label><input type="checkbox" id="localAtual"> Usar minha localização atual no primeiro trecho</label>
 <div class="actions"><a class="btn green" id="linkPrimeira" href="__PRIMEIRA__">📍 Ir a primeira obra</a><a class="btn soft" id="rotaProximas" href="__ETAPA__">🚗 Abrir proximas 4 obras</a><a class="btn soft" href="__GPS__">GPS atual - link direto</a></div>
 <div id="etapas"></div></section>
-<section class="card"><h2>📋 Organizar atendimentos</h2><div class="filters"><input id="busca" type="search" placeholder="Buscar por nota, municipio ou endereco"><select id="filtro"><option value="todas">Todas as obras</option><option value="pendentes">Somente pendentes</option><option value="prioritarias">Prioritarias pendentes</option><option value="feitas">Concluidas</option></select></div>
+<section class="card"><h2>📋 Organizar atendimentos</h2><div class="filters"><input id="busca" type="search" placeholder="Buscar por nota, cliente, ID SISCO, obra ou endereço"><select id="filtro"><option value="todas">Todas as obras</option><option value="pendentes">Somente pendentes</option><option value="prioritarias">Prioritarias pendentes</option><option value="feitas">Concluidas</option></select></div>
 <div class="actions"><button id="reset" class="btn danger" type="button">Restaurar ordem e status</button></div><div id="lista"></div><div class="actions"><button id="mais" class="btn soft hidden" type="button">Mostrar mais obras</button></div></section>
 <section class="card"><h2>📌 Lista de emergencia (sem JavaScript)</h2><p class="note">Caso o iPhone abra uma visualizacao que bloqueia JavaScript, as obras abaixo continuam visiveis e podem ser consultadas offline. Para alterar o planejamento no iPhone, hospede a pasta "Offline_Instalavel" em HTTPS e abra pelo Safari.</p>
 <details id="listaEstatica"><summary>Mostrar todas as notas e coordenadas</summary><ol class="staticlist">__LISTA_ESTATICA__</ol></details></section>
@@ -345,29 +408,29 @@ function filename(suffix){return 'NIP_'+safeName+'_'+suffix;}
 function exportGpx(){const p=pendentes();let t=['<?xml version="1.0" encoding="UTF-8"?>','<gpx version="1.1" creator="NIP Campo Offline" xmlns="http://www.topografix.com/GPX/1/1">','<metadata><name>'+esc(data.equipe)+' - pendentes</name><desc>Sequencia de paradas; NAO e tracado rodoviario.</desc></metadata>'];
 const item=(tag,n,p,d)=>'<'+tag+' lat="'+Number(p.lat).toFixed(7)+'" lon="'+Number(p.lon).toFixed(7)+'"><name>'+esc(n)+'</name><desc>'+esc(d)+'</desc></'+tag+'>';
 t.push(item('wpt','CASINHA - '+data.origem.municipio,data.origem,'Partida municipal aproximada'));
-p.forEach((x,i)=>t.push(item('wpt',String(i+1).padStart(3,'0')+' - '+x.nota,x,x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));
+p.forEach((x,i)=>t.push(item('wpt',String(i+1).padStart(3,'0')+' - '+x.nota+' - '+x.cliente,x,'Cliente: '+x.cliente+' | ID SISCO: '+x.id_sisco+' | Obra: '+x.numero_obra+' | '+x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));
 t.push('<rte><name>'+esc(data.equipe)+' - ordem planejada</name><desc>Lista de paradas sem geometria de ruas; o app offline precisa calcular percurso.</desc>');
 t.push(item('rtept','ORIGEM - '+data.origem.municipio,data.origem,'Ponto inicial municipal'));
-p.forEach((x,i)=>t.push(item('rtept',String(i+1).padStart(3,'0')+' - '+x.nota,x,x.municipio)));
+p.forEach((x,i)=>t.push(item('rtept',String(i+1).padStart(3,'0')+' - '+x.nota+' - '+x.cliente,x,'ID SISCO: '+x.id_sisco+' | Obra: '+x.numero_obra+' | '+x.municipio)));
 t.push('</rte></gpx>');download(filename('PENDENTES_OFFLINE.gpx'),t.join('\n'),'application/gpx+xml;charset=utf-8');}
 function exportKml(){const p=pendentes();let t=['<?xml version="1.0" encoding="UTF-8"?>','<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(data.equipe)+' - pendentes</name>'];const mark=(name,x,descr)=>'<Placemark><name>'+esc(name)+'</name><description>'+esc(descr)+'</description><Point><coordinates>'+Number(x.lon).toFixed(7)+','+Number(x.lat).toFixed(7)+',0</coordinates></Point></Placemark>';
 t.push(mark('CASINHA - '+data.origem.municipio,data.origem,'Referencia municipal'));
-p.forEach((x,i)=>t.push(mark((i+1)+' - '+x.nota,x,x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));t.push('</Document></kml>');download(filename('PENDENTES_OFFLINE.kml'),t.join('\n'),'application/vnd.google-earth.kml+xml;charset=utf-8');}
+p.forEach((x,i)=>t.push(mark((i+1)+' - '+x.nota+' - '+x.cliente,x,'Cliente: '+x.cliente+' | ID SISCO: '+x.id_sisco+' | Obra: '+x.numero_obra+' | '+x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));t.push('</Document></kml>');download(filename('PENDENTES_OFFLINE.kml'),t.join('\n'),'application/vnd.google-earth.kml+xml;charset=utf-8');}
 function csvVal(x){let s=String(x??'');if(/^[=+@\t\r]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}
-function exportCsv(){const rows=[['Equipe','Ordem atual','Nota CCS','Status','Prioridade','Municipio','Localidade','Endereco','Latitude','Longitude','Qtd Obras']];obras.forEach((p,i)=>rows.push([data.equipe,i+1,p.nota,p.feito?'CONCLUIDA':'PENDENTE',p.prioridade?'SIM':'NAO',p.municipio,p.localidade,p.endereco,p.lat,p.lon,p.qtd_obras]));download(filename('PROGRESSO.csv'),'\ufeff'+rows.map(r=>r.map(csvVal).join(';')).join('\r\n'),'text/csv;charset=utf-8');}
+function exportCsv(){const rows=[['Equipe','Ordem atual','Nota CCS','Cliente','ID SISCO','Numero da Obra','Status','Prioridade','Municipio','Localidade','Endereco','Latitude','Longitude','Qtd Obras']];obras.forEach((p,i)=>rows.push([data.equipe,i+1,p.nota,p.cliente,p.id_sisco,p.numero_obra,p.feito?'CONCLUIDA':'PENDENTE',p.prioridade?'SIM':'NAO',p.municipio,p.localidade,p.endereco,p.lat,p.lon,p.qtd_obras]));download(filename('PROGRESSO.csv'),'\ufeff'+rows.map(r=>r.map(csvVal).join(';')).join('\r\n'),'text/csv;charset=utf-8');}
 function state(){return {schema:'nip-offline-v1',equipe:data.equipe,versao:data.versao,geradoEm:new Date().toISOString(),order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)};}
 function exportJson(){download(filename('BACKUP.json'),JSON.stringify(state(),null,2),'application/json;charset=utf-8');}
 function mover(index,delta){const j=index+delta;if(j<0||j>=obras.length)return;[obras[index],obras[j]]=[obras[j],obras[index]];persist();render();}
 function toggle(id){const p=obras.find(p=>p.id===id);if(p){p.feito=!p.feito;persist();render();}}
 function button(text,cb,cl='soft'){const b=document.createElement('button');b.type='button';b.className='btn '+cl;b.textContent=text;b.addEventListener('click',cb);return b;}
 function link(text,url,cl='soft'){const a=document.createElement('a');a.className='btn '+cl;a.textContent=text;a.href=url;return a;}
-function filtradas(){const q=el('busca').value.trim().toLocaleLowerCase('pt-BR'),f=el('filtro').value;return obras.map((p,i)=>({p,i})).filter(({p})=>((f==='todas')||(f==='pendentes'&&!p.feito)||(f==='prioritarias'&&!p.feito&&p.prioridade)||(f==='feitas'&&p.feito))&&(!q||[p.nota,p.municipio,p.localidade,p.endereco].join(' ').toLocaleLowerCase('pt-BR').includes(q)));}
+function filtradas(){const q=el('busca').value.trim().toLocaleLowerCase('pt-BR'),f=el('filtro').value;return obras.map((p,i)=>({p,i})).filter(({p})=>((f==='todas')||(f==='pendentes'&&!p.feito)||(f==='prioritarias'&&!p.feito&&p.prioridade)||(f==='feitas'&&p.feito))&&(!q||[p.nota,p.cliente,p.id_sisco,p.numero_obra,p.municipio,p.localidade,p.endereco].join(' ').toLocaleLowerCase('pt-BR').includes(q)));}
 function renderList(){const box=el('lista');box.replaceChildren();const arr=filtradas();arr.slice(0,visiveis).forEach(({p,i})=>{const item=document.createElement('article');item.className='item'+(p.prioridade?' priority':'')+(p.feito?' done':'');const head=document.createElement('div');head.className='row';const label=document.createElement('strong');label.textContent=(i+1)+'. NOTA '+p.nota;head.append(label);const badge=document.createElement('span');badge.className='tag '+(p.feito?'green':p.prioridade?'red':'');badge.textContent=p.feito?'✓ Concluida':p.prioridade?'⚠ Prioritaria':'Pendente';head.append(badge);item.append(head);
-const desc=document.createElement('p');desc.className='muted';desc.textContent=[p.municipio,p.localidade,p.endereco].filter(Boolean).join(' / ');item.append(desc);const gps=document.createElement('div');gps.className='coords';gps.textContent=coord(p);item.append(gps);const ctrl=document.createElement('div');ctrl.className='actions';const up=button('⬆ Subir',()=>mover(i,-1));up.disabled=i===0;ctrl.append(up);const down=button('⬇ Descer',()=>mover(i,1));down.disabled=i===obras.length-1;ctrl.append(down);ctrl.append(button(p.feito?'↩ Reabrir':'✓ Concluida',()=>toggle(p.id),p.feito?'soft':'green'));if(modo==='online'){ctrl.append(link('📍 Google Maps',urlDirecoes(data.origem,[p],el('localAtual').checked)));}item.append(ctrl);box.append(item);});
+const ident=document.createElement('p');ident.className='ident';ident.textContent='Cliente: '+(p.cliente||'Nao informado')+' | '+(p.numero_obra?'Numero da obra: '+p.numero_obra:p.id_sisco?'ID SISCO: '+p.id_sisco:'Identificador SISCO nao informado');item.append(ident);if(p.detalhes.length>1){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='Ver '+p.detalhes.length+' obras/ clientes deste superponto';details.append(summary);const ul=document.createElement('ul');p.detalhes.forEach(x=>{const li=document.createElement('li');li.textContent='Nota '+x.nota+' | Cliente: '+(x.cliente||'Nao informado')+(x.numero_obra?' | Obra: '+x.numero_obra:x.id_sisco?' | ID SISCO: '+x.id_sisco:'');ul.append(li);});details.append(ul);item.append(details);}const desc=document.createElement('p');desc.className='muted';desc.textContent=[p.municipio,p.localidade,p.endereco].filter(Boolean).join(' / ');item.append(desc);const gps=document.createElement('div');gps.className='coords';gps.textContent=coord(p);item.append(gps);const ctrl=document.createElement('div');ctrl.className='actions';const up=button('⬆ Subir',()=>mover(i,-1));up.disabled=i===0;ctrl.append(up);const down=button('⬇ Descer',()=>mover(i,1));down.disabled=i===obras.length-1;ctrl.append(down);ctrl.append(button(p.feito?'↩ Reabrir':'✓ Concluida',()=>toggle(p.id),p.feito?'soft':'green'));if(modo==='online'){ctrl.append(link('📍 Google Maps',urlDirecoes(data.origem,[p],el('localAtual').checked)));}item.append(ctrl);box.append(item);});
 el('mais').classList.toggle('hidden',arr.length<=visiveis);if(!arr.length){box.textContent='Nenhuma obra com este filtro.';}}
 function renderRoutes(){const b=el('etapas');b.replaceChildren();const groups=routeGroups();groups.forEach((g,i)=>{const p=document.createElement('div');p.className='item';const text=document.createElement('div');text.textContent='Etapa '+(i+1)+' | '+g.subset.length+' parada(s) | '+g.subset.map(x=>x.nota).join(' → ');p.append(text);p.append(link('Abrir etapa '+(i+1),urlDirecoes(g.de,g.subset,el('localAtual').checked&&i===0),'green'));b.append(p);});
 el('rotaProximas').href=groups.length?urlDirecoes(groups[0].de,groups[0].subset,el('localAtual').checked):'#';el('rotaProximas').style.display=groups.length?'inline-block':'none';}
-function render(){el('qtd').textContent=obras.length;el('feitas').textContent=obras.filter(p=>p.feito).length;el('pend').textContent=pendentes().length;const first=pendentes()[0];el('primeira').textContent=first?'Proxima obra: '+first.nota+' | '+first.municipio+(first.prioridade?' | PRIORITARIA':''):'Todas as obras concluidas!';if(first){el('linkPrimeira').href=urlDirecoes(data.origem,[first],el('localAtual').checked);el('linkPrimeira').style.display='';}else el('linkPrimeira').style.display='none';renderRoutes();renderList();persist();}
+function render(){el('qtd').textContent=obras.length;el('feitas').textContent=obras.filter(p=>p.feito).length;el('pend').textContent=pendentes().length;const first=pendentes()[0];el('primeira').textContent=first?'Proxima obra: '+first.nota+' | Cliente: '+(first.cliente||'Nao informado')+(first.numero_obra?' | Obra: '+first.numero_obra:first.id_sisco?' | ID SISCO: '+first.id_sisco:'')+' | '+first.municipio+(first.prioridade?' | PRIORITARIA':''):'Todas as obras concluidas!';if(first){el('linkPrimeira').href=urlDirecoes(data.origem,[first],el('localAtual').checked);el('linkPrimeira').style.display='';}else el('linkPrimeira').style.display='none';renderRoutes();renderList();persist();}
 function setMode(m){modo=m;el('modoOffline').classList.toggle('active',m==='offline');el('modoOnline').classList.toggle('active',m==='online');el('blocoOnline').classList.toggle('hidden',m!=='online');el('modoTag').textContent=m==='offline'?'PLANEJAMENTO OFFLINE':'GOOGLE MAPS ONLINE';renderList();}
 function statusConexao(){el('conexao').textContent=navigator.onLine?'Conexao possivelmente disponivel':'Sem conexao detectada';}
 el('exportGPX').onclick=exportGpx;el('exportKML').onclick=exportKml;el('exportCSV').onclick=exportCsv;el('exportJSON').onclick=exportJson;
@@ -401,83 +464,205 @@ def link_apple_maps_obra(origem, destino, local_atual=False):
 
 
 def gerar_painel_iphone_estatico(df_equipe, equipe):
-    """No-JS fallback: plain HTTPS hrefs that can be followed or copied on iOS.
+    """Planejador iOS com selecao multipla e fallback sem JavaScript.
 
-    iOS Files/WhatsApp HTML previews can omit scripts. Static markup is
-    intentionally present in the document before any JavaScript runs.
+    Na visualizacao rapida do app Arquivos/WhatsApp, que pode bloquear scripts,
+    as etapas pregeradas continuam como hyperlinks HTML HTTPS normais.
+    Quando aberto em navegador Safari com JavaScript habilitado (idealmente
+    hospedado sob HTTPS), permite selecionar N obras, reordenar a selecao e
+    gerar quantas etapas de ate 4 paradas forem necessarias, sem perder pontos.
+    Nunca tenta disparar window.open() ou popup bloqueado pelo iOS.
     """
-    ori = origem_google_maps(df_equipe)
+    origem = origem_google_maps(df_equipe)
     pontos = pontos_equipe_google_maps(df_equipe)
     safe = lambda x: html.escape(str(x), quote=True)
-    css = ("body{font-family:-apple-system,system-ui,sans-serif;margin:0;"
-           "background:#f2f6fb;color:#18314f}header{background:#0d256c;"
-           "color:white;padding:22px 14px}main{max-width:720px;margin:auto;"
-           "padding:14px}.card{background:white;border:1px solid #d6e2ee;"
-           "border-radius:10px;margin:12px 0;padding:15px}.b{display:inline-block;"
-           "background:#1b8049;color:white;text-decoration:none;border-radius:8px;"
-           "padding:12px;margin:5px 5px 5px 0;overflow-wrap:anywhere;font-weight:650}"
-           ".b.alt{background:#0d256c}.note{color:#4b6078;font-size:14px}"
-           "h1{font-size:24px}h2{font-size:18px;margin:0 0 9px}")
+    css = r"""
+:root{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#17314f;background:#f3f6fc;font-size:15px}
+*{box-sizing:border-box}body{margin:0}header{background:#0d256c;color:white;padding:22px 15px}
+main{max-width:810px;margin:auto;padding:13px}.card{background:#fff;border:1px solid #d6e2ee;border-radius:12px;margin:12px 0;padding:15px}
+h1{font-size:23px;margin:5px 0}h2{font-size:18px;margin:0 0 10px}h3{font-size:15px}
+.note{color:#52647b;font-size:13px;line-height:1.5}.tag{background:#eaf1fe;padding:3px 7px;border-radius:20px;color:#17437a;font-size:12px}
+.b,button.b{appearance:none;border:0;display:inline-block;background:#167847;color:#fff;text-decoration:none;border-radius:8px;padding:11px 12px;margin:4px 5px 4px 0;overflow-wrap:anywhere;font:600 14px -apple-system,system-ui,sans-serif;cursor:pointer}
+.b.alt,button.b.alt{background:#0d256c}.b.soft,button.b.soft{background:#e8f0fa;color:#183f73}.b:disabled{opacity:.4}
+.row{display:flex;flex-wrap:wrap;gap:7px;align-items:center}.row>*{flex-shrink:0}
+#opcoes{max-height:400px;overflow:auto;border:1px solid #d6e2ee;border-radius:9px}
+.obra{display:flex;gap:10px;align-items:flex-start;border-bottom:1px solid #edf1f5;padding:11px;cursor:pointer}
+.obra:last-child{border-bottom:none}.obra input{height:21px;width:21px;margin:2px 0;flex-shrink:0;accent-color:#0d256c}
+.obra .data{flex:1;min-width:0}.obra .cliente{display:block;color:#3e5878;margin:4px 0}.prio{color:#af2235;font-weight:700}
+input[type=search]{width:100%;padding:12px 10px;border:1px solid #bbcde0;border-radius:8px;font:inherit;margin:7px 0}
+.selrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border:1px solid #dbe4ef;border-radius:8px;margin:7px 0}
+.selrow>div:first-child{flex:1;min-width:0}.selrow strong{display:block}.selrow .mov{padding:10px;background:#e6edf7;color:#174278;border:0;border-radius:7px;min-width:36px}
+.etapa{border-left:4px solid #1a824e;background:#f3faf6;padding:12px;border-radius:8px;margin:11px 0}
+.etapa ol{padding-left:24px;font-size:13px}.etapa li{padding:3px 0}
+#selecaoResumo{font-weight:700;color:#0d256c}.js-only{display:none}.js .js-only{display:block}
+.simpleLinks a{overflow-wrap:anywhere}.help{background:#fff7e9;padding:9px;border-radius:8px;border-left:3px solid #e9ad42}
+@media(max-width:510px){main{padding:9px}.card{padding:11px}.b,button.b{font-size:13px}.selrow .mov{min-width:33px;padding:9px}}
+"""
     b = ['<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">',
-         '<meta name="viewport" content="width=device-width,initial-scale=1">',
-         '<title>Rotas iPhone - NIP</title><style>'+css+'</style></head><body>',
-         '<header><h1>Rotas iPhone / iOS</h1><strong>'+safe(equipe)+'</strong>',
-         '<p>Origem: '+safe(ori['municipio'])+'</p></header><main>',
-         '<p class="note">Links diretos: nao dependem de botoes JavaScript. '
-         'Se o visor do app Arquivos nao abrir o link, copie o endereco do '
-         'arquivo LINKS_Maps desta equipe e cole no Safari.</p>']
+         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
+         '<meta name="theme-color" content="#0d256c">',
+         '<title>Rotas iPhone - NIP | Selecao multipla</title><style>'+css+'</style></head><body>',
+         '<header><h1>🏠 Rotas iPhone — NIP</h1><strong>'+safe(equipe)+'</strong>',
+         '<p>Partida: '+safe(origem['municipio'])+'</p></header><main>',
+         '<section class="card"><h2>🧭 Como usar</h2>',
+         '<p class="note">Marque varias obras abaixo, organize a ordem e toque em <b>Abrir etapa no Google Maps</b>. ',
+         'Cada etapa comporta ate 4 obras (3 pontos intermediarios e o destino); ',
+         'se selecionar mais, o painel cria etapas adicionais automaticamente.</p>',
+         '<p class="note help">Se a selecao de obras nao aparecer no iPhone, a pre-visualizacao do app Arquivos/WhatsApp ',
+         'bloqueou o JavaScript. Use os links prontos de varias obras no fim da pagina, ',
+         'ou abra este painel no Safari por um endereco HTTPS. ',
+         'A versao publicada em HTTPS e a opcao confiavel para editar a rota.</p></section>']
     if pontos:
-        primeira = pontos[0]
-        b.extend(['<section class="card"><h2>1. Comece por esta obra</h2>',
-                  '<strong>Nota '+safe(primeira['nota'])+'</strong>',
-                  '<p class="note">'+safe(primeira['municipio'])+'</p>',
-                  '<a class="b" href="'+safe(link_google_maps_primeira_obra(ori,primeira))+'">Google Maps - desde municipio</a>',
-                  '<a class="b" href="'+safe(link_google_maps_primeira_obra(ori,primeira,local_atual=True))+'">Google Maps - usar GPS atual</a>',
-                  '<a class="b alt" href="'+safe(link_apple_maps_obra(ori,primeira))+'">Apple Maps - primeira obra</a>',
-                  '<p class="note">Se o toque nao funcionar, copie este link para o Safari: '+safe(link_google_maps_primeira_obra(ori, primeira))+'</p>',
-                  '</section>'])
-        etapas = gerar_etapas_google_maps(ori, pontos)
-        b.append('<section class="card"><h2>2. Abrir etapas no Google Maps</h2>')
-        for e in etapas:
-            b.extend(['<p><strong>Etapa '+str(e['etapa'])+'</strong> - notas '+safe(e['primeira_nota'])+' ate '+safe(e['ultima_nota'])+'</p>',
-                      '<a class="b" href="'+safe(e['url'])+'">Abrir etapa '+str(e['etapa'])+'</a>',
-                      '<a class="b alt" href="'+safe(e['url_local_atual'])+'">Etapa '+str(e['etapa'])+' a partir do GPS</a>',
-                      '<p class="note">Link: '+safe(e['url'])+'</p>'])
+        b.extend(['<section class="card js-only" id="planejadorIOS"><h2>✅ Escolher varias obras</h2>',
+                  '<p class="note">As primeiras quatro aparecem selecionadas para iniciar. ',
+                  'Escolha quantas quiser; as demais serao divididas em etapas. ',
+                  'A ordem das obras selecionadas pode ser modificada abaixo.</p>',
+                  '<input id="buscaIOS" type="search" placeholder="Buscar nota, cliente, ID SISCO ou municipio" aria-label="Pesquisar obras">',
+                  '<div class="row"><button class="b alt" type="button" id="selecionarVisiveis">Marcar obras filtradas</button>',
+                  '<button class="b soft" type="button" id="limparIOS">Limpar selecao</button>',
+                  '<button class="b soft" type="button" id="primeirasIOS">Primeiras 4</button></div>',
+                  '<div id="opcoes" role="group" aria-label="Obras disponiveis">'])
+        for i, pt in enumerate(pontos):
+            resumo = ' '.join([pt['nota'], pt['cliente'], pt['id_sisco'],
+                               pt['numero_obra'], pt['municipio'], pt['localidade']]).casefold()
+            texto = f"{i+1}. Nota {pt['nota']}"
+            id_txt = ('Obra: '+pt['numero_obra'] if pt['numero_obra'] else 'ID SISCO: '+(pt['id_sisco'] or '-'))
+            b.append('<label class="obra" data-search="'+safe(resumo)+'"><input type="checkbox" '
+                     'class="obra-opt" data-index="'+str(i)+'" data-coord="'+safe(coordenada_maps(pt))+'" '
+                     +('checked ' if i < 4 else '')+'><span class="data"><strong>'+safe(texto)+'</strong>'
+                     +(' <span class="prio">⚠ PRIORITARIA</span>' if pt['prioridade'] else '')
+                     +'<span class="cliente">'+safe(pt['cliente'] or 'Cliente nao informado')+'</span>'
+                     +'<span class="note">'+safe(id_txt)+' • '+safe(pt['municipio'])+'</span></span></label>')
+        b.extend(['</div></section>',
+                  '<section class="card js-only"><h2>🔢 Ordem das obras selecionadas</h2>',
+                  '<p id="selecaoResumo" aria-live="polite"></p><div id="ordemIOS"></div></section>',
+                  '<section class="card js-only"><h2>🚗 Abrir varias obras no Google Maps</h2>',
+                  '<p class="note">Links diretos: toque em uma etapa para abrir o aplicativo. ',
+                  'Em caso de mais de quatro obras, abra as etapas seguintes conforme o andamento. ',
+                  'O botao <b>Do meu GPS</b> considera a posicao atual em vez da origem planejada.</p>',
+                  '<div id="etapasIOS"></div></section>'])
+        b.append('<section class="card"><h2>🛣️ Rotas prontas de ate 4 obras (funcionam sem JavaScript)</h2>')
+        b.append('<p class="note">Caso o iPhone nao permita selecionar, estes links ja incluem varias obras por etapa, conforme a ordem original da NIP.</p>')
+        for et in gerar_etapas_google_maps(origem, pontos):
+            ini = et['etapa']
+            b.extend(['<div class="etapa"><strong>Etapa '+str(ini)+'</strong>',
+                      '<p class="note">Da nota '+safe(et['primeira_nota'])+' ate '+safe(et['ultima_nota'])+'</p>',
+                      '<a class="b" href="'+safe(et['url'])+'">🚗 Abrir ate 4 obras — etapa '+str(ini)+'</a>',
+                      '<a class="b alt" href="'+safe(et['url_local_atual'])+'">📍 Etapa '+str(ini)+' — usar GPS atual</a>',
+                      '<details><summary class="note">Copiar link manualmente</summary><p class="simpleLinks note">'+safe(et['url'])+'</p></details></div>'])
         b.append('</section>')
-        b.append('<section class="card"><h2>3. Navegar obra por obra</h2>')
-        atual = ori
-        for i, pt in enumerate(pontos, start=1):
+        b.append('<section class="card"><h2>📍 Obras individuais (alternativa)</h2><details><summary>Ver links de uma obra por vez</summary>')
+        for i, pt in enumerate(pontos, 1):
+            identificador = ('Obra: '+pt['numero_obra'] if pt['numero_obra'] else 'ID SISCO: '+(pt['id_sisco'] or '-'))
             b.extend(['<p><strong>'+str(i)+'. Nota '+safe(pt['nota'])+'</strong> '
-                      + ('(PRIORITARIA)' if pt['prioridade'] else '')+'</p>',
-                      '<a class="b" href="'+safe(link_google_maps_primeira_obra(atual,pt))+'">Google Maps</a>',
-                      '<a class="b alt" href="'+safe(link_apple_maps_obra(atual,pt))+'">Apple Maps</a>',
-                      '<a class="b alt" href="'+safe(link_google_maps_primeira_obra(atual,pt,local_atual=True))+'">Do meu GPS</a>'])
-            atual = pt
-        b.append('</section>')
+                      +('⚠ PRIORITARIA' if pt['prioridade'] else '')+'<span class="note"><br>Cliente: '
+                      +safe(pt['cliente'] or 'Nao informado')+' | '+safe(identificador)+'</span></p>',
+                      '<a class="b alt" href="'+safe(link_google_maps_primeira_obra(origem, pt, local_atual=True))+'">Google Maps GPS</a>',
+                      '<a class="b soft" href="'+safe(link_apple_maps_obra(origem, pt))+'">Apple Maps</a>'])
+        b.append('</details></section>')
     else:
-        b.append('<p>Nenhuma obra disponivel para esta equipe.</p>')
-    b.append('<p class="note">A origem e a sede municipal de referencia, '
-             'nao o endereco residencial. Para modificar a sequencia no iPhone, '
-             'abra o planejador interativo em uma pagina HTTPS no Safari. '
-             'Os links deste arquivo seguem a ordem original da NIP.</p>')
+        b.append('<section class="card"><p>Nenhuma obra disponivel para esta equipe.</p></section>')
+    b.append('<p class="note">O ponto de partida representa a sede do municipio selecionado, '
+             'nao o endereco residencial exato. No Google Maps, confira o trajeto viario e '
+             'a sequencia antes de iniciar a navegacao.</p>')
+    js = r"""
+(function(){
+'use strict';
+document.documentElement.classList.add('js');
+const checks=Array.from(document.querySelectorAll('input.obra-opt'));
+if(!checks.length)return;
+const $=id=>document.getElementById(id);
+let escolhidas=checks.filter(x=>x.checked).map(x=>Number(x.dataset.index));
+const origem=__ORIGEM_IOS__;
+const limite=4;
+function coord(i){return checks[i].dataset.coord;}
+function buildURL(inicio,lista,gps){
+  if(!lista.length)return '#';
+  const q=new URLSearchParams();q.set('api','1');q.set('travelmode','driving');
+  if(!gps)q.set('origin',inicio);
+  q.set('destination',coord(lista[lista.length-1]));
+  if(lista.length>1)q.set('waypoints',lista.slice(0,-1).map(coord).join('|'));
+  return 'https://www.google.com/maps/dir/?'+q.toString();
+}
+function text(tag,txt,cls){const e=document.createElement(tag);e.textContent=txt;if(cls)e.className=cls;return e;}
+function addLink(parent,label,href,cls){const a=text('a',label,'b '+cls);a.href=href;parent.append(a);return a;}
+function sincronizar(){checks.forEach((c,i)=>c.checked=escolhidas.includes(i));render();}
+function mover(i,delta){const j=i+delta;if(j<0||j>=escolhidas.length)return;
+ [escolhidas[i],escolhidas[j]]=[escolhidas[j],escolhidas[i]];sincronizar();}
+function render(){
+ $('selecaoResumo').textContent=escolhidas.length+' obra(s) selecionada(s) • '+Math.ceil(escolhidas.length/limite)+' etapa(s)';
+ const box=$('ordemIOS');box.replaceChildren();
+ escolhidas.forEach((idx,i)=>{
+  const row=text('div','', 'selrow');const label=document.createElement('div');
+  const obra=checks[idx].closest('label');
+  label.append(text('strong',(i+1)+'. '+obra.querySelector('strong').textContent));
+  label.append(text('span',obra.querySelector('.cliente').textContent,'note'));
+  row.append(label);
+  const up=text('button','↑','mov');up.type='button';up.title='Mover para cima';up.disabled=i===0;up.addEventListener('click',()=>mover(i,-1));
+  const down=text('button','↓','mov');down.type='button';down.title='Mover para baixo';down.disabled=i===escolhidas.length-1;down.addEventListener('click',()=>mover(i,1));
+  row.append(up,down);box.append(row);
+ });
+ const etapas=$('etapasIOS');etapas.replaceChildren();
+ if(!escolhidas.length){etapas.append(text('p','Marque pelo menos uma obra acima.','note'));return;}
+ let pontoInicial=origem;
+ for(let i=0;i<escolhidas.length;i+=limite){
+  const grupo=escolhidas.slice(i,i+limite);
+  const bloco=text('div','', 'etapa');bloco.append(text('strong','Etapa '+(Math.floor(i/limite)+1)+' — '+grupo.length+' obra(s)'));
+  const ol=document.createElement('ol');
+  grupo.forEach(idx=>ol.append(text('li',checks[idx].closest('label').querySelector('strong').textContent)));
+  bloco.append(ol);
+  addLink(bloco,'🚗 Abrir etapa no Google Maps',buildURL(pontoInicial,grupo,false),'');
+  addLink(bloco,'📍 Abrir do meu GPS atual',buildURL(pontoInicial,grupo,true),'alt');
+  etapas.append(bloco);pontoInicial=coord(grupo[grupo.length-1]);
+ }
+}
+checks.forEach(c=>c.addEventListener('change',()=>{
+ const id=Number(c.dataset.index);
+ if(c.checked && !escolhidas.includes(id))escolhidas.push(id);
+ else if(!c.checked)escolhidas=escolhidas.filter(x=>x!==id);
+ sincronizar();
+}));
+$('buscaIOS').addEventListener('input',()=>{
+ const q=$('buscaIOS').value.trim().toLocaleLowerCase('pt-BR');
+ checks.forEach(c=>{const row=c.closest('label');row.style.display=(!q||row.dataset.search.includes(q))?'':'none';});
+});
+$('selecionarVisiveis').addEventListener('click',()=>{
+ checks.forEach((c,i)=>{if(c.closest('label').style.display!=='none'&&!escolhidas.includes(i))escolhidas.push(i);});sincronizar();
+});
+$('limparIOS').addEventListener('click',()=>{escolhidas=[];sincronizar();});
+$('primeirasIOS').addEventListener('click',()=>{escolhidas=checks.slice(0,4).map((_,i)=>i);sincronizar();});
+render();
+})();
+"""
+    # Somente codigo inline + dados locais: nenhuma biblioteca externa necessaria.
+    # A origem e uma coordenada controlada pelo roteirizador, nao entrada de JS.
+    b.append('<script>'+js.replace('__ORIGEM_IOS__',
+             json.dumps(coordenada_maps(origem)))+'</script>')
     b.append('</main></body></html>')
     return '\n'.join(b)
 
 
 def gerar_leia_me_iphone():
-    return ("ROTAS NO IPHONE / iOS - NIP\n\n"
+    return ("ROTAS COM VARIAS OBRAS NO IPHONE / iOS - NIP\n\n"
             "1. Extraia o ZIP no app Arquivos do iPhone.\n"
-            "2. Abra o arquivo Equipes/Roteiro_iPhone_*.html da sua equipe.\n"
-            "3. Toque em Google Maps - desde municipio, ou Google Maps - usar GPS atual.\n"
-            "4. Se a visualizacao do iPhone nao permitir abrir o link, abra\n"
-            "   Equipes/LINKS_Maps_*.txt e COPIE o link https:// para o Safari.\n"
-            "5. Apple Maps e uma alternativa para percursos individuais.\n"
-            "6. Para mudar e salvar a ordem pelo painel interativo, use uma\n"
-            "   versao hospedada em HTTPS no Safari (a visualizacao rapida do\n"
-            "   app Arquivos pode nao executar JavaScript).\n"
-            "7. A origem municipal e uma referencia, nao um endereco de casa.\n"
-            "8. Para navegar, o celular precisa de internet ou mapas offline\n"
-            "   previamente disponiveis no app de navegacao.\n")
+            "2. Abra Equipes/Roteiro_iPhone_*.html da sua equipe.\n"
+            "3. Se o navegador executar JavaScript, escolha quantas obras quiser\n"
+            "   marcando as caixas; altere a ordem pelas setas para cima/baixo.\n"
+            "4. Abra os links das etapas geradas: ate 4 obras por link;\n"
+            "   para 12 obras, por exemplo, o painel cria 3 etapas.\n"
+            "5. A alternativa 'Abrir do meu GPS atual' permite usar a posicao\n"
+            "   real do celular em vez da origem da etapa.\n"
+            "6. Se nao aparecer a lista de selecao, a pre-visualizacao do iOS\n"
+            "   bloqueou scripts: use a secao 'Rotas prontas de ate 4 obras',\n"
+            "   ja presente no mesmo HTML (nao necessita JavaScript).\n"
+            "7. Para escolher e reordenar livremente, abra o HTML em um\n"
+            "   endereco HTTPS no Safari: arquivos locais no iPhone podem\n"
+            "   limitar a execucao de JavaScript, conforme o app utilizado.\n"
+            "8. Se o visor do app Arquivos nao abrir os links HTTPS, copie o\n"
+            "   link de Equipes/LINKS_Maps_*.txt e cole diretamente no Safari.\n"
+            "9. O Google Maps permite ajustar paradas pelo menu Editar paradas.\n"
+            "10. Mapas offline devem ter sido baixados ANTES do deslocamento.\n"
+            "11. A origem municipal e uma referencia, nao endereco de casa.\n")
 
 
 def csv_google_mymaps_em_partes(texto_csv, max_dados=1999):
@@ -507,7 +692,7 @@ def gerar_indice_google_maps(equipes):
         local=html.escape(equipe['municipio'])
         nota=html.escape(equipe['primeira'])
         arq_ios=html.escape(equipe.get('arquivo_ios',equipe['arquivo']), quote=True)
-        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} | 1ª obra: {nota}</p><a href="{arq_ios}">iPhone: abrir rotas diretas</a> &nbsp; <a href="{arq}">Planejador interativo (Android / Safari HTTPS)</a></article>')
+        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} | 1ª obra: {nota}</p><a href="{arq_ios}">iPhone: selecionar varias obras</a> &nbsp; <a href="{arq}">Planejador interativo (Android / Safari HTTPS)</a></article>')
     return ("""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Google Maps - NIP</title><style>body{font-family:system-ui;background:#f3f6fd;margin:0;color:#123}header{background:#0d256c;color:white;padding:22px}main{max-width:900px;margin:auto;padding:15px}.item{background:white;border-radius:9px;padding:16px;margin:12px 0;box-shadow:0 2px 8px #1231}.item a{background:#238b46;color:white;display:inline-block;padding:11px;border-radius:7px;text-decoration:none;font-weight:bold}p{color:#567}</style></head><body><header><h1>📍 Planejamento Google Maps - NIP</h1><p style="color:white">Selecione a equipe para organizar o roteiro no celular</p></header><main>"""
             + ''.join(blocos) + """<p>O arquivo HTML de cada equipe permite reordenar e marcar visitas. Para importar os pontos num mapa, use os arquivos CSV em Google My Maps.</p></main></body></html>""")
 
@@ -516,7 +701,7 @@ def gerar_leia_me_google_maps():
     return ("""ROTAS GOOGLE MAPS - NIP / LISTA CONTINUA
 
 1. Abra INICIAR_AQUI.html no navegador do computador ou do celular.
-   NO IPHONE use Equipes/Roteiro_iPhone_*.html, com links estaticos.
+   NO IPHONE use Equipes/Roteiro_iPhone_*.html, com selecao multipla e links estaticos.
    Se o app Arquivos nao abrir links, copie os URLs de LINKS_Maps_*.txt
    e cole diretamente no Safari. Leia LEIA_ME_IPHONE.txt.
 2. Selecione a equipe; no HTML individual, a primeira obra sugerida ja aparece.
@@ -526,11 +711,11 @@ def gerar_leia_me_google_maps():
 6. Os links em LINKS_*.txt servem para envio direto por WhatsApp.
 7. Para visualizar TODOS os marcadores de cada equipe num mesmo mapa no
    Google My Maps (https://www.google.com/maps/d/), importe o CSV correspondente.
-   Escolha Latitude e Longitude como colunas de posicao e Nome como titulo.
+   Escolha Latitude e Longitude como colunas de posicao e Nome como titulo.\n   O marcador exibira Nota CCS, Cliente e ID SISCO (e Numero da Obra se houver).
    Se houver mais de 1999 registros por CSV, importe as partes _PARTE_002 etc.
 
 IMPORTANTE:
-- Google Maps normal nao importa KML/KMZ como trajeto editavel. Esses sao para Google Earth.
+- Google Maps normal nao permite forcar apelidos personalizados nas paradas\n  a partir de links de direcoes. Nele, o destino continua por coordenadas.\n  Para ver NOTA + CLIENTE + ID SISCO no pino, use o CSV do My Maps.\n- Google Maps normal nao importa KML/KMZ como trajeto editavel. Esses sao para Google Earth.
 - HTML, CSV e TXT sao gerados separados por equipe; INICIAR_AQUI lista todas.
 - Cada link inclui no maximo quatro obras (ate 3 intermediarias + 1 destino),
   para compatibilidade com navegadores de celular. Etapas seguintes continuam
@@ -565,13 +750,16 @@ def gerar_gpx_offline_paradas(df_equipe, equipe):
               f'<metadata><name>{x(equipe)}</name><desc>Paradas em ordem, sem rota rodoviaria.</desc></metadata>',
               item('wpt', f'CASINHA - {origem["municipio"]}', origem, 'Origem: sede municipal aproximada')]
     for n, ponto in enumerate(pontos, 1):
-        partes.append(item('wpt', f'{n:03d} - {ponto["nota"]}', ponto,
-                            ponto['municipio'] + (' | PRIORIDADE' if ponto['prioridade'] else '')))
+        partes.append(item('wpt', f'{n:03d} - {ponto["nota"]} - {ponto["cliente"]}', ponto,
+                            'Cliente: ' + ponto['cliente'] + ' | ID SISCO: ' + ponto['id_sisco']
+                            + ' | Obra: ' + ponto['numero_obra'] + ' | ' + ponto['municipio']
+                            + (' | PRIORIDADE' if ponto['prioridade'] else '')))
     partes.append(f'<rte><name>{x(equipe)} - paradas planejadas</name>'
                   '<desc>Sequencia logica. O app offline calcula o trajeto pelas ruas.</desc>')
     partes.append(item('rtept', f'ORIGEM - {origem["municipio"]}', origem, 'Origem municipal'))
     for n, ponto in enumerate(pontos, 1):
-        partes.append(item('rtept', f'{n:03d} - {ponto["nota"]}', ponto, ponto['municipio']))
+        partes.append(item('rtept', f'{n:03d} - {ponto["nota"]} - {ponto["cliente"]}',
+                            ponto, 'ID SISCO: ' + ponto['id_sisco'] + ' | ' + ponto['municipio']))
     partes.append('</rte></gpx>')
     return '\n'.join(partes)
 
@@ -1361,17 +1549,17 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     qty = len(r.get('_ORIGINAL_ROWS', []))
                     header_txt = f"🏢 SUPER PONTO ({qty} un.)"
                     icon = "icon-yellow"
-                    nome_ponto = f"[{r.get('ORDEM', '')}] 🏢 SUPER PONTO ({qty} un.)"
+                    nome_ponto = f"[{r.get('ORDEM', '')}] 🏢 SUPER PONTO ({qty} un.) - {texto_seguro_maps(r.get('PROTOCOLO'))}"
                 elif is_prio:
                     bg_color, text_color = "#d9534f", "#ffffff"
                     header_txt = "🚨 OBRA PRIORITÁRIA"
                     icon = "icon-red"
-                    nome_ponto = f"[PRIORIDADE] [{r.get('ORDEM', '')}] Doc: {r.get('PROTOCOLO', '')}"
+                    nome_ponto = f"[PRIORIDADE] [{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))} (ID SISCO {texto_seguro_maps(r.get('ID SISCO'))})"
                 else:
                     bg_color, text_color = "#0D256C", "#ffffff"
                     header_txt = "📍 Atendimento Padrão"
                     icon = "icon-blue"
-                    nome_ponto = f"[{r.get('ORDEM', '')}] Doc: {r.get('PROTOCOLO', '')}"
+                    nome_ponto = f"[{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))} (ID SISCO {texto_seguro_maps(r.get('ID SISCO'))})"
 
                 desc = f'''<![CDATA[
                 <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
@@ -1408,6 +1596,8 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
                 desc += f'''
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">PROTOCOLO:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
+                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Cliente:</td><td style="padding:3px 6px; color:#333;">{html.escape(texto_seguro_maps(r.get('NOME')))}</td></tr>
+                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">ID SISCO:</td><td style="padding:3px 6px; color:#333;">{html.escape(texto_seguro_maps(r.get('ID SISCO')))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{html.escape(str(ordem_txt))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{dist_ant}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
@@ -2469,8 +2659,9 @@ if status_exec == "PACKAGING":
                 zm.writestr('LEIA_ME.txt', gerar_leia_me_google_maps().encode('utf-8'))
                 zm.writestr('LEIA_ME_IPHONE.txt', gerar_leia_me_iphone().encode('utf-8'))
                 csv_geral = io.StringIO(newline='')
-                chaves_geral = ['Nome', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
-                                'Nota CCS', 'Municipio', 'Localidade', 'Endereco',
+                chaves_geral = ['Nome', 'Descricao', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
+                                'Nota CCS', 'Cliente', 'ID SISCO', 'Numero da Obra',
+                                'Municipio', 'Localidade', 'Endereco',
                                 'Latitude', 'Longitude', 'Qtd Obras']
                 escritor = csv.DictWriter(csv_geral, fieldnames=chaves_geral, lineterminator='\r\n')
                 escritor.writeheader()
