@@ -43,6 +43,11 @@ CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS + [
 # O icone fornecido pelo usuario fica incorporado ao .py.
 # Os mapas exportados incluem a imagem e nao dependem de arquivo externo.
 ICONE_CASA_ARQUIVO = 'CASINHA_ORIGEM.png'
+# Casinha publica do catalogo oficial do Google Earth. Nos KMLs avulsos,
+# o PNG embutido no ZIP original NAO acompanha o arquivo quando importado
+# isoladamente (especialmente no Google Earth Web). Usar o simbolo publico
+# evita o marcador invisivel e nao exige manter outro arquivo na pasta.
+ICONE_CASA_PUBLICO_URL = 'https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png'
 ICONE_CASA_BASE64 = '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'
 
 
@@ -51,10 +56,21 @@ def imagem_casa_bytes():
 
 
 def gerar_kmz_lista(texto_kml):
-    """Empacota um KML autossuficiente com a casinha personalizada para Google Earth."""
+    """Empacota KMZ com casinha incorporada, propria para Google Earth Pro.
+
+    O KML avulso aponta para o icone publico (Google Earth Web / Pro com rede).
+    Apenas a copia INTERNA do KMZ troca o URL publico pelo arquivo incorporado.
+    Isto preserva a portabilidade de ambos os formatos sem depender do PNG
+    como arquivo avulso ao lado do KML.
+    """
+    marcador_remoto = f'<href>{ICONE_CASA_PUBLICO_URL}</href>'
+    marcador_local = f'<href>{ICONE_CASA_ARQUIVO}</href>'
+    if marcador_remoto not in texto_kml:
+        raise ValueError('O KML nao possui o icone de origem esperado.')
+    texto_kml_interno = texto_kml.replace(marcador_remoto, marcador_local)
     buffer_kmz = io.BytesIO()
     with zipfile.ZipFile(buffer_kmz, 'w', zipfile.ZIP_DEFLATED) as kmz:
-        kmz.writestr('doc.kml', texto_kml.encode('utf-8'))
+        kmz.writestr('doc.kml', texto_kml_interno.encode('utf-8'))
         kmz.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
     return buffer_kmz.getvalue()
 
@@ -824,8 +840,8 @@ MODO OFFLINE (sem internet):
 
 NAVEGACAO OFFLINE POR ESTRADAS:
 1. Instale Organic Maps ou OsmAnd enquanto tiver internet.
-2. Dentro desses aplicativos, baixe os MAPAS das regioes do Maranhao e Piaui em que
-   havera deslocamento. Confira cobertura dos acessos/estradas previamente.
+2. Dentro desses aplicativos, baixe os MAPAS das regioes do Maranhao, Piaui ou
+   Rio Grande do Sul em que havera deslocamento. Confira a cobertura das estradas.
 3. Em Equipes, importe Pontos_Offline_*.gpx no app de navegacao.
    Android: escolha abrir/importar pelo Organic Maps ou OsmAnd.
    iOS: abra Arquivos > Compartilhar > Importar com Organic Maps/OsmAnd.
@@ -1018,11 +1034,11 @@ def haversine_scalar(lat1, lon1, lat2, lon2):
 
 
 
-# ---------- Origem municipal para roteirizacao de equipes (MA + PI) ----------
-# Fonte: dados abertos do repositorio kelvins/municipios-brasileiros,
-# com referencias municipais e codigos de UF alinhados a divisao do IBGE.
-# Sao 217 municipios maranhenses (codigo 21) e 224 piauienses (codigo 22).
-# As coordenadas representam a sede municipal, nao o endereco da residencia.
+# ---------- Origem municipal para roteirizacao de equipes (MA + PI + RS) ----------
+# Fonte: repositorio de dados abertos kelvins/municipios-brasileiros,
+# com codigo UF compativel com a classificacao do IBGE:
+# 217 municipios no MA (21), 224 no PI (22) e 497 no RS (43): total 938.
+# As coordenadas representam a referencia municipal, nao moradia/hospedagem exata.
 FONTES_MUNICIPIOS = (
     'https://raw.githubusercontent.com/kelvins/municipios-brasileiros/master/csv/municipios.csv',
     'https://raw.githubusercontent.com/projectgithubrepository/Municipios-Brasileiros/master/csv/municipios.csv',
@@ -1030,17 +1046,20 @@ FONTES_MUNICIPIOS = (
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def carregar_municipios_ma_pi():
-    """Retorna as 441 sedes municipais como 'Nome / MA' e 'Nome / PI'.
+def carregar_municipios_ma_pi_rs():
+    """Retorna 938 sedes municipais de MA (217), PI (224) e RS (497).
 
-    Pode funcionar sem conexao caso o arquivo 'municipios_ma_pi.csv' seja
-    colocado na mesma pasta deste .py, contendo as colunas: nome, latitude,
-    longitude e codigo_uf (21 ou 22), ou codigo_ibge, ou uf (MA ou PI).
+    Usa CSV local, se disponivel, para permitir roteirizacao sem internet.
+    CSV completo: nome, latitude, longitude, codigo_uf (21, 22, 43),
+    ou codigo_ibge (prefixos 21, 22, 43), ou uf (MA, PI, RS).
+    O CSV legado MA/PI e reconhecido, mas nao basta para as 3 UFs.
     """
     fontes = []
-    csv_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'municipios_ma_pi.csv')
-    if os.path.isfile(csv_local):
-        fontes.append(('arquivo local', csv_local))
+    pasta = os.path.dirname(os.path.abspath(__file__))
+    for nome_arquivo in ('municipios_ma_pi_rs.csv', 'municipios_ma_pi.csv'):
+        csv_local = os.path.join(pasta, nome_arquivo)
+        if os.path.isfile(csv_local):
+            fontes.append((f'arquivo local {nome_arquivo}', csv_local))
     fontes.extend(('online', url) for url in FONTES_MUNICIPIOS)
     erros = []
 
@@ -1062,32 +1081,46 @@ def carregar_municipios_ma_pi():
 
             if 'codigo_uf' in dados.columns:
                 codigo = pd.to_numeric(dados['codigo_uf'], errors='coerce')
-                dados['UF_PARTIDA'] = codigo.map({21: 'MA', 22: 'PI'})
+                dados['UF_PARTIDA'] = codigo.map({21: 'MA', 22: 'PI', 43: 'RS'})
             elif 'codigo_ibge' in dados.columns:
                 codigos = dados['codigo_ibge'].astype(str).str.replace(r'\.0$', '', regex=True)
-                dados['UF_PARTIDA'] = codigos.str[:2].map({'21': 'MA', '22': 'PI'})
+                dados['UF_PARTIDA'] = codigos.str[:2].map({'21': 'MA', '22': 'PI', '43': 'RS'})
             elif 'uf' in dados.columns:
                 dados['UF_PARTIDA'] = dados['uf'].astype(str).str.strip().str.upper()
             else:
                 raise ValueError('CSV sem codigo_uf, codigo_ibge ou uf para diferenciar os estados')
 
-            dados = dados[dados['UF_PARTIDA'].isin(['MA', 'PI'])].copy()
+            dados = dados[dados['UF_PARTIDA'].isin(['MA', 'PI', 'RS'])].copy()
             dados['latitude'] = pd.to_numeric(dados['latitude'], errors='coerce')
             dados['longitude'] = pd.to_numeric(dados['longitude'], errors='coerce')
             dados = dados.dropna(subset=['nome', 'latitude', 'longitude'])
-            dados = dados[
-                dados['latitude'].between(-12, 0)
-                & dados['longitude'].between(-50, -39)
-            ].copy()
+            # Validar coerencia aproximada por UF, sem descartar os municipios
+            # gauchos como acontecia com o antigo recorte nordestino.
+            faixas_uf = {
+                'MA': (-11.0, 0.0, -50.5, -40.0),
+                'PI': (-12.0, 0.0, -47.0, -39.0),
+                'RS': (-35.0, -25.0, -59.0, -48.0),
+            }
+            valido_geo = pd.Series(False, index=dados.index)
+            for uf, (lat_min, lat_max, lon_min, lon_max) in faixas_uf.items():
+                valido_geo |= (
+                    dados['UF_PARTIDA'].eq(uf)
+                    & dados['latitude'].between(lat_min, lat_max)
+                    & dados['longitude'].between(lon_min, lon_max)
+                )
+            dados = dados[valido_geo].copy()
             dados['nome'] = dados['nome'].astype(str).str.strip()
             dados = dados[dados['nome'].ne('')]
             dados = dados.drop_duplicates(subset=['UF_PARTIDA', 'nome'])
 
             quantidade_ma = int((dados['UF_PARTIDA'] == 'MA').sum())
             quantidade_pi = int((dados['UF_PARTIDA'] == 'PI').sum())
-            if quantidade_ma != 217 or quantidade_pi != 224:
+            quantidade_rs = int((dados['UF_PARTIDA'] == 'RS').sum())
+            if (quantidade_ma, quantidade_pi, quantidade_rs) != (217, 224, 497):
                 raise ValueError(
-                    f'Lista incompleta: MA={quantidade_ma}/217 e PI={quantidade_pi}/224'
+                    'Lista incompleta de sedes municipais: '
+                    f'MA={quantidade_ma}/217, PI={quantidade_pi}/224, '
+                    f'RS={quantidade_rs}/497'
                 )
 
             municipios = {
@@ -1102,11 +1135,14 @@ def carregar_municipios_ma_pi():
             erros.append(f'{tipo}: {exc}')
 
     raise RuntimeError(
-        'Nao foi possivel carregar os municipios de MA e PI (217 + 224). '
-        'Confira sua conexao ou coloque municipios_ma_pi.csv ao lado do .py. '
+        'Nao foi possivel carregar os 938 municipios de MA (217), PI (224) e RS (497). '
+        'Confira a internet ou coloque municipios_ma_pi_rs.csv completo ao lado do .py. '
         + ' | '.join(erros)
     )
 
+
+# Compatibilidade com eventuais chamadas externas ao nome antigo.
+carregar_municipios_ma_pi = carregar_municipios_ma_pi_rs
 
 def normalizar_texto_municipio(texto):
     s = unicodedata.normalize('NFKD', str(texto).upper())
@@ -1450,13 +1486,15 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
     # Injetando Estilos de Ícones Padrões e Contorno
     kml.append('<Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
     kml.append('<Style id="linha-ligacao-rede"><LineStyle><color>8800ffff</color><width>2</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
-    # Marcador de moradia/hospedagem, usando a casinha enviada pelo usuario.
-    # Em KML: o PNG acompanha o arquivo na mesma pasta do ZIP.
-    # Em KMZ: o PNG fica incorporado, pronto para abrir no Google Earth.
+    # Simbologia de casinha robusta para os mapas de origem das equipes:
+    # KML avulso -> casinha padrao do catalogo do Google Earth (HTTPS).
+    # KMZ -> gerador substitui essa referencia por imagem PNG empacotada,
+    # exibida sem internet pelo Google Earth Pro.
+    # O ponto georreferenciado da origem e o mesmo em ambos os formatos.
     kml.append(
-        '<Style id="icon-casa-origem"><IconStyle><scale>1.15</scale>'
-        f'<Icon><href>{ICONE_CASA_ARQUIVO}</href></Icon>'
-        '<hotSpot x="0.5" y="0.10" xunits="fraction" yunits="fraction"/>'
+        '<Style id="icon-casa-origem"><IconStyle><scale>1.45</scale>'
+        f'<Icon><href>{ICONE_CASA_PUBLICO_URL}</href></Icon>'
+        '<hotSpot x="0.5" y="0" xunits="fraction" yunits="fraction"/>'
         '</IconStyle><LabelStyle><scale>0.9</scale><color>ffffffff</color>'
         '</LabelStyle></Style>'
     )
@@ -1915,9 +1953,9 @@ with st.sidebar:
                            file_name=f"ListaContinua_Offline - {d_fmt}.zip",
                            use_container_width=True,
                            help="HTML offline por equipe, GPX para Organic Maps/OsmAnd, links e pacote PWA HTTPS para iPhone/Android.")
-        st.caption("🏠 A casinha indica a sede do municipio de moradia/hospedagem. "
-                   "Abra o KMZ no Google Earth para visualizar o icone sem arquivos separados. "
-                   "Nos KMLs, mantenha CASINHA_ORIGEM.png na mesma pasta.")
+        st.caption("🏠 A casinha indica a sede do municipio escolhido, nao o endereco exato. "
+                   "Para Google Earth Web, abra o KML (casinha padrao, com internet). "
+                   "Para Google Earth Pro, prefira o KMZ (casinha personalizada incorporada e disponivel offline).")
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
 if is_done and not st.session_state.df_routed_lista.empty:
@@ -2168,10 +2206,10 @@ elif status_exec == "IDLE":
 
     st.markdown("### 🚐 Município de partida de cada equipe")
     st.caption("1. Selecione a equipe lida da coluna P (LEVANTADOR). "
-               "2. Escolha entre 217 municípios do Maranhão (MA) e 224 do Piauí (PI), total de 441. "
+               "2. Escolha o município de início entre MA (217), PI (224) e RS (497): 938 municípios. "
                "A escolha é salva automaticamente para esta planilha.")
     try:
-        municipios_ma_pi = carregar_municipios_ma_pi()
+        municipios_ma_pi = carregar_municipios_ma_pi_rs()
     except RuntimeError as exc:
         st.error(str(exc))
         st.stop()
@@ -2231,7 +2269,7 @@ elif status_exec == "IDLE":
         municipio_atual = st.session_state.get('municipio_origem_selecionado_lista')
         if municipio_atual not in opcoes_municipios:
             st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipe_sel, '-- Selecione --')
-        st.selectbox('2. Município de início do deslocamento (MA/PI):',
+        st.selectbox('2. Município de início do deslocamento (MA/PI/RS):',
                      opcoes_municipios, key='municipio_origem_selecionado_lista',
                      on_change=ao_selecionar_municipio_origem)
 
