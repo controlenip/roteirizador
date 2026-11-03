@@ -12,6 +12,7 @@ import os
 import requests
 import math
 import hashlib
+import base64
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -35,6 +36,24 @@ CAMPOS_KML_SOLICITADOS = [
 CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS + [
     'NOTA', 'STATUS', 'TIPO DEMANDA', 'BAIRRO', 'COLABORADOR', 'MATRICULA'
 ]
+
+# O icone fornecido pelo usuario fica incorporado ao .py.
+# Os mapas exportados incluem a imagem e nao dependem de arquivo externo.
+ICONE_CASA_ARQUIVO = 'CASINHA_ORIGEM.png'
+ICONE_CASA_BASE64 = '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'
+
+
+def imagem_casa_bytes():
+    return base64.b64decode(ICONE_CASA_BASE64)
+
+
+def gerar_kmz_lista(texto_kml):
+    """Empacota um KML autossuficiente com a casinha personalizada para Google Earth."""
+    buffer_kmz = io.BytesIO()
+    with zipfile.ZipFile(buffer_kmz, 'w', zipfile.ZIP_DEFLATED) as kmz:
+        kmz.writestr('doc.kml', texto_kml.encode('utf-8'))
+        kmz.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
+    return buffer_kmz.getvalue()
 
 def normalize_cols(columns):
     def clean(x):
@@ -608,6 +627,16 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
     # Injetando Estilos de Ícones Padrões e Contorno
     kml.append('<Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
     kml.append('<Style id="linha-ligacao-rede"><LineStyle><color>8800ffff</color><width>2</width></LineStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>')
+    # Marcador de moradia/hospedagem, usando a casinha enviada pelo usuario.
+    # Em KML: o PNG acompanha o arquivo na mesma pasta do ZIP.
+    # Em KMZ: o PNG fica incorporado, pronto para abrir no Google Earth.
+    kml.append(
+        '<Style id="icon-casa-origem"><IconStyle><scale>1.15</scale>'
+        f'<Icon><href>{ICONE_CASA_ARQUIVO}</href></Icon>'
+        '<hotSpot x="0.5" y="0.10" xunits="fraction" yunits="fraction"/>'
+        '</IconStyle><LabelStyle><scale>0.9</scale><color>ffffffff</color>'
+        '</LabelStyle></Style>'
+    )
 
     kml.append('''<Style id="style-blue-n"><IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
 <Style id="style-blue-h"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
@@ -642,11 +671,26 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
             lat_ini, lon_ini = primeira.get('LAT_ORIGEM'), primeira.get('LON_ORIGEM')
             if pd.notna(lat_ini) and pd.notna(lon_ini):
                 mun_ini = html.escape(str(primeira.get('ORIGEM_MUNICIPIO', '')))
+                nome_equipe = html.escape(str(b))
+                nota_inicial = html.escape(str(primeira.get('PROTOCOLO', '-')))
+                km_iniciais = primeira.get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 0)
+                min_iniciais = primeira.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0)
+                desc_casa = (
+                    f'<b>CASINHA: MORADIA / HOSPEDAGEM</b><br/>'
+                    f'<b>Equipe:</b> {nome_equipe}<br/>'
+                    f'<b>Municipio escolhido:</b> {mun_ini} - MA<br/>'
+                    f'<b>Primeira obra:</b> {nota_inicial}<br/>'
+                    f'<b>Distancia ate a primeira obra:</b> {km_iniciais} km<br/>'
+                    f'<b>Tempo de deslocamento inicial:</b> {formatar_tempo_deslocamento(min_iniciais)}<br/>'
+                    '<i>Posicao indicativa: sede do municipio selecionado. '
+                    'Nao e o endereco exato da casa ou hospedagem.</i>'
+                )
                 pasta.append(
-                    '<Placemark><name>INICIO DA EQUIPE - ' + mun_ini + '</name>'
-                    '<description>Referencia de partida: sede do municipio, nao endereco exato.</description>'
-                    '<Style><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/grn-circle.png</href></Icon></IconStyle></Style>'
-                    f'<Point><coordinates>{lon_ini},{lat_ini},0</coordinates></Point></Placemark>'
+                    f'<Placemark><name>INICIO DA EQUIPE - {mun_ini} - CASINHA</name>'
+                    f'<description><![CDATA[{desc_casa}]]></description>'
+                    '<styleUrl>#icon-casa-origem</styleUrl>'
+                    f'<Point><coordinates>{float(lon_ini)},{float(lat_ini)},0</coordinates></Point>'
+                    '</Placemark>'
                 )
 
         for p in df_b['PERIODO'].unique():
@@ -1020,8 +1064,11 @@ with st.sidebar:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
         st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas - {d_fmt}.zip", use_container_width=True)
         st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🗺️ Baixar Mapas (KML)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
+        st.download_button("🏠 Baixar Mapas (KML e KMZ)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
+        st.caption("🏠 A casinha indica a sede do municipio de moradia/hospedagem. "
+                   "Abra o KMZ no Google Earth para visualizar o icone sem arquivos separados. "
+                   "Nos KMLs, mantenha CASINHA_ORIGEM.png na mesma pasta.")
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
 if is_done and not st.session_state.df_routed_lista.empty:
@@ -1101,9 +1148,15 @@ if is_done and not st.session_state.df_routed_lista.empty:
                 origem_label = html.escape(str(primeira.get('ORIGEM_MUNICIPIO', '-')))
                 folium.Marker(
                     [float(primeira['LAT_ORIGEM']), float(primeira['LON_ORIGEM'])],
-                    tooltip=f"Partida: {origem_label} ({bn})",
-                    popup=folium.Popup(f"<b>ORIGEM DA EQUIPE:</b> {origem_label} - MA<br><b>Equipe:</b> {html.escape(str(bn))}", max_width=320),
-                    icon=folium.Icon(color='green', icon='home')
+                    tooltip=f"🏠 Moradia / hospedagem - {origem_label} ({bn})",
+                    popup=folium.Popup(
+                        f"<b>🏠 BASE DA EQUIPE (MORADIA / HOSPEDAGEM):</b> {origem_label} - MA"
+                        f"<br><b>Equipe:</b> {html.escape(str(bn))}"
+                        "<br><i>Marcador aproximado: sede municipal, nao endereco exato.</i>", max_width=340),
+                    icon=folium.CustomIcon(
+                        icon_image='data:image/png;base64,' + ICONE_CASA_BASE64,
+                        icon_size=(42, 42), icon_anchor=(21, 38)
+                    )
                 ).add_to(m_clust)
         pts = [p for _, r in db.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
         folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
@@ -1620,6 +1673,10 @@ if status_exec == "PACKAGING":
             txt_total = gerar_txt_lista(df_excel_full)
             zt.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.txt", txt_total.encode('utf-8'))
             
+            # Um unico PNG por pasta, referenciado pelos arquivos KML dessa pasta.
+            zk.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
+            zk.writestr(f"KML_{d_fmt}/{ICONE_CASA_ARQUIVO}", imagem_casa_bytes())
+
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
             if not dfk_total.empty:
                 dfk_total['DIA_SEMANA'] = dia_semana_str
@@ -1628,6 +1685,7 @@ if status_exec == "PACKAGING":
                 
                 ks_tot = gerar_kml_lista(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
                 zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
+                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kmz", gerar_kmz_lista(ks_tot))
                 zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
             for base in df_routed['BASE_ATRIBUIDA'].unique():
@@ -1654,6 +1712,7 @@ if status_exec == "PACKAGING":
                     
                     ks = gerar_kml_lista(dfk_base, f"Rota {b_safe}", col_exibir, [base], formatar_valor_coluna)
                     zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
+                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kmz", gerar_kmz_lista(ks))
                     zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
         st.session_state.bytes_zip_xl_lista = bu_xl.getvalue()
