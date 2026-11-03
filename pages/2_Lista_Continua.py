@@ -11,6 +11,7 @@ import gc
 import os
 import requests
 import math
+import hashlib
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -195,6 +196,140 @@ def haversine_scalar(lat1, lon1, lat2, lon2):
     return R * c
 
 
+
+# ---------- Origem municipal para roteirizacao de equipes (MA) ----------
+# Lista das sedes municipais: repositorio de dados abertos de municipios
+# (https://github.com/kelvins/municipios-brasileiros). Estado 21 = Maranhao.
+# Os dados sao obtidos uma unica vez por dia e guardados no cache do Streamlit;
+# os municipios nao sao inferidos a partir das obras carregadas.
+FONTES_MUNICIPIOS = (
+    'https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/csv/municipios.csv',
+    'https://raw.githubusercontent.com/juniorpb/Municipios-Brasileiros/master/csv/municipios.csv',
+)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def carregar_municipios_maranhao():
+    """Carrega os 217 municipios e respectivas coordenadas referenciais.
+
+    Leitura opcional de CSV local permite deploy offline. Quando disponivel,
+    colocar 'municipios_ma.csv' ao lado deste arquivo (mesmas colunas do CSV
+    publico: nome, latitude, longitude e codigo_ibge ou codigo_uf).
+    """
+    fontes_de_dados = []
+    caminho_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'municipios_ma.csv')
+    if os.path.isfile(caminho_local):
+        fontes_de_dados.append(('arquivo local', caminho_local))
+    fontes_de_dados.extend(('online', u) for u in FONTES_MUNICIPIOS)
+    erros = []
+
+    for tipo, fonte in fontes_de_dados:
+        try:
+            if tipo == 'arquivo local':
+                dados = pd.read_csv(fonte, encoding='utf-8-sig')
+            else:
+                resp = requests.get(
+                    fonte, timeout=(5, 15),
+                    headers={'User-Agent': 'NIP-ListaContinua/2.0', 'Accept': 'text/csv'}
+                )
+                resp.raise_for_status()
+                dados = pd.read_csv(io.BytesIO(resp.content), encoding='utf-8-sig')
+
+            dados.columns = [str(c).strip().lower() for c in dados.columns]
+            if not {'nome', 'latitude', 'longitude'}.issubset(dados.columns):
+                raise ValueError('CSV sem nome, latitude ou longitude')
+
+            if 'codigo_uf' in dados.columns:
+                dados = dados[pd.to_numeric(dados['codigo_uf'], errors='coerce') == 21].copy()
+            elif 'codigo_ibge' in dados.columns:
+                dados = dados[dados['codigo_ibge'].astype(str).str.startswith('21')].copy()
+            # CSV ja filtrado por estado: permitido quando possuir 217 entradas.
+
+            dados['latitude'] = pd.to_numeric(dados['latitude'], errors='coerce')
+            dados['longitude'] = pd.to_numeric(dados['longitude'], errors='coerce')
+            dados = dados.dropna(subset=['nome', 'latitude', 'longitude'])
+            dados = dados[dados['latitude'].between(-11, -0.5) & dados['longitude'].between(-49, -41)]
+            dados['nome'] = dados['nome'].astype(str).str.strip()
+            dados = dados.drop_duplicates('nome')
+            if len(dados) != 217:
+                raise ValueError(f'Esperados 217 municipios maranhenses, encontrados {len(dados)}')
+
+            municipios = {}
+            for row in dados.itertuples(index=False):
+                nome = row.nome
+                municipios[nome] = (float(row.latitude), float(row.longitude))
+            return dict(sorted(municipios.items(), key=lambda x: normalizar_texto_municipio(x[0])))
+        except (OSError, ValueError, KeyError, requests.RequestException) as exc:
+            erros.append(f'{tipo}: {exc}')
+    raise RuntimeError('Nao foi possivel carregar os 217 municipios do Maranhao. '
+                       'Confira a conexao de internet ou disponibilize municipios_ma.csv. '
+                       + ' | '.join(erros))
+
+
+def normalizar_texto_municipio(texto):
+    s = unicodedata.normalize('NFKD', str(texto).upper())
+    return ''.join(c for c in s if not unicodedata.combining(c))
+
+
+def eh_prioridade(valor):
+    """Reconhece SIM/1/True, sem transformar vazios e NAO em prioridade."""
+    if pd.isna(valor):
+        return False
+    texto = normalizar_texto_municipio(str(valor).strip())
+    return texto not in ('', '0', '0.0', 'NAO', 'N', 'FALSE', 'F', 'NAN', 'NONE', 'NULL', '-')
+
+
+def escolher_primeira_obra(obras, lat_origem, lon_origem):
+    """Escolhe obra prioritária mais proxima; senao, mais proxima geral.
+
+    Criterio de proximidade = distancia geodesica (Haversine). O tempo por
+    estradas sera calculado no motor caso o OSRM esteja habilitado.
+    """
+    if not obras:
+        return None, float('nan')
+    prioritarias = [o for o in obras if eh_prioridade(o.get('PRIORIDADE'))]
+    candidatas = prioritarias if prioritarias else obras
+    lats = np.array([float(o['LATITUDE']) for o in candidatas], dtype=float)
+    lons = np.array([float(o['LONGITUDE']) for o in candidatas], dtype=float)
+    distancias = haversine_vectorized(float(lat_origem), float(lon_origem), lats, lons)
+    idx = int(np.argmin(distancias))
+    return candidatas[idx], float(distancias[idx])
+
+
+def formatar_tempo_deslocamento(minutos):
+    """Formata duracao para leitura de equipes sem confundir com hora de chegada."""
+    try:
+        total = max(0, int(round(float(minutos))))
+    except (ValueError, TypeError):
+        return '-'
+    horas, mins = divmod(total, 60)
+    return f'{horas}h {mins:02d}min' if horas else f'{mins} min'
+
+
+def calcular_previa_origens(df_obras, origens_por_equipe, municipios, velocidade_kmh=30.0):
+    """Tabela de conferencia do primeiro atendimento (estimativa sem OSRM)."""
+    resultados = []
+    for equipe in sorted(df_obras['BASE_ATRIBUIDA'].unique()):
+        municipio = origens_por_equipe.get(equipe)
+        if municipio not in municipios:
+            continue
+        lat, lon = municipios[municipio]
+        lista = df_obras[df_obras['BASE_ATRIBUIDA'] == equipe].to_dict('records')
+        primeira, km_diretos = escolher_primeira_obra(lista, lat, lon)
+        if primeira is None:
+            continue
+        km_estimados = km_diretos * 1.30
+        minutos = km_estimados / max(float(velocidade_kmh), 1) * 60
+        resultados.append({
+            'EQUIPE (COLUNA P)': equipe,
+            'MUNICIPIO DE PARTIDA': municipio,
+            '1a NOTA': primeira.get('PROTOCOLO', '-'),
+            'PRIORITARIA': 'Sim' if eh_prioridade(primeira.get('PRIORIDADE')) else 'Nao',
+            'DISTANCIA ESTIMADA (KM)': round(km_estimados, 1),
+            'TEMPO ESTIMADO': formatar_tempo_deslocamento(minutos),
+        })
+    return pd.DataFrame(resultados)
+
 def fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False):
     if df_tasks.empty or 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns: return df_tasks, 0
     df_valid = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
@@ -356,7 +491,10 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
         df_alvo = df_alvo.rename(columns={'BASE_ATRIBUIDA': 'FISCAL'})
         
     # Colunas obrigatórias fixadas no início
-    final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM', 'DISTANCIA_PONTO_ANTERIOR_KM']
+    final_cols = ['FISCAL', 'DIA_SEMANA', 'DIA_MES', 'SUPER_PONTO', 'ORDEM',
+                  'ORIGEM_MUNICIPIO', 'PRIORIDADE', 'TIPO_DESLOCAMENTO',
+                  'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN',
+                  'TEMPO_VIAGEM_MINUTOS', 'DISTANCIA_PONTO_ANTERIOR_KM']
     if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
@@ -445,6 +583,13 @@ def gerar_txt_lista(df):
         bloco.append(f"FASE: {fase_txt}")
         bloco.append(f"ENDEREÇO: {endereco_completo}")
         bloco.append(f"MUNICIPIO: {municipio}")
+        if r.get('ORDEM') == 1 or str(r.get('ORDEM')) == '1':
+            origem = str(r.get('ORIGEM_MUNICIPIO', '')).strip()
+            if origem:
+                bloco.append(f"ORIGEM DA EQUIPE: {origem} - MA")
+                bloco.append(f"DISTANCIA ATE A PRIMEIRA OBRA: {r.get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', '-')} km")
+                bloco.append(f"TEMPO DE DESLOCAMENTO INICIAL: {formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}")
+                bloco.append(f"METODO: {r.get('TIPO_DESLOCAMENTO', '-')}")
         bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
         bloco.append(f"TIPO NOTA: {tipo_nota}")
         
@@ -491,7 +636,19 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
         pasta = [f'<Folder><name>Equipe: {html.escape(str(b))}</name>']
         df_b = df_kml[df_kml['BASE_ATRIBUIDA'] == b]
         b_safe = re.sub(r'[^A-Za-z0-9]', '', str(b))
-        
+
+        if not df_b.empty:
+            primeira = df_b.sort_values('ORDEM').iloc[0]
+            lat_ini, lon_ini = primeira.get('LAT_ORIGEM'), primeira.get('LON_ORIGEM')
+            if pd.notna(lat_ini) and pd.notna(lon_ini):
+                mun_ini = html.escape(str(primeira.get('ORIGEM_MUNICIPIO', '')))
+                pasta.append(
+                    '<Placemark><name>INICIO DA EQUIPE - ' + mun_ini + '</name>'
+                    '<description>Referencia de partida: sede do municipio, nao endereco exato.</description>'
+                    '<Style><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/grn-circle.png</href></Icon></IconStyle></Style>'
+                    f'<Point><coordinates>{lon_ini},{lat_ini},0</coordinates></Point></Placemark>'
+                )
+
         for p in df_b['PERIODO'].unique():
             df_p = df_b[df_b['PERIODO'] == p]
             pasta.append(f'<Folder><name>Rota Principal</name>')
@@ -594,6 +751,15 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                         
                     desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(c)}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
 
+                if r.get('ORDEM') == 1:
+                    desc += (
+                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Origem da equipe:</td>"
+                        f"<td>{html.escape(str(r.get('ORIGEM_MUNICIPIO', '-')))} - MA</td></tr>"
+                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Tempo inicial:</td>"
+                        f"<td>{formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}</td></tr>"
+                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Cálculo:</td>"
+                        f"<td>{html.escape(str(r.get('TIPO_DESLOCAMENTO', '-')))}</td></tr>"
+                    )
                 desc += "</table></div></div>]]>"
 
                 pasta.append(f'<Placemark><name>{html.escape(nome_ponto)}</name><styleUrl>#{icon}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
@@ -608,6 +774,13 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
 def gerar_gpx_simples(df_kml, nome_rota):
     gpx = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="Roteirizador NIP" xmlns="http://www.topografix.com/GPX/1/1">', f'  <metadata><name>{html.escape(str(nome_rota))}</name></metadata>']
+    if not df_kml.empty and {'LAT_ORIGEM', 'LON_ORIGEM', 'ORIGEM_MUNICIPIO'}.issubset(df_kml.columns):
+        for b, db in df_kml.groupby('BASE_ATRIBUIDA'):
+            primeira = db.sort_values('ORDEM').iloc[0]
+            lat_i, lon_i = primeira.get('LAT_ORIGEM'), primeira.get('LON_ORIGEM')
+            if pd.notna(lat_i) and pd.notna(lon_i):
+                nome_origem = html.escape(str(primeira.get('ORIGEM_MUNICIPIO', 'Origem')))
+                gpx.append(f'  <wpt lat="{lat_i}" lon="{lon_i}"><name>ORIGEM - {nome_origem}</name></wpt>')
     for _, row in df_kml.iterrows():
         if row.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
         lat, lon = row.get('LATITUDE'), row.get('LONGITUDE')
@@ -820,6 +993,8 @@ with st.sidebar:
         st.success("📦 **Modo Contínuo:** Todas as obras serão alocadas numa lista única.")
         trava_global = st.number_input("Trava Total de Obras", min_value=0, value=0, step=50, disabled=is_locked)
         data_ini = st.date_input("📅 Data Base (Início):", value=datetime.today(), disabled=is_locked)
+        velocidade_media = st.number_input("Velocidade média estimada (km/h):", min_value=5, max_value=110, value=30, step=5, disabled=is_locked,
+                                           help="Usada apenas quando o traçado viário OSRM está desligado. Estimativa com fator viário de 1,30.")
         
         st.markdown("---")
         obras_por_dia_est = st.number_input("Meta de Obras/Dia (Cálculo de Postes):", min_value=1, value=4, disabled=is_locked)
@@ -879,13 +1054,32 @@ if is_done and not st.session_state.df_routed_lista.empty:
     c3.markdown(render_metric_card("Super Pontos", str(tsp), "🏢", "#FF9800", "rgba(255,152,0,0.15)"), unsafe_allow_html=True)
     c4.markdown(render_metric_card("KM Total Previsto", tk, "🛣️", "#55B929", "rgba(85,185,41,0.15)"), unsafe_allow_html=True)
 
+    st.markdown("### 🚐 Deslocamento inicial das equipes")
+    primeiras = dfr[dfr['ORDEM'] == 1].copy()
+    if not primeiras.empty:
+        detalhes = primeiras[[
+            'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'PROTOCOLO', 'PRIORIDADE',
+            'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN',
+            'TIPO_DESLOCAMENTO'
+        ]].rename(columns={
+            'BASE_ATRIBUIDA': 'EQUIPE (COLUNA P)', 'ORIGEM_MUNICIPIO': 'PARTIDA',
+            'PROTOCOLO': 'PRIMEIRA NOTA', 'PRIORIDADE': 'PRIORITARIA',
+            'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM': 'DISTANCIA INICIAL (KM)',
+            'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN': 'TEMPO INICIAL (MIN)',
+            'TIPO_DESLOCAMENTO': 'CALCULO',
+        })
+        st.dataframe(detalhes, use_container_width=True, hide_index=True)
+        tempo_inicial = float(primeiras['TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN'].sum())
+        st.caption(f"Tempo de saída somado das equipes: {formatar_tempo_deslocamento(tempo_inicial)}. "
+                   "Cada equipe inicia de seu município definido, não da média das obras.")
+
     html_msg = f"""
     <div style='background-color: #d4edda; border-left: 8px solid #28a745; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
         <h2 style='color: #155724; margin-top: 0; font-weight: 900; letter-spacing: 1px; font-size: 24px;'>🎉 100% DAS OBRAS ROTEIRIZADAS!</h2>
         <p style='color: #155724; font-size: 16px; margin-bottom: 10px;'>Todas as <b>{tr} tarefas válidas</b> presentes na sua planilha foram organizadas e processadas com sucesso!</p>
         <hr style='border-top: 1px solid #c3e6cb; margin: 15px 0;'>
         <p style='color: #155724; font-size: 14px; margin-bottom: 0;'>
-            <b>💡 Resumo Técnico:</b> O módulo de <b>Lista Contínua</b> opera sem limites de jornada ou cota de dias. A Inteligência Artificial respeitou a atribuição que você já fez na planilha e traçou a melhor rota possível (do ponto A ao Z) para <b>todas</b> as obras de cada levantador, sem deixar absolutamente nada para trás.
+            <b>💡 Resumo Técnico:</b> O módulo de <b>Lista Contínua</b> opera sem limites de jornada ou cota de dias. O motor respeitou a equipe definida na planilha e a origem municipal selecionada, organizando os pontos por proximidade geográfica (do ponto A ao Z) para <b>todas</b> as obras de cada levantador, sem deixar absolutamente nada para trás.
         </p>
     </div>
     """
@@ -901,6 +1095,16 @@ if is_done and not st.session_state.df_routed_lista.empty:
         db = dfr[dfr['BASE_ATRIBUIDA'] == bn]
         fg = folium.FeatureGroup(name=f"Rota: {bn}", show=False)
         
+        if not db.empty:
+            primeira = db.sort_values('ORDEM').iloc[0]
+            if pd.notna(primeira.get('LAT_ORIGEM')) and pd.notna(primeira.get('LON_ORIGEM')):
+                origem_label = html.escape(str(primeira.get('ORIGEM_MUNICIPIO', '-')))
+                folium.Marker(
+                    [float(primeira['LAT_ORIGEM']), float(primeira['LON_ORIGEM'])],
+                    tooltip=f"Partida: {origem_label} ({bn})",
+                    popup=folium.Popup(f"<b>ORIGEM DA EQUIPE:</b> {origem_label} - MA<br><b>Equipe:</b> {html.escape(str(bn))}", max_width=320),
+                    icon=folium.Icon(color='green', icon='home')
+                ).add_to(m_clust)
         pts = [p for _, r in db.iterrows() for p in ([[l, L] for L, l in r['ROTA_GEOMETRIA']] if isinstance(r.get('ROTA_GEOMETRIA'), list) else [])]
         folium.PolyLine(pts, color='black', weight=7, opacity=0.9).add_to(fg)
         folium.PolyLine(pts, color=cr, weight=3, opacity=1.0).add_to(fg)
@@ -916,15 +1120,30 @@ if is_done and not st.session_state.df_routed_lista.empty:
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
     st.markdown("### 📊 Dados Tabulares")
-    st.data_editor(st.session_state.df_routed_lista.reindex(columns=CAMPOS_VISIVEIS_NIP), use_container_width=True)
+    dados_tabela = list(dict.fromkeys([
+        'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'ORDEM', 'PRIORIDADE',
+        'DISTANCIA_PONTO_ANTERIOR_KM', 'TEMPO_VIAGEM_MINUTOS',
+        'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 'TIPO_DESLOCAMENTO'
+    ] + CAMPOS_VISIVEIS_NIP))
+    st.dataframe(st.session_state.df_routed_lista.reindex(columns=dados_tabela), use_container_width=True, hide_index=True)
 
 elif status_exec == "IDLE":
     st.markdown("### 📁 Demandas (Obras e Equipes)")
-    st.info("💡 Apenas faça o upload da sua planilha de Obras. A IA identificará o Levantador/Fiscal Responsável automaticamente.")
+    st.info("💡 Apenas faça o upload da sua planilha de Obras. O sistema identificará o responsável pela coluna P (LEVANTADOR).")
     task_files = st.file_uploader("Suba a planilha com a Lista Contínua", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
     
     if not task_files: st.stop()
     
+    # Uma nova planilha limpa configuracoes de origem de planilhas anteriores.
+    assinatura_arquivos = hashlib.sha256(
+        b'|'.join(hashlib.sha256(f.getvalue()).digest() for f in task_files)
+    ).hexdigest()
+    if st.session_state.get('assinatura_planilha_origens_lista') != assinatura_arquivos:
+        st.session_state['assinatura_planilha_origens_lista'] = assinatura_arquivos
+        st.session_state['origem_por_equipe_lista'] = {}
+        st.session_state.pop('equipe_origem_selecionada_lista', None)
+        st.session_state.pop('municipio_origem_selecionado_lista', None)
+
     dfs = []
     qtd_coords_corrigidas = 0
     for f in task_files:
@@ -977,7 +1196,7 @@ elif status_exec == "IDLE":
     with c2_f:
         if 'PRIORIDADE' in df_tasks.columns:
             df_tasks['PRIORIDADE'] = df_tasks['PRIORIDADE'].apply(
-                lambda x: 'Sim' if pd.notna(x) and str(x).strip() not in ['', '0', 'NÃO', 'NAO', 'FALSE'] else 'Não'
+                lambda x: 'Sim' if eh_prioridade(x) else 'Não'
             )
             st.success("🎯 **Prioridade Ativada:** As obras marcadas na coluna 'PRIORIDADE' serão destacadas no roteiro e no KML.")
         elif 'TIPO NOTA' in df_tasks.columns:
@@ -1031,6 +1250,71 @@ elif status_exec == "IDLE":
     df_tasks = df_tasks.sort_values(by=['PRIORIDADE', 'LATITUDE', 'LONGITUDE'], ascending=[False, True, True])
 
     df_ta = df_tasks.copy()
+
+    st.markdown("### 🚐 Município de partida de cada equipe")
+    st.caption("1. Selecione a equipe lida da coluna P (LEVANTADOR). "
+               "2. Escolha qualquer uma das 217 sedes municipais do Maranhão. "
+               "A escolha é salva automaticamente para esta planilha.")
+    try:
+        municipios_ma = carregar_municipios_maranhao()
+    except RuntimeError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    equipes_disponiveis = sorted(df_ta['BASE_ATRIBUIDA'].dropna().unique().tolist())
+    origens_municipais = st.session_state.setdefault('origem_por_equipe_lista', {})
+    origens_municipais = {e: m for e, m in origens_municipais.items()
+                          if e in equipes_disponiveis and m in municipios_ma}
+    st.session_state['origem_por_equipe_lista'] = origens_municipais
+
+    def ao_trocar_equipe_origem():
+        equipe_atual = st.session_state['equipe_origem_selecionada_lista']
+        st.session_state['municipio_origem_selecionado_lista'] = (
+            st.session_state['origem_por_equipe_lista'].get(equipe_atual, '-- Selecione --')
+        )
+
+    def ao_selecionar_municipio_origem():
+        equipe_atual = st.session_state['equipe_origem_selecionada_lista']
+        escolhido = st.session_state['municipio_origem_selecionado_lista']
+        if escolhido in municipios_ma:
+            st.session_state['origem_por_equipe_lista'][equipe_atual] = escolhido
+        else:
+            st.session_state['origem_por_equipe_lista'].pop(equipe_atual, None)
+
+    equipe_preselecionada = st.session_state.get('equipe_origem_selecionada_lista')
+    if equipe_preselecionada not in equipes_disponiveis:
+        st.session_state['equipe_origem_selecionada_lista'] = equipes_disponiveis[0]
+        st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipes_disponiveis[0], '-- Selecione --')
+
+    col_eq, col_mu = st.columns(2)
+    with col_eq:
+        equipe_sel = st.selectbox('1. Selecione a equipe (coluna P):',
+                                 equipes_disponiveis,
+                                 key='equipe_origem_selecionada_lista',
+                                 on_change=ao_trocar_equipe_origem)
+    with col_mu:
+        opcoes_municipios = ['-- Selecione --'] + list(municipios_ma.keys())
+        municipio_atual = st.session_state.get('municipio_origem_selecionado_lista')
+        if municipio_atual not in opcoes_municipios:
+            st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipe_sel, '-- Selecione --')
+        st.selectbox('2. Município de início do deslocamento:',
+                     opcoes_municipios, key='municipio_origem_selecionado_lista',
+                     on_change=ao_selecionar_municipio_origem)
+
+    faltando_origem = [e for e in equipes_disponiveis if e not in origens_municipais]
+    if faltando_origem:
+        st.warning(f"Defina o município de partida para {len(faltando_origem)} equipe(s): " + ', '.join(faltando_origem))
+    else:
+        st.success(f"✅ Municípios definidos para todas as {len(equipes_disponiveis)} equipes.")
+
+    if origens_municipais:
+        conferencia = calcular_previa_origens(df_ta, origens_municipais, municipios_ma, velocidade_media)
+        st.markdown('#### 📍 Prévia da primeira obra por equipe')
+        st.dataframe(conferencia, use_container_width=True, hide_index=True)
+        st.caption('A prioridade é aplicada à PRIMEIRA obra. A distância e o tempo da prévia são estimativas ' 
+                   '(Haversine × 1,30 / velocidade média). Com OSRM ativo, o roteiro final apresenta ' 
+                   'a distância e o tempo reais do serviço viário para o trecho selecionado.')
+
     df_u = pd.DataFrame()
 
     st.session_state.df_unallocated_lista, total_alocadas = df_u, sum(len(r.get('_ORIGINAL_ROWS', [1])) if isinstance(r.get('_ORIGINAL_ROWS'), list) else 1 for _, r in df_ta.iterrows())
@@ -1044,9 +1328,25 @@ elif status_exec == "IDLE":
         colunas_exibir = st.multiselect("Colunas Visíveis no Card do KML:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_KML_SOLICITADOS, help="Escolha os campos dos detalhes de cada obra no mapa KML. Os 13 campos solicitados estão pré-selecionados.")
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
-    if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
+    if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True,
+                 disabled=bool(faltando_origem)):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
-        st.session_state.vrp_state_lista = {'config': {'velocidade_media_kmh': 30.0, 'sentido_rota': sentido_rota, 'url_osrm_base': url_osrm, 'tracado_real': usa_osrm, 'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est}, 'b_names': list(set(df_ta['BASE_ATRIBUIDA'].unique())), 'b_idx': 0, 'unvisited': df_ta.copy(), 'routed_data': [], 'current_geoms': []}
+        st.session_state.vrp_state_lista = {
+            'config': {
+                'velocidade_media_kmh': float(velocidade_media), 'sentido_rota': sentido_rota,
+                'url_osrm_base': url_osrm, 'tracado_real': usa_osrm,
+                'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est,
+                'municipios_origem': {
+                    e: {'municipio': origens_municipais[e],
+                        'lat': municipios_ma[origens_municipais[e]][0],
+                        'lon': municipios_ma[origens_municipais[e]][1]}
+                    for e in equipes_disponiveis
+                },
+            },
+            'b_names': equipes_disponiveis,
+            'b_idx': 0, 'unvisited': df_ta.copy(),
+            'routed_data': [], 'current_geoms': [],
+        }
         st.session_state.vrp_status_lista = "RUNNING"; tentar_rerun()
 
 if status_exec == "OSRM_ERROR":
@@ -1091,15 +1391,24 @@ if status_exec == "RUNNING":
                 tentar_rerun()
                 st.stop()
 
-            bl = sum(float(x['LATITUDE']) for x in oe) / len(oe)
-            bL = sum(float(x['LONGITUDE']) for x in oe) / len(oe)
+            origem_info = cfg.get('municipios_origem', {}).get(bn)
+            if not origem_info:
+                st_v['osrm_error'] = f'Municipio de partida nao definido para {bn}.'
+                st.session_state.vrp_status_lista = 'OSRM_ERROR'
+                st.session_state.vrp_state_lista = st_v
+                tentar_rerun()
+                st.stop()
 
-            # O solver antigo podia ficar preso aguardando matriz/OSRM.
-            # A ordenação abaixo é local, determinística e não depende de rede.
-            ot = ordenar_rota_rapida(
-                oe, bl, bL,
-                reversa=("Varredura Reversa" in cfg.get('sentido_rota', "Lógica Padrão"))
+            bl, bL = float(origem_info['lat']), float(origem_info['lon'])
+            # Primeira parada: obra PRIORITARIA mais proxima da sede municipal.
+            # Sem prioridade, a obra valida mais proxima entre todas da equipe.
+            primeira, distancia_direta = escolher_primeira_obra(oe, bl, bL)
+            demais = [o for o in oe if o is not primeira]
+            restante = ordenar_rota_rapida(
+                demais, primeira['LATITUDE'], primeira['LONGITUDE'],
+                reversa=("Varredura Reversa" in cfg.get('sentido_rota', 'Lógica Padrão'))
             )
+            ot = [primeira] + restante
             
             rf = []
             c_l, c_L = bl, bL
@@ -1109,7 +1418,10 @@ if status_exec == "RUNNING":
                 rf.append({'o': o, 'la': c_l, 'La': c_L, 'lt': o['LATITUDE'], 'Lt': o['LONGITUDE'], 'dk': vk})
                 c_l, c_L = o['LATITUDE'], o['LONGITUDE']
                 
-            st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []; st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
+            st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'] = rf, 0, []
+            st_v['c_origem_info'] = origem_info
+            st.session_state.vrp_state_lista = st_v
+            tentar_rerun(); st.stop()
         else:
             rf, oi, gd = st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
             ei = min(oi + (8 if cfg.get('tracado_real') else len(rf)), len(rf)) 
@@ -1147,12 +1459,23 @@ if status_exec == "RUNNING":
             if ei < len(rf): st.session_state.vrp_state_lista = st_v; tentar_rerun(); st.stop()
             
             rdf, og = [], 1
+            origem_info = st_v['c_origem_info']
             for it, (g, ds) in zip(rf, gd):
-                ob = it['o']; ob['ORDEM'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, round(it['dk'], 2)
+                ob = it['o']
+                ob['ORDEM'], ob['DISTANCIA_PONTO_ANTERIOR_KM'] = og, round(it['dk'], 2)
                 ob['ROTA_GEOMETRIA'], ob['PERIODO'] = g, "Único"
+                ob['ORIGEM_MUNICIPIO'] = origem_info['municipio']
+                ob['LAT_ORIGEM'] = origem_info['lat']
+                ob['LON_ORIGEM'] = origem_info['lon']
+                ob['TIPO_DESLOCAMENTO'] = 'Rota viaria OSRM' if cfg.get('tracado_real') else 'Estimativa geografica x 1,30'
+                minutos = float(ds) / 60.0
+                ob['TEMPO_VIAGEM_MINUTOS'] = round(minutos, 1)
+                ob['DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM'] = round(it['dk'], 2) if og == 1 else None
+                ob['TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN'] = round(minutos, 1) if og == 1 else None
                 rdf.append(ob)
                 og += 1
-            st_v['routed_data'].extend(rdf); del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms']
+            st_v['routed_data'].extend(rdf)
+            del st_v['c_rotas'], st_v['c_idx'], st_v['current_geoms'], st_v['c_origem_info']
             st_v['b_idx'] += 1; st.session_state.vrp_state_lista = st_v; gc.collect(); tentar_rerun()
     else:
         sgt.success("✅ Rotas Finalizadas!"); pb.progress(1.0)
@@ -1233,7 +1556,13 @@ if status_exec == "PACKAGING":
                     'Postes Total': int(round(qtd_postes)),
                     'Super Pontos': qs, 
                     'Prioridades Atendidas': len(db[db['PRIORIDADE']=='Sim']), 
-                    'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
+                    'KM Total Previsto': round(df_routed[df_routed['BASE_ATRIBUIDA']==b]['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2),
+                    'Origem Municipal': str(db.iloc[0].get('ORIGEM_MUNICIPIO', '-')),
+                    'Nota Inicial': str(db.iloc[0].get('PROTOCOLO', '-')),
+                    'Prioridade Inicial': str(db.iloc[0].get('PRIORIDADE', '-')),
+                    'KM Ate 1a Obra': db.iloc[0].get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 0),
+                    'Min Ate 1a Obra': db.iloc[0].get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0),
+                    'Metodo de Deslocamento': str(db.iloc[0].get('TIPO_DESLOCAMENTO', '-'))
                 })
             zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_lista(pd.DataFrame(res)))
             
