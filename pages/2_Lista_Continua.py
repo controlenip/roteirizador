@@ -214,7 +214,7 @@ def gerar_csv_google_mymaps(df_equipe, equipe, incluir_origem=True):
 def gerar_txt_links_google_maps(df_equipe, equipe):
     origem = origem_google_maps(df_equipe)
     pontos = pontos_equipe_google_maps(df_equipe)
-    linhas = [f'EQUIPE: {equipe}', f"PARTIDA: {origem['municipio']} - MA (sede municipal)",
+    linhas = [f'EQUIPE: {equipe}', f"PARTIDA: {origem['municipio']} (sede municipal)",
               f"PRIMEIRA OBRA: {pontos[0]['nota'] if pontos else '-'}",
               '', 'ABRIR A PRIMEIRA OBRA NO GOOGLE MAPS:']
     if pontos:
@@ -422,7 +422,7 @@ def gerar_painel_iphone_estatico(df_equipe, equipe):
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
          '<title>Rotas iPhone - NIP</title><style>'+css+'</style></head><body>',
          '<header><h1>Rotas iPhone / iOS</h1><strong>'+safe(equipe)+'</strong>',
-         '<p>Origem: '+safe(ori['municipio'])+' - MA</p></header><main>',
+         '<p>Origem: '+safe(ori['municipio'])+'</p></header><main>',
          '<p class="note">Links diretos: nao dependem de botoes JavaScript. '
          'Se o visor do app Arquivos nao abrir o link, copie o endereco do '
          'arquivo LINKS_Maps desta equipe e cole no Safari.</p>']
@@ -507,7 +507,7 @@ def gerar_indice_google_maps(equipes):
         local=html.escape(equipe['municipio'])
         nota=html.escape(equipe['primeira'])
         arq_ios=html.escape(equipe.get('arquivo_ios',equipe['arquivo']), quote=True)
-        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} - MA | 1ª obra: {nota}</p><a href="{arq_ios}">iPhone: abrir rotas diretas</a> &nbsp; <a href="{arq}">Planejador interativo (Android / Safari HTTPS)</a></article>')
+        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} | 1ª obra: {nota}</p><a href="{arq_ios}">iPhone: abrir rotas diretas</a> &nbsp; <a href="{arq}">Planejador interativo (Android / Safari HTTPS)</a></article>')
     return ("""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Google Maps - NIP</title><style>body{font-family:system-ui;background:#f3f6fd;margin:0;color:#123}header{background:#0d256c;color:white;padding:22px}main{max-width:900px;margin:auto;padding:15px}.item{background:white;border-radius:9px;padding:16px;margin:12px 0;box-shadow:0 2px 8px #1231}.item a{background:#238b46;color:white;display:inline-block;padding:11px;border-radius:7px;text-decoration:none;font-weight:bold}p{color:#567}</style></head><body><header><h1>📍 Planejamento Google Maps - NIP</h1><p style="color:white">Selecione a equipe para organizar o roteiro no celular</p></header><main>"""
             + ''.join(blocos) + """<p>O arquivo HTML de cada equipe permite reordenar e marcar visitas. Para importar os pontos num mapa, use os arquivos CSV em Google My Maps.</p></main></body></html>""")
 
@@ -636,7 +636,7 @@ MODO OFFLINE (sem internet):
 
 NAVEGACAO OFFLINE POR ESTRADAS:
 1. Instale Organic Maps ou OsmAnd enquanto tiver internet.
-2. Dentro desses aplicativos, baixe os MAPAS das regioes do Maranhão em que
+2. Dentro desses aplicativos, baixe os MAPAS das regioes do Maranhao e Piaui em que
    havera deslocamento. Confira cobertura dos acessos/estradas previamente.
 3. Em Equipes, importe Pontos_Offline_*.gpx no app de navegacao.
    Android: escolha abrir/importar pelo Organic Maps ou OsmAnd.
@@ -830,73 +830,94 @@ def haversine_scalar(lat1, lon1, lat2, lon2):
 
 
 
-# ---------- Origem municipal para roteirizacao de equipes (MA) ----------
-# Lista das sedes municipais: repositorio de dados abertos de municipios
-# (https://github.com/kelvins/municipios-brasileiros). Estado 21 = Maranhao.
-# Os dados sao obtidos uma unica vez por dia e guardados no cache do Streamlit;
-# os municipios nao sao inferidos a partir das obras carregadas.
+# ---------- Origem municipal para roteirizacao de equipes (MA + PI) ----------
+# Fonte: dados abertos do repositorio kelvins/municipios-brasileiros,
+# com referencias municipais e codigos de UF alinhados a divisao do IBGE.
+# Sao 217 municipios maranhenses (codigo 21) e 224 piauienses (codigo 22).
+# As coordenadas representam a sede municipal, nao o endereco da residencia.
 FONTES_MUNICIPIOS = (
-    'https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/csv/municipios.csv',
-    'https://raw.githubusercontent.com/juniorpb/Municipios-Brasileiros/master/csv/municipios.csv',
+    'https://raw.githubusercontent.com/kelvins/municipios-brasileiros/master/csv/municipios.csv',
+    'https://raw.githubusercontent.com/projectgithubrepository/Municipios-Brasileiros/master/csv/municipios.csv',
 )
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def carregar_municipios_maranhao():
-    """Carrega os 217 municipios e respectivas coordenadas referenciais.
+def carregar_municipios_ma_pi():
+    """Retorna as 441 sedes municipais como 'Nome / MA' e 'Nome / PI'.
 
-    Leitura opcional de CSV local permite deploy offline. Quando disponivel,
-    colocar 'municipios_ma.csv' ao lado deste arquivo (mesmas colunas do CSV
-    publico: nome, latitude, longitude e codigo_ibge ou codigo_uf).
+    Pode funcionar sem conexao caso o arquivo 'municipios_ma_pi.csv' seja
+    colocado na mesma pasta deste .py, contendo as colunas: nome, latitude,
+    longitude e codigo_uf (21 ou 22), ou codigo_ibge, ou uf (MA ou PI).
     """
-    fontes_de_dados = []
-    caminho_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'municipios_ma.csv')
-    if os.path.isfile(caminho_local):
-        fontes_de_dados.append(('arquivo local', caminho_local))
-    fontes_de_dados.extend(('online', u) for u in FONTES_MUNICIPIOS)
+    fontes = []
+    csv_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'municipios_ma_pi.csv')
+    if os.path.isfile(csv_local):
+        fontes.append(('arquivo local', csv_local))
+    fontes.extend(('online', url) for url in FONTES_MUNICIPIOS)
     erros = []
 
-    for tipo, fonte in fontes_de_dados:
+    for tipo, origem in fontes:
         try:
             if tipo == 'arquivo local':
-                dados = pd.read_csv(fonte, encoding='utf-8-sig')
+                dados = pd.read_csv(origem, encoding='utf-8-sig')
             else:
-                resp = requests.get(
-                    fonte, timeout=(5, 15),
-                    headers={'User-Agent': 'NIP-ListaContinua/2.0', 'Accept': 'text/csv'}
+                resposta = requests.get(
+                    origem, timeout=(5, 20),
+                    headers={'User-Agent': 'NIP-ListaContinua/2.1', 'Accept': 'text/csv'}
                 )
-                resp.raise_for_status()
-                dados = pd.read_csv(io.BytesIO(resp.content), encoding='utf-8-sig')
+                resposta.raise_for_status()
+                dados = pd.read_csv(io.BytesIO(resposta.content), encoding='utf-8-sig')
 
             dados.columns = [str(c).strip().lower() for c in dados.columns]
             if not {'nome', 'latitude', 'longitude'}.issubset(dados.columns):
-                raise ValueError('CSV sem nome, latitude ou longitude')
+                raise ValueError('CSV sem as colunas nome, latitude ou longitude')
 
             if 'codigo_uf' in dados.columns:
-                dados = dados[pd.to_numeric(dados['codigo_uf'], errors='coerce') == 21].copy()
+                codigo = pd.to_numeric(dados['codigo_uf'], errors='coerce')
+                dados['UF_PARTIDA'] = codigo.map({21: 'MA', 22: 'PI'})
             elif 'codigo_ibge' in dados.columns:
-                dados = dados[dados['codigo_ibge'].astype(str).str.startswith('21')].copy()
-            # CSV ja filtrado por estado: permitido quando possuir 217 entradas.
+                codigos = dados['codigo_ibge'].astype(str).str.replace(r'\.0$', '', regex=True)
+                dados['UF_PARTIDA'] = codigos.str[:2].map({'21': 'MA', '22': 'PI'})
+            elif 'uf' in dados.columns:
+                dados['UF_PARTIDA'] = dados['uf'].astype(str).str.strip().str.upper()
+            else:
+                raise ValueError('CSV sem codigo_uf, codigo_ibge ou uf para diferenciar os estados')
 
+            dados = dados[dados['UF_PARTIDA'].isin(['MA', 'PI'])].copy()
             dados['latitude'] = pd.to_numeric(dados['latitude'], errors='coerce')
             dados['longitude'] = pd.to_numeric(dados['longitude'], errors='coerce')
             dados = dados.dropna(subset=['nome', 'latitude', 'longitude'])
-            dados = dados[dados['latitude'].between(-11, -0.5) & dados['longitude'].between(-49, -41)]
+            dados = dados[
+                dados['latitude'].between(-12, 0)
+                & dados['longitude'].between(-50, -39)
+            ].copy()
             dados['nome'] = dados['nome'].astype(str).str.strip()
-            dados = dados.drop_duplicates('nome')
-            if len(dados) != 217:
-                raise ValueError(f'Esperados 217 municipios maranhenses, encontrados {len(dados)}')
+            dados = dados[dados['nome'].ne('')]
+            dados = dados.drop_duplicates(subset=['UF_PARTIDA', 'nome'])
 
-            municipios = {}
-            for row in dados.itertuples(index=False):
-                nome = row.nome
-                municipios[nome] = (float(row.latitude), float(row.longitude))
-            return dict(sorted(municipios.items(), key=lambda x: normalizar_texto_municipio(x[0])))
+            quantidade_ma = int((dados['UF_PARTIDA'] == 'MA').sum())
+            quantidade_pi = int((dados['UF_PARTIDA'] == 'PI').sum())
+            if quantidade_ma != 217 or quantidade_pi != 224:
+                raise ValueError(
+                    f'Lista incompleta: MA={quantidade_ma}/217 e PI={quantidade_pi}/224'
+                )
+
+            municipios = {
+                f'{row.nome} / {row.UF_PARTIDA}': (float(row.latitude), float(row.longitude))
+                for row in dados.itertuples(index=False)
+            }
+            return dict(sorted(
+                municipios.items(),
+                key=lambda item: (normalizar_texto_municipio(item[0].rsplit(' / ', 1)[0]), item[0])
+            ))
         except (OSError, ValueError, KeyError, requests.RequestException) as exc:
             erros.append(f'{tipo}: {exc}')
-    raise RuntimeError('Nao foi possivel carregar os 217 municipios do Maranhao. '
-                       'Confira a conexao de internet ou disponibilize municipios_ma.csv. '
-                       + ' | '.join(erros))
+
+    raise RuntimeError(
+        'Nao foi possivel carregar os municipios de MA e PI (217 + 224). '
+        'Confira sua conexao ou coloque municipios_ma_pi.csv ao lado do .py. '
+        + ' | '.join(erros)
+    )
 
 
 def normalizar_texto_municipio(texto):
@@ -1219,7 +1240,7 @@ def gerar_txt_lista(df):
         if r.get('ORDEM') == 1 or str(r.get('ORDEM')) == '1':
             origem = str(r.get('ORIGEM_MUNICIPIO', '')).strip()
             if origem:
-                bloco.append(f"ORIGEM DA EQUIPE: {origem} - MA")
+                bloco.append(f"ORIGEM DA EQUIPE: {origem}")
                 bloco.append(f"DISTANCIA ATE A PRIMEIRA OBRA: {r.get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', '-')} km")
                 bloco.append(f"TEMPO DE DESLOCAMENTO INICIAL: {formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}")
                 bloco.append(f"METODO: {r.get('TIPO_DESLOCAMENTO', '-')}")
@@ -1292,7 +1313,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 desc_casa = (
                     f'<b>CASINHA: MORADIA / HOSPEDAGEM</b><br/>'
                     f'<b>Equipe:</b> {nome_equipe}<br/>'
-                    f'<b>Municipio escolhido:</b> {mun_ini} - MA<br/>'
+                    f'<b>Municipio escolhido:</b> {mun_ini}<br/>'
                     f'<b>Primeira obra:</b> {nota_inicial}<br/>'
                     f'<b>Distancia ate a primeira obra:</b> {km_iniciais} km<br/>'
                     f'<b>Tempo de deslocamento inicial:</b> {formatar_tempo_deslocamento(min_iniciais)}<br/>'
@@ -1412,7 +1433,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                 if r.get('ORDEM') == 1:
                     desc += (
                         f"<tr><td style='padding:3px 6px; font-weight:bold;'>Origem da equipe:</td>"
-                        f"<td>{html.escape(str(r.get('ORIGEM_MUNICIPIO', '-')))} - MA</td></tr>"
+                        f"<td>{html.escape(str(r.get('ORIGEM_MUNICIPIO', '-')))}</td></tr>"
                         f"<tr><td style='padding:3px 6px; font-weight:bold;'>Tempo inicial:</td>"
                         f"<td>{formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}</td></tr>"
                         f"<tr><td style='padding:3px 6px; font-weight:bold;'>Cálculo:</td>"
@@ -1642,6 +1663,20 @@ status_exec = st.session_state.vrp_status_lista
 is_done = st.session_state.roteamento_concluido_lista
 is_locked = status_exec != "IDLE" or is_done
 
+# Expande apenas o conteudo principal; a barra lateral permanece inalterada.
+st.markdown("""<style>
+[data-testid="stMainBlockContainer"], section.main .block-container {
+    max-width: 1480px !important;
+    width: min(96%, 1480px) !important;
+}
+@media (max-width: 850px) {
+    [data-testid="stMainBlockContainer"], section.main .block-container {
+        width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+</style>""", unsafe_allow_html=True)
 st.markdown("<h1 class='brand-title'>📜 Roteirização</h1>", unsafe_allow_html=True)
 st.info("💡 Gera uma lista de execução contínua com base na atribuição já existente na planilha de obras.")
 
@@ -1774,7 +1809,7 @@ if is_done and not st.session_state.df_routed_lista.empty:
                     [float(primeira['LAT_ORIGEM']), float(primeira['LON_ORIGEM'])],
                     tooltip=f"🏠 Moradia / hospedagem - {origem_label} ({bn})",
                     popup=folium.Popup(
-                        f"<b>🏠 BASE DA EQUIPE (MORADIA / HOSPEDAGEM):</b> {origem_label} - MA"
+                        f"<b>🏠 BASE DA EQUIPE (MORADIA / HOSPEDAGEM):</b> {origem_label}"
                         f"<br><b>Equipe:</b> {html.escape(str(bn))}"
                         "<br><i>Marcador aproximado: sede municipal, nao endereco exato.</i>", max_width=340),
                     icon=folium.CustomIcon(
@@ -1943,18 +1978,37 @@ elif status_exec == "IDLE":
 
     st.markdown("### 🚐 Município de partida de cada equipe")
     st.caption("1. Selecione a equipe lida da coluna P (LEVANTADOR). "
-               "2. Escolha qualquer uma das 217 sedes municipais do Maranhão. "
+               "2. Escolha entre 217 municípios do Maranhão (MA) e 224 do Piauí (PI), total de 441. "
                "A escolha é salva automaticamente para esta planilha.")
     try:
-        municipios_ma = carregar_municipios_maranhao()
+        municipios_ma_pi = carregar_municipios_ma_pi()
     except RuntimeError as exc:
         st.error(str(exc))
         st.stop()
 
     equipes_disponiveis = sorted(df_ta['BASE_ATRIBUIDA'].dropna().unique().tolist())
     origens_municipais = st.session_state.setdefault('origem_por_equipe_lista', {})
-    origens_municipais = {e: m for e, m in origens_municipais.items()
-                          if e in equipes_disponiveis and m in municipios_ma}
+    # Migrar antigas escolhas salvas sem UF (eram sempre do Maranhao).
+    municipios_antigos_ma = {
+        normalizar_texto_municipio(m.rsplit(' / ', 1)[0]): m
+        for m in municipios_ma_pi if m.endswith(' / MA')
+    }
+    origens_convertidas = {}
+    for equipe, municipio_antigo in origens_municipais.items():
+        if equipe not in equipes_disponiveis:
+            continue
+        if municipio_antigo in municipios_ma_pi:
+            origens_convertidas[equipe] = municipio_antigo
+        else:
+            antigo = str(municipio_antigo).strip()
+            for sufixo in (' / MA', ' - MA', ' (MA)'):
+                if antigo.upper().endswith(sufixo):
+                    antigo = antigo[:-len(sufixo)].strip()
+                    break
+            convertido = municipios_antigos_ma.get(normalizar_texto_municipio(antigo))
+            if convertido:
+                origens_convertidas[equipe] = convertido
+    origens_municipais = origens_convertidas
     st.session_state['origem_por_equipe_lista'] = origens_municipais
 
     def ao_trocar_equipe_origem():
@@ -1966,7 +2020,7 @@ elif status_exec == "IDLE":
     def ao_selecionar_municipio_origem():
         equipe_atual = st.session_state['equipe_origem_selecionada_lista']
         escolhido = st.session_state['municipio_origem_selecionado_lista']
-        if escolhido in municipios_ma:
+        if escolhido in municipios_ma_pi:
             st.session_state['origem_por_equipe_lista'][equipe_atual] = escolhido
         else:
             st.session_state['origem_por_equipe_lista'].pop(equipe_atual, None)
@@ -1983,11 +2037,11 @@ elif status_exec == "IDLE":
                                  key='equipe_origem_selecionada_lista',
                                  on_change=ao_trocar_equipe_origem)
     with col_mu:
-        opcoes_municipios = ['-- Selecione --'] + list(municipios_ma.keys())
+        opcoes_municipios = ['-- Selecione --'] + list(municipios_ma_pi.keys())
         municipio_atual = st.session_state.get('municipio_origem_selecionado_lista')
         if municipio_atual not in opcoes_municipios:
             st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipe_sel, '-- Selecione --')
-        st.selectbox('2. Município de início do deslocamento:',
+        st.selectbox('2. Município de início do deslocamento (MA/PI):',
                      opcoes_municipios, key='municipio_origem_selecionado_lista',
                      on_change=ao_selecionar_municipio_origem)
 
@@ -1998,7 +2052,7 @@ elif status_exec == "IDLE":
         st.success(f"✅ Municípios definidos para todas as {len(equipes_disponiveis)} equipes.")
 
     if origens_municipais:
-        conferencia = calcular_previa_origens(df_ta, origens_municipais, municipios_ma, velocidade_media)
+        conferencia = calcular_previa_origens(df_ta, origens_municipais, municipios_ma_pi, velocidade_media)
         st.markdown('#### 📍 Prévia da primeira obra por equipe')
         st.dataframe(conferencia, use_container_width=True, hide_index=True)
         st.caption('A prioridade é aplicada à PRIMEIRA obra. A distância e o tempo da prévia são estimativas ' 
@@ -2028,8 +2082,8 @@ elif status_exec == "IDLE":
                 'data_inicio': data_ini, 'obras_por_dia_est': obras_por_dia_est,
                 'municipios_origem': {
                     e: {'municipio': origens_municipais[e],
-                        'lat': municipios_ma[origens_municipais[e]][0],
-                        'lon': municipios_ma[origens_municipais[e]][1]}
+                        'lat': municipios_ma_pi[origens_municipais[e]][0],
+                        'lon': municipios_ma_pi[origens_municipais[e]][1]}
                     for e in equipes_disponiveis
                 },
             },
