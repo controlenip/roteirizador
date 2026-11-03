@@ -10,3 +10,4 @@ ortools
 plotly
 scikit-learn
 pydeck
+xlsxwriter
