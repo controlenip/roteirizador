@@ -13,6 +13,9 @@ import requests
 import math
 import hashlib
 import base64
+import json
+import csv
+from urllib.parse import urlencode
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import datetime
@@ -54,6 +57,357 @@ def gerar_kmz_lista(texto_kml):
         kmz.writestr('doc.kml', texto_kml.encode('utf-8'))
         kmz.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
     return buffer_kmz.getvalue()
+
+# Google Maps: links universais oficiais (sem chave de API), CSV para My Maps e
+# painel HTML local para reorganizar visitas sem alterar a rota central da NIP.
+# Para garantir compatibilidade com navegadores de celular, cada link tem no
+# maximo 4 obras (destino + ate 3 waypoints). O restante vai em outras etapas.
+GOOGLE_MAPS_MAX_OBRAS_ETAPA = 4
+
+
+def texto_seguro_maps(valor):
+    """Texto legivel para etiquetas, sem NaN nem '123.0' para identificadores."""
+    try:
+        if pd.isna(valor):
+            return ''
+    except (ValueError, TypeError):
+        pass
+    if isinstance(valor, float) and math.isfinite(valor) and valor.is_integer():
+        return str(int(valor))
+    resultado = str(valor).strip()
+    return '' if resultado.upper() in ('NAN', 'NONE', 'NULL') else resultado
+
+
+def pontos_equipe_google_maps(df_equipe):
+    """Converte pontos da equipe na ordem do motor, preservando superpontos.
+
+    Cada registro representa uma parada fisica, e as notas agregadas de um
+    superponto continuam visiveis no painel e no CSV de importacao.
+    """
+    pontos = []
+    df_equipe = df_equipe.sort_values('ORDEM', kind='stable')
+    for _, linha in df_equipe.iterrows():
+        protocolo = texto_seguro_maps(linha.get('PROTOCOLO'))
+        if protocolo in ('RETORNO_BASE', 'PAUSA_ALMOCO'):
+            continue
+        try:
+            lat, lon = float(linha['LATITUDE']), float(linha['LONGITUDE'])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        originais = linha.get('_ORIGINAL_ROWS')
+        notas = []
+        if isinstance(originais, list):
+            for item in originais:
+                if isinstance(item, dict):
+                    codigo = texto_seguro_maps(item.get('PROTOCOLO', item.get('NOTA', '')))
+                    if codigo and codigo not in notas:
+                        notas.append(codigo)
+        if not notas:
+            notas = [protocolo] if protocolo else []
+        nota_resumo = ' | '.join(notas)
+        pontos.append({
+            'ordem': int(linha['ORDEM']),
+            'nota': nota_resumo,
+            'municipio': texto_seguro_maps(linha.get('MUNICIPIO')),
+            'localidade': texto_seguro_maps(linha.get('LOCALIDADE')),
+            'endereco': texto_seguro_maps(linha.get('ENDEREÇO')),
+            'prioridade': eh_prioridade(linha.get('PRIORIDADE')),
+            'lat': lat, 'lon': lon,
+            'qtd_obras': len(originais) if isinstance(originais, list) else 1,
+        })
+    return pontos
+
+
+def origem_google_maps(df_equipe):
+    """Le a origem municipal de uma equipe (a referencia e a sede municipal)."""
+    if df_equipe.empty:
+        raise ValueError('Equipe sem obras roteirizadas.')
+    primeira = df_equipe.sort_values('ORDEM').iloc[0]
+    lat, lon = float(primeira['LAT_ORIGEM']), float(primeira['LON_ORIGEM'])
+    if not all(map(math.isfinite, (lat, lon))):
+        raise ValueError('Origem municipal sem coordenadas validas.')
+    return {
+        'municipio': texto_seguro_maps(primeira.get('ORIGEM_MUNICIPIO')),
+        'lat': lat, 'lon': lon,
+        'km_iniciais': float(primeira.get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM') or 0.0),
+        'min_iniciais': float(primeira.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN') or 0.0),
+        'metodo': texto_seguro_maps(primeira.get('TIPO_DESLOCAMENTO')),
+    }
+
+
+def coordenada_maps(ponto):
+    return f"{float(ponto['lat']):.7f},{float(ponto['lon']):.7f}"
+
+
+def link_google_maps_primeira_obra(origem, primeira, local_atual=False):
+    """URL universal para navegar ate a primeira obra (com origem opcional)."""
+    parametros = {'api': '1', 'destination': coordenada_maps(primeira), 'travelmode': 'driving'}
+    if not local_atual:
+        parametros['origin'] = coordenada_maps(origem)
+    return 'https://www.google.com/maps/dir/?' + urlencode(parametros)
+
+
+def link_google_maps_paradas(origem, obras, local_atual=False):
+    """Rota editavel no Maps com ate 4 obras, mantendo a ordem escolhida."""
+    if not obras:
+        raise ValueError('E necessario selecionar ao menos uma obra.')
+    if len(obras) > GOOGLE_MAPS_MAX_OBRAS_ETAPA:
+        raise ValueError('A etapa excede o limite de obras para navegadores moveis.')
+    parametros = {'api': '1', 'travelmode': 'driving'}
+    if not local_atual:
+        parametros['origin'] = coordenada_maps(origem)
+    parametros['destination'] = coordenada_maps(obras[-1])
+    if len(obras) > 1:
+        parametros['waypoints'] = '|'.join(coordenada_maps(p) for p in obras[:-1])
+    url = 'https://www.google.com/maps/dir/?' + urlencode(parametros)
+    if len(url) > 2048:
+        raise ValueError('URL do Google Maps excedeu 2.048 caracteres.')
+    return url
+
+
+def gerar_etapas_google_maps(origem, obras, tamanho=GOOGLE_MAPS_MAX_OBRAS_ETAPA):
+    """Divisao sem perda de pontos: cada etapa termina onde comeca a proxima."""
+    etapas = []
+    origem_etapa = origem
+    for inicio in range(0, len(obras), tamanho):
+        grupo = obras[inicio:inicio + tamanho]
+        if not grupo:
+            continue
+        etapas.append({
+            'etapa': len(etapas) + 1,
+            'ordens': [x['ordem'] for x in grupo],
+            'url': link_google_maps_paradas(origem_etapa, grupo),
+            'url_local_atual': link_google_maps_paradas(origem_etapa, grupo, local_atual=True),
+            'primeira_nota': grupo[0]['nota'],
+            'ultima_nota': grupo[-1]['nota'],
+        })
+        origem_etapa = grupo[-1]
+    return etapas
+
+
+def gerar_csv_google_mymaps(df_equipe, equipe, incluir_origem=True):
+    """CSV UTF-8 BOM importavel em Google My Maps, com ordem e coordenadas."""
+    buffer = io.StringIO(newline='')
+    campos = ['Nome', 'Equipe', 'Ordem', 'Tipo', 'Prioridade', 'Nota CCS',
+              'Municipio', 'Localidade', 'Endereco', 'Latitude', 'Longitude', 'Qtd Obras']
+    writer = csv.DictWriter(buffer, fieldnames=campos, lineterminator='\r\n')
+    writer.writeheader()
+    if incluir_origem:
+        ori = origem_google_maps(df_equipe)
+        writer.writerow({'Nome': f"CASINHA - Origem {equipe} ({ori['municipio']})",
+                         'Equipe': equipe, 'Ordem': 0, 'Tipo': 'ORIGEM / HOSPEDAGEM',
+                         'Prioridade': '', 'Nota CCS': '', 'Municipio': ori['municipio'],
+                         'Latitude': ori['lat'], 'Longitude': ori['lon'], 'Qtd Obras': 0})
+    for p in pontos_equipe_google_maps(df_equipe):
+        writer.writerow({'Nome': f"{p['ordem']:03d} - {p['nota']}",
+                         'Equipe': equipe, 'Ordem': p['ordem'], 'Tipo': 'OBRA',
+                         'Prioridade': 'SIM' if p['prioridade'] else 'NAO',
+                         'Nota CCS': p['nota'], 'Municipio': p['municipio'],
+                         'Localidade': p['localidade'], 'Endereco': p['endereco'],
+                         'Latitude': p['lat'], 'Longitude': p['lon'],
+                         'Qtd Obras': p['qtd_obras']})
+    return buffer.getvalue()
+
+
+def gerar_txt_links_google_maps(df_equipe, equipe):
+    origem = origem_google_maps(df_equipe)
+    pontos = pontos_equipe_google_maps(df_equipe)
+    linhas = [f'EQUIPE: {equipe}', f"PARTIDA: {origem['municipio']} - MA (sede municipal)",
+              f"PRIMEIRA OBRA: {pontos[0]['nota'] if pontos else '-'}",
+              '', 'ABRIR A PRIMEIRA OBRA NO GOOGLE MAPS:']
+    if pontos:
+        linhas.append(link_google_maps_primeira_obra(origem, pontos[0]))
+        linhas.extend(['', 'ROTAS POR ETAPA (ate 4 obras por link; funciona em celular):'])
+        for etapa in gerar_etapas_google_maps(origem, pontos):
+            linhas.append(f"Etapa {etapa['etapa']} - notas {etapa['primeira_nota']} a {etapa['ultima_nota']}")
+            linhas.append(etapa['url'])
+    linhas.extend(['', 'Voce pode alterar a sequencia de visitas no painel HTML da sua equipe.',
+                   'No Google Maps, confirme as ruas, tempo de viagem e viabilidade local.',
+                   'A localizacao de moradia/hospedagem representa a sede municipal, nao um endereco.'])
+    return '\n'.join(linhas) + '\n'
+
+
+def gerar_painel_google_maps(df_equipe, equipe):
+    """HTML independente: permite reordenar, marcar feitas, selecionar proximas.
+
+    A interface funciona sem servidor. Apenas os botoes externos de rotas
+    exigem internet para abrir o Google Maps. O navegador pode guardar o estado
+    no dispositivo local, sem sincronizar nem alterar a planilha da NIP.
+    """
+    origem = origem_google_maps(df_equipe)
+    pontos = pontos_equipe_google_maps(df_equipe)
+    assinatura = hashlib.sha256(json.dumps(pontos, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    dados = {'equipe': equipe, 'origem': origem, 'obras': pontos, 'versao': assinatura}
+    # Evita que texto da planilha possa fechar a tag script.
+    dados_json = json.dumps(dados, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    template = r"""<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><title>Rota de levantamentos - NIP</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#172b4d;background:#f2f6fb}
+*{box-sizing:border-box}body{margin:0}.top{background:#0d256c;color:#fff;padding:19px 14px}
+.wrap{max-width:850px;margin:auto;padding:12px}.top .wrap{padding:0 12px}
+h1{font-size:1.45rem;margin:5px 0 8px}h2{font-size:1.1rem;margin:4px 0 12px}
+.card{background:white;border:1px solid #dce4ee;border-radius:12px;margin:13px 0;padding:15px;box-shadow:0 3px 10px #1b2c4510}
+.subtle{color:#53657b;font-size:.86rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px}
+strong{font-weight:720}.b{background:#0d256c;color:#fff;border:0;border-radius:9px;padding:11px 13px;cursor:pointer;font-weight:650;display:inline-block;text-decoration:none;font-size:.91rem}
+.b.sec{background:#e7f0fc;color:#0d256c}.b.green{background:#238b46;color:#fff}.b.gray{background:#e5e8ed;color:#203049}
+.b:disabled{opacity:.5;cursor:not-allowed}.controls{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+.item{background:#fff;border:1px solid #dce4ee;border-left:5px solid #0d256c;border-radius:10px;padding:12px;margin:8px 0}
+.item.priority{border-left-color:#d63333}.item.done{opacity:.62;background:#eff5ef}.head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.pill{font-size:.72rem;border-radius:100px;padding:4px 8px;background:#eaf0ff;color:#0d256c;font-weight:700}
+.pill.red{background:#fff0ee;color:#aa2222}.item .note{font-size:.9rem;margin:5px 0;color:#3f4e60}
+.kpi{font-size:1.3rem;color:#0d256c;font-weight:850}label{cursor:pointer}
+@media(max-width:500px){.b{flex:1;text-align:center}.controls{gap:6px}.top{padding:18px 10px}}
+</style></head><body>
+<header class="top"><div class="wrap"><div>🏠 NIP • Planejamento de campo</div><h1 id="titulo"></h1><div id="origem-topo"></div></div></header>
+<main class="wrap">
+<section class="card"><h2>📍 Onde comecar</h2><div id="primeira"></div><p class="subtle">A origem representa a sede do municipio escolhido, nao o endereco exato da hospedagem.</p>
+<div class="controls"><a id="linkPrimeira" class="b green" target="_blank" rel="noopener noreferrer">🧭 Ir a primeira obra</a>
+<a id="linkOrigem" class="b sec" target="_blank" rel="noopener noreferrer">🏠 Ver origem no Maps</a></div></section>
+<section class="card"><div class="grid"><div><div class="subtle">Paradas no roteiro</div><div class="kpi" id="qtd"></div></div>
+<div><div class="subtle">Concluidas neste dispositivo</div><div class="kpi" id="feitas"></div></div>
+<div><div class="subtle">Pendentes</div><div class="kpi" id="pend"></div></div></div></section>
+<section class="card"><h2>🛣️ Montar minha propria rota</h2><p class="subtle">Mova as obras para cima/baixo, marque as feitas e escolha as proximas. O Maps aceita rotas editaveis por etapas. Se ja estiver em campo, escolha a localizacao atual.</p>
+<label><input type="checkbox" id="localAtual"> Usar minha localizacao atual em vez da sede municipal para a proxima etapa</label>
+<div class="controls"><button class="b green" id="rotaProximas">🚗 Abrir proximas 4 obras no Maps</button><button class="b sec" id="atualizarEtapas">🔁 Atualizar links das etapas</button><button class="b gray" id="reset">Restaurar ordem e status</button></div>
+<div id="etapas"></div><p class="subtle">Cada etapa aceita ate quatro obras no link, preservando a ordem que voce definiu. Em uma etapa seguinte, a origem sugerida e a ultima obra da etapa anterior. Para partir de onde estiver, marque a opcao acima.</p></section>
+<section class="card"><h2>📋 Minhas obras (ordem editavel)</h2><div id="lista"></div></section>
+<section class="card"><h2>ℹ️ Importante</h2><p class="subtle">Este painel nao altera a planilha original ou o KML. A marcacao de concluidas e a ordem personalizada sao guardadas apenas neste navegador, quando o navegador permitir. Google Maps precisa de internet para carregar as rotas e pode recalcular os tempos e percursos. Para ver todos os pontos juntos e importar em um mapa personalizado, use o CSV fornecido para Google My Maps.</p></section>
+</main><script type="application/json" id="dados">__DADOS_JSON__</script><script>
+(()=>{'use strict';
+const data=JSON.parse(document.getElementById('dados').textContent);
+const original=data.obras.map((p,i)=>({...p,id:i,feito:false}));
+const key='nip_maps_v3_'+data.equipe+'_'+data.origem.municipio+'_'+data.versao;
+let obras=original.map(p=>({...p}));
+try{const saved=JSON.parse(localStorage.getItem(key)||'null');if(saved&&Array.isArray(saved.order)&&saved.order.length===original.length){
+const dict=new Map(obras.map(p=>[p.id,p]));const arr=saved.order.map(id=>dict.get(id));
+if(arr.every(Boolean)&&new Set(saved.order).size===original.length){obras=arr; obras.forEach(p=>p.feito=!!saved.feitas?.includes(p.id));}
+}}catch(e){}
+const el=id=>document.getElementById(id);
+const coord=p=>Number(p.lat).toFixed(7)+','+Number(p.lon).toFixed(7);
+const mapPin=p=>'https://www.google.com/maps/search/?'+new URLSearchParams({api:'1',query:coord(p)});
+const urlDirecoes=(from,arr,useGps=false)=>{
+if(!arr.length)return null;
+const q={api:'1',travelmode:'driving',destination:coord(arr[arr.length-1])};
+if(!useGps)q.origin=coord(from);
+if(arr.length>1)q.waypoints=arr.slice(0,-1).map(coord).join('|');
+return 'https://www.google.com/maps/dir/?'+new URLSearchParams(q).toString();
+};
+const botao=(label,klass,click)=>{const x=document.createElement('button');x.textContent=label;x.className='b '+klass;x.onclick=click;return x;};
+const link=(label,href,klass='sec')=>{const a=document.createElement('a');a.textContent=label;a.className='b '+klass;a.href=href;a.target='_blank';a.rel='noopener noreferrer';return a;};
+function persist(){try{localStorage.setItem(key,JSON.stringify({order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)}));}catch(e){}}
+function move(index,d){const j=index+d;if(j<0||j>=obras.length)return;[obras[index],obras[j]]=[obras[j],obras[index]];persist();render();}
+function visitar(id){const p=obras.find(p=>p.id===id);if(p)p.feito=!p.feito;persist();render();}
+function pendentes(){return obras.filter(p=>!p.feito);}
+function routes(){let remaining=pendentes(), from=data.origem, out=[];
+for(let i=0;i<remaining.length;i+=4){const subset=remaining.slice(i,i+4);out.push({from,subset,etapa:out.length+1});from=subset[subset.length-1];}return out;}
+function render(){
+el('titulo').textContent=data.equipe;
+el('origem-topo').textContent='Municipio de partida: '+data.origem.municipio+' / MA';
+el('qtd').textContent=obras.length;
+el('feitas').textContent=obras.filter(p=>p.feito).length;
+el('pend').textContent=pendentes().length;
+const primeira=pendentes()[0];
+if(primeira){el('primeira').textContent='Obra sugerida: '+obras[0].nota+' • '+(obras[0].prioridade?'PRIORITARIA':'Padrao')+' | Proxima pendente: '+primeira.nota;
+el('linkPrimeira').href=urlDirecoes(data.origem,[primeira],el('localAtual').checked);el('linkPrimeira').style.display='inline-block';
+}else{el('primeira').textContent='Todas as obras foram marcadas como concluidas.';el('linkPrimeira').style.display='none';}
+el('linkOrigem').href=mapPin(data.origem);
+const lista=el('lista');lista.replaceChildren();
+obras.forEach((p,i)=>{const item=document.createElement('article');item.className='item'+(p.prioridade?' priority':'')+(p.feito?' done':'');
+const head=document.createElement('div');head.className='head';
+const info=document.createElement('div');const titulo=document.createElement('strong');titulo.textContent=(i+1)+'. NOTA '+p.nota;info.append(titulo);
+const note=document.createElement('div');note.className='note';note.textContent=[p.municipio,p.localidade,p.endereco].filter(Boolean).join(' / ');info.append(note);head.append(info);
+const badge=document.createElement('span');badge.className='pill'+(p.prioridade?' red':'');badge.textContent=p.feito?'✅ Concluida':(p.prioridade?'🚨 Prioritaria':'Pendente');head.append(badge);item.append(head);
+const buttons=document.createElement('div');buttons.className='controls';
+const up=botao('⬆ Subir','sec',()=>move(i,-1));up.disabled=i===0;buttons.append(up);
+const down=botao('⬇ Descer','sec',()=>move(i,1));down.disabled=i===obras.length-1;buttons.append(down);
+buttons.append(botao(p.feito?'↩ Reabrir':'✓ Concluida',p.feito?'sec':'green',()=>visitar(p.id)));
+buttons.append(link('📍 Ver obra',mapPin(p)));
+buttons.append(link('🚗 Navegar ate obra',urlDirecoes(data.origem,[p],el('localAtual').checked),'sec'));
+item.append(buttons);lista.append(item);});
+renderEtapas();
+}
+function renderEtapas(){const box=el('etapas');box.replaceChildren();const todas=routes();if(!todas.length){box.textContent='Nenhuma obra pendente.';return;}
+const title=document.createElement('h2');title.textContent='Etapas sugeridas ('+todas.length+')';box.append(title);
+const gps=el('localAtual').checked;
+todas.forEach((et,i)=>{const row=document.createElement('div');row.className='item';
+const line=document.createElement('div');line.textContent='Etapa '+et.etapa+' • '+et.subset.length+' obra(s) • '+et.subset.map(p=>p.nota).join(' → ');row.append(line);
+const ctl=document.createElement('div');ctl.className='controls';ctl.append(link('Abrir etapa '+et.etapa, urlDirecoes(et.from,et.subset,gps&&i===0),'green'));row.append(ctl);box.append(row);});
+}
+el('localAtual').onchange=render;
+el('atualizarEtapas').onclick=renderEtapas;
+el('rotaProximas').onclick=()=>{const etapas=routes();if(etapas.length)window.open(urlDirecoes(etapas[0].from,etapas[0].subset,el('localAtual').checked),'_blank','noopener,noreferrer');};
+el('reset').onclick=()=>{if(!confirm('Restaurar a ordem original da NIP e desmarcar as obras?'))return;obras=original.map(p=>({...p}));persist();render();};
+render();
+})();</script></body></html>"""
+    return template.replace('__DADOS_JSON__', dados_json)
+
+
+def csv_google_mymaps_em_partes(texto_csv, max_dados=1999):
+    """Limite do My Maps: ate 2000 linhas por CSV, incluindo o cabecalho."""
+    if max_dados < 1 or max_dados > 1999:
+        raise ValueError('max_dados deve ficar entre 1 e 1999')
+    valores = list(csv.DictReader(io.StringIO(texto_csv.lstrip('\ufeff'))))
+    if not valores:
+        return []
+    campos = list(valores[0])
+    saidas = []
+    for i in range(0, len(valores), max_dados):
+        trecho = io.StringIO(newline='')
+        escritor = csv.DictWriter(trecho, fieldnames=campos, lineterminator='\r\n')
+        escritor.writeheader()
+        escritor.writerows(valores[i:i+max_dados])
+        saidas.append(trecho.getvalue())
+    return saidas
+
+
+def gerar_indice_google_maps(equipes):
+    """Pagina inicial do ZIP para abrir o planejamento de qualquer equipe."""
+    blocos=[]
+    for equipe in equipes:
+        nome=html.escape(equipe['equipe'])
+        arq=html.escape(equipe['arquivo'], quote=True)
+        local=html.escape(equipe['municipio'])
+        nota=html.escape(equipe['primeira'])
+        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} - MA | 1ª obra: {nota}</p><a href="{arq}">Abrir planejamento da equipe</a></article>')
+    return ("""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Google Maps - NIP</title><style>body{font-family:system-ui;background:#f3f6fd;margin:0;color:#123}header{background:#0d256c;color:white;padding:22px}main{max-width:900px;margin:auto;padding:15px}.item{background:white;border-radius:9px;padding:16px;margin:12px 0;box-shadow:0 2px 8px #1231}.item a{background:#238b46;color:white;display:inline-block;padding:11px;border-radius:7px;text-decoration:none;font-weight:bold}p{color:#567}</style></head><body><header><h1>📍 Planejamento Google Maps - NIP</h1><p style="color:white">Selecione a equipe para organizar o roteiro no celular</p></header><main>"""
+            + ''.join(blocos) + """<p>O arquivo HTML de cada equipe permite reordenar e marcar visitas. Para importar os pontos num mapa, use os arquivos CSV em Google My Maps.</p></main></body></html>""")
+
+
+def gerar_leia_me_google_maps():
+    return ("""ROTAS GOOGLE MAPS - NIP / LISTA CONTINUA
+
+1. Abra INICIAR_AQUI.html no navegador do computador ou do celular.
+2. Selecione a equipe; no HTML individual, a primeira obra sugerida ja aparece.
+3. Use Subir/Descer para alterar a ordem, Concluida para controlar o realizado.
+4. Clique em Abrir proximas 4 obras no Maps, ou abra cada etapa sugerida.
+5. Para partir de onde o celular estiver, marque Usar minha localizacao atual.
+6. Os links em LINKS_*.txt servem para envio direto por WhatsApp.
+7. Para visualizar TODOS os marcadores de cada equipe num mesmo mapa no
+   Google My Maps (https://www.google.com/maps/d/), importe o CSV correspondente.
+   Escolha Latitude e Longitude como colunas de posicao e Nome como titulo.
+   Se houver mais de 1999 registros por CSV, importe as partes _PARTE_002 etc.
+
+IMPORTANTE:
+- Google Maps normal nao importa KML/KMZ como trajeto editavel. Esses sao para Google Earth.
+- HTML, CSV e TXT sao gerados separados por equipe; INICIAR_AQUI lista todas.
+- Cada link inclui no maximo quatro obras (ate 3 intermediarias + 1 destino),
+  para compatibilidade com navegadores de celular. Etapas seguintes continuam
+  a partir da ultima obra da etapa anterior, se a equipe nao marcar origem GPS.
+- A sequencia planejada pode ser ajustada no Google Maps ou no HTML da equipe.
+- O Google Maps calcula percursos e tempos pela malha viaria disponivel.
+- O primeiro trajeto do roteiro NIP usa a sede municipal como origem, nao
+  o endereco exato da casa ou hospedagem.
+- Sem sincronizacao online: a ordem editada e o status de concluido no HTML
+  ficam apenas no navegador local, quando o armazenamento local e permitido.
+- Em dispositivos que nao abrem HTML do ZIP diretamente, extraia o ZIP primeiro
+  e abra o HTML no navegador; os arquivos TXT contem links alternativos.
+""")
+
+
 
 def normalize_cols(columns):
     def clean(x):
@@ -1017,7 +1371,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -1066,6 +1420,11 @@ with st.sidebar:
         st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
         st.download_button("🏠 Baixar Mapas (KML e KMZ)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
+        st.download_button("📍 Baixar Rotas Google Maps (ZIP)",
+                           data=st.session_state.get('bytes_zip_maps_lista', b""),
+                           file_name=f"ListaContinua_GoogleMaps - {d_fmt}.zip",
+                           use_container_width=True,
+                           help="Links de navegacao, HTML editavel por equipe e CSV para Google My Maps.")
         st.caption("🏠 A casinha indica a sede do municipio de moradia/hospedagem. "
                    "Abra o KMZ no Google Earth para visualizar o icone sem arquivos separados. "
                    "Nos KMLs, mantenha CASINHA_ORIGEM.png na mesma pasta.")
@@ -1172,6 +1531,19 @@ if is_done and not st.session_state.df_routed_lista.empty:
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
+    st.markdown("### 📍 Google Maps - começar o levantamento")
+    links_inicio_maps = st.session_state.get('maps_primeiras_lista', {})
+    if links_inicio_maps:
+        with st.expander("🚗 Abrir a primeira obra de cada equipe", expanded=False):
+            st.caption("A origem é a sede do município escolhido. O Google Maps calculará o caminho rodoviário quando aberto.")
+            for equipe_m, dados_m in sorted(links_inicio_maps.items()):
+                url_m = html.escape(dados_m['url'], quote=True)
+                equipe_nome = html.escape(str(equipe_m))
+                nota_nome = html.escape(str(dados_m['nota']))
+                st.markdown(
+                    f'<a href="{url_m}" target="_blank" rel="noopener noreferrer">🚗 {equipe_nome} — primeira obra {nota_nome}</a>',
+                    unsafe_allow_html=True
+                )
     st.markdown("### 📊 Dados Tabulares")
     dados_tabela = list(dict.fromkeys([
         'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'ORDEM', 'PRIORIDADE',
@@ -1552,13 +1924,14 @@ if status_exec == "PACKAGING":
     df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
 
     d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx, bu_txt = io.BytesIO(), io.BytesIO(), io.BytesIO(), io.BytesIO()
+    bu_xl, bu_kml, bu_gpx, bu_txt, bu_maps = (io.BytesIO() for _ in range(5))
     
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, \
              zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, \
              zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg, \
-             zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt:
+             zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt, \
+             zipfile.ZipFile(bu_maps, 'w', zipfile.ZIP_DEFLATED) as zm:
             
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
             obras_por_dia_est = st.session_state.vrp_state_lista.get('config', {}).get('obras_por_dia_est', 4.0)
@@ -1688,6 +2061,9 @@ if status_exec == "PACKAGING":
                 zk.writestr(f"ROTA_TOTAL - {d_fmt}.kmz", gerar_kmz_lista(ks_tot))
                 zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
+            entradas_maps = []
+            mapas_primeiras = {}
+            registros_mymaps_geral = []
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
                 
@@ -1715,9 +2091,54 @@ if status_exec == "PACKAGING":
                     zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kmz", gerar_kmz_lista(ks))
                     zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
+                    # Exportacao Google Maps independente por equipe.
+                    # HTML para ordenar as visitas; links TXT para WhatsApp;
+                    # CSV para importar os marcadores no Google My Maps.
+                    id_equipe_maps = hashlib.sha256(str(base).encode('utf-8')).hexdigest()[:8]
+                    chave_arquivo = f'{b_safe}_{id_equipe_maps}'
+                    nome_html = f'Equipes/Planejador_{chave_arquivo}.html'
+                    nome_csv = f'Equipes/Pontos_MyMaps_{chave_arquivo}.csv'
+                    nome_links = f'Equipes/LINKS_Maps_{chave_arquivo}.txt'
+                    zm.writestr(nome_html, gerar_painel_google_maps(dfk_base, str(base)).encode('utf-8'))
+                    csv_equipe = gerar_csv_google_mymaps(dfk_base, str(base))
+                    for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_equipe), start=1):
+                        nome_parte = nome_csv if parte_idx == 1 else nome_csv.replace('.csv', f'_PARTE_{parte_idx:03d}.csv')
+                        zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
+                    zm.writestr(nome_links, gerar_txt_links_google_maps(dfk_base, str(base)).encode('utf-8'))
+                    registros_mymaps_geral.extend(list(csv.DictReader(io.StringIO(csv_equipe))))
+                    orig_m = origem_google_maps(dfk_base)
+                    pontos_m = pontos_equipe_google_maps(dfk_base)
+                    entradas_maps.append({
+                        'equipe': str(base), 'arquivo': nome_html,
+                        'municipio': orig_m['municipio'],
+                        'primeira': pontos_m[0]['nota'] if pontos_m else '-',
+                    })
+                    if pontos_m:
+                        mapas_primeiras[str(base)] = {
+                            'nota': pontos_m[0]['nota'],
+                            'url': link_google_maps_primeira_obra(orig_m, pontos_m[0]),
+                        }
+
+            if entradas_maps:
+                zm.writestr('INICIAR_AQUI.html', gerar_indice_google_maps(entradas_maps).encode('utf-8'))
+                zm.writestr('LEIA_ME.txt', gerar_leia_me_google_maps().encode('utf-8'))
+                csv_geral = io.StringIO(newline='')
+                chaves_geral = ['Nome', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
+                                'Nota CCS', 'Municipio', 'Localidade', 'Endereco',
+                                'Latitude', 'Longitude', 'Qtd Obras']
+                escritor = csv.DictWriter(csv_geral, fieldnames=chaves_geral, lineterminator='\r\n')
+                escritor.writeheader()
+                escritor.writerows(registros_mymaps_geral)
+                for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_geral.getvalue()), start=1):
+                    nome_parte = ('MAPA_GERAL_GoogleMyMaps.csv' if parte_idx == 1
+                                  else f'MAPA_GERAL_GoogleMyMaps_PARTE_{parte_idx:03d}.csv')
+                    zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
+
         st.session_state.bytes_zip_xl_lista = bu_xl.getvalue()
         st.session_state.bytes_zip_kml_lista = bu_kml.getvalue()
         st.session_state.bytes_zip_gpx_lista = bu_gpx.getvalue()
         st.session_state.bytes_zip_txt_lista = bu_txt.getvalue()
+        st.session_state.bytes_zip_maps_lista = bu_maps.getvalue()
+        st.session_state.maps_primeiras_lista = mapas_primeiras
         st.session_state.roteamento_concluido_lista = True; st.session_state.vrp_status_lista = "IDLE"; tentar_rerun()
     except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status_lista = "IDLE"
