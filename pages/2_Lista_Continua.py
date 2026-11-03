@@ -223,127 +223,261 @@ def gerar_txt_links_google_maps(df_equipe, equipe):
         for etapa in gerar_etapas_google_maps(origem, pontos):
             linhas.append(f"Etapa {etapa['etapa']} - notas {etapa['primeira_nota']} a {etapa['ultima_nota']}")
             linhas.append(etapa['url'])
+    if pontos:
+        linhas.extend(['', 'IPHONE / iOS - GOOGLE MAPS PRIMEIRA OBRA (copiar no Safari se necessario):',
+                       link_google_maps_primeira_obra(origem, pontos[0]),
+                       'IPHONE / iOS - GOOGLE MAPS USANDO GPS ATUAL:',
+                       link_google_maps_primeira_obra(origem, pontos[0], local_atual=True),
+                       'IPHONE / iOS - APPLE MAPS PRIMEIRA OBRA:',
+                       link_apple_maps_obra(origem, pontos[0])])
+        linhas.append('')
+        linhas.append('IPHONE / iOS - ABRIR QUALQUER OBRA INDIVIDUALMENTE (GPS ATUAL):')
+        for ponto in pontos:
+            linhas.append(f"ORDEM {ponto['ordem']} - NOTA {ponto['nota']}")
+            linhas.append(link_google_maps_primeira_obra(origem, ponto, local_atual=True))
     linhas.extend(['', 'Voce pode alterar a sequencia de visitas no painel HTML da sua equipe.',
                    'No Google Maps, confirme as ruas, tempo de viagem e viabilidade local.',
                    'A localizacao de moradia/hospedagem representa a sede municipal, nao um endereco.'])
     return '\n'.join(linhas) + '\n'
 
 
-def gerar_painel_google_maps(df_equipe, equipe):
-    """HTML independente: permite reordenar, marcar feitas, selecionar proximas.
+def gerar_painel_google_maps(df_equipe, equipe, pwa=False):
+    """Planejador autossuficiente: lista, prioridades, edicao, backup e GPX offline.
 
-    A interface funciona sem servidor. Apenas os botoes externos de rotas
-    exigem internet para abrir o Google Maps. O navegador pode guardar o estado
-    no dispositivo local, sem sincronizar nem alterar a planilha da NIP.
+    Todos os dados e scripts sao incorporados; nenhum CDN/servidor e exigido para
+    consultar e editar no navegador compativel. No iOS, a pre-visualizacao de
+    HTML do app Arquivos pode bloquear JS: use a versao hospedada em HTTPS/PWA.
+    A navegacao rodoviaria offline cabe ao aplicativo de mapas previamente instalado.
     """
     origem = origem_google_maps(df_equipe)
     pontos = pontos_equipe_google_maps(df_equipe)
     assinatura = hashlib.sha256(json.dumps(pontos, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:16]
-    dados = {'equipe': equipe, 'origem': origem, 'obras': pontos, 'versao': assinatura}
-    # Evita que texto da planilha possa fechar a tag script.
-    dados_json = json.dumps(dados, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
-    template = r"""<!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light"><title>Rota de levantamentos - NIP</title>
+    dados = {'equipe': str(equipe), 'origem': origem, 'obras': pontos, 'versao': assinatura}
+    primeira = pontos[0] if pontos else origem
+    fallback_primeira = link_google_maps_primeira_obra(origem, primeira)
+    fallback_gps = link_google_maps_primeira_obra(origem, primeira, local_atual=True)
+    fallback_etapa = gerar_etapas_google_maps(origem, pontos)[0]['url'] if pontos else fallback_primeira
+    dados_json = (json.dumps(dados, ensure_ascii=False, allow_nan=False)
+                  .replace('<', '\\u003c').replace('>', '\\u003e')
+                  .replace('&', '\\u0026'))
+    linhas_simples = []
+    for i, pt in enumerate(pontos, 1):
+        nome = html.escape(pt['nota'])
+        mun = html.escape(pt['municipio'])
+        url = html.escape(link_google_maps_primeira_obra(origem, pt, local_atual=True), quote=True)
+        linhas_simples.append(f'<li><strong>{i}. Nota {nome}</strong> • {mun} '
+                             f'({pt["lat"]:.6f}, {pt["lon"]:.6f}) '
+                             f'<a href="{url}">Maps (online)</a></li>')
+    fallback_html = ''.join(linhas_simples) or '<li>Nenhuma obra valida nesta equipe</li>'
+    pwa_head = ('<link rel="manifest" href="./manifest.webmanifest">'
+                '<link rel="icon" href="./icon-192.png" type="image/png">'
+                '<meta name="apple-mobile-web-app-capable" content="yes">'
+                '<meta name="apple-mobile-web-app-title" content="NIP Campo">') if pwa else ''
+    pwa_script = ("if('serviceWorker' in navigator && "
+                  "(location.protocol==='https:' || location.hostname==='localhost')){"
+                  "navigator.serviceWorker.register('./sw.js').catch(()=>{});}") if pwa else ''
+    template = r"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d256c"><title>NIP Campo - planejamento offline</title>
+__PWA_HEAD__
 <style>
-:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#172b4d;background:#f2f6fb}
-*{box-sizing:border-box}body{margin:0}.top{background:#0d256c;color:#fff;padding:19px 14px}
-.wrap{max-width:850px;margin:auto;padding:12px}.top .wrap{padding:0 12px}
-h1{font-size:1.45rem;margin:5px 0 8px}h2{font-size:1.1rem;margin:4px 0 12px}
-.card{background:white;border:1px solid #dce4ee;border-radius:12px;margin:13px 0;padding:15px;box-shadow:0 3px 10px #1b2c4510}
-.subtle{color:#53657b;font-size:.86rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px}
-strong{font-weight:720}.b{background:#0d256c;color:#fff;border:0;border-radius:9px;padding:11px 13px;cursor:pointer;font-weight:650;display:inline-block;text-decoration:none;font-size:.91rem}
-.b.sec{background:#e7f0fc;color:#0d256c}.b.green{background:#238b46;color:#fff}.b.gray{background:#e5e8ed;color:#203049}
-.b:disabled{opacity:.5;cursor:not-allowed}.controls{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
-.item{background:#fff;border:1px solid #dce4ee;border-left:5px solid #0d256c;border-radius:10px;padding:12px;margin:8px 0}
-.item.priority{border-left-color:#d63333}.item.done{opacity:.62;background:#eff5ef}.head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
-.pill{font-size:.72rem;border-radius:100px;padding:4px 8px;background:#eaf0ff;color:#0d256c;font-weight:700}
-.pill.red{background:#fff0ee;color:#aa2222}.item .note{font-size:.9rem;margin:5px 0;color:#3f4e60}
-.kpi{font-size:1.3rem;color:#0d256c;font-weight:850}label{cursor:pointer}
-@media(max-width:500px){.b{flex:1;text-align:center}.controls{gap:6px}.top{padding:18px 10px}}
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#162a43;background:#f3f6fa;font-size:15px}
+*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}.top{background:#0d256c;color:white;padding:17px 14px}
+.wrap{max-width:900px;margin:auto;padding:12px}.top .wrap{padding:0 4px}h1{font-size:1.4rem;margin:6px 0}
+h2{font-size:1.12rem;margin:0 0 10px}h3{font-size:1rem;margin:10px 0}.card{background:white;border:1px solid #dae2ec;border-radius:12px;margin:12px 0;padding:15px;box-shadow:0 2px 8px #1b2c450a}
+.note{color:#526478;font-size:.87rem;line-height:1.5}.alert{border-left:4px solid #df9f28;padding:8px 10px;background:#fffaf0;border-radius:5px}
+.btn{border:0;background:#0d256c;color:white;border-radius:9px;padding:11px 13px;cursor:pointer;display:inline-block;text-decoration:none;font-size:.90rem;font-weight:650;text-align:center}
+.btn.green{background:#16814e}.btn.soft{background:#e6eef9;color:#0d256c}.btn.gray{background:#e9ebef;color:#243346}.btn.danger{background:#fff0ed;color:#a4252a}
+.btn:disabled{opacity:.45}.actions{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0}.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.kpi{background:#edf3ff;padding:11px;border-radius:9px;text-align:center}.kpi b{display:block;font-size:1.5rem;color:#0d256c}
+.item{border:1px solid #dce4ec;border-left:5px solid #0d256c;border-radius:9px;padding:12px;margin:9px 0}.item.priority{border-left-color:#cf3030}.item.done{opacity:.67;background:#f0f5f0}.row{display:flex;gap:9px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.tag{font-size:.74rem;background:#e8eeff;color:#0d256c;border-radius:100px;padding:4px 9px;font-weight:700}.tag.red{background:#fff0ef;color:#a22}.tag.green{background:#e4f6e9;color:#166e37}
+.muted{color:#586779;font-size:.85rem}.small{font-size:.8rem}.filters{display:flex;gap:8px;flex-wrap:wrap}.filters input{flex:3;min-width:150px}.filters select{flex:1;min-width:140px}input[type=search],select{width:100%;padding:10px;border:1px solid #cbd7e5;border-radius:9px;background:white;color:#123}
+.mode{display:flex;gap:8px;flex-wrap:wrap}.mode button{flex:1}.mode button.active{outline:3px solid #73b9fa}.hidden{display:none!important}
+#toast{min-height:18px;color:#167844;font-weight:650}.links a{overflow-wrap:anywhere}.staticlist{max-height:430px;overflow:auto;padding-left:24px}.staticlist li{padding:5px 0}.coords{font-family:ui-monospace,monospace;font-size:.82rem;user-select:all}
+@media(max-width:580px){.btn{flex:1;padding:12px 9px}.item .btn{flex:1 1 43%}.card{padding:12px}.top{padding:15px 8px}.kpi b{font-size:1.25rem}}
 </style></head><body>
-<header class="top"><div class="wrap"><div>🏠 NIP • Planejamento de campo</div><h1 id="titulo"></h1><div id="origem-topo"></div></div></header>
+<header class="top"><div class="wrap"><div>🏠 NIP GLOBAL • Lista Contínua</div><h1 id="titulo">__EQUIPE_HTML__</h1><div>Partida: __ORIGEM_HTML__ / MA</div></div></header>
 <main class="wrap">
-<section class="card"><h2>📍 Onde comecar</h2><div id="primeira"></div><p class="subtle">A origem representa a sede do municipio escolhido, nao o endereco exato da hospedagem.</p>
-<div class="controls"><a id="linkPrimeira" class="b green" target="_blank" rel="noopener noreferrer">🧭 Ir a primeira obra</a>
-<a id="linkOrigem" class="b sec" target="_blank" rel="noopener noreferrer">🏠 Ver origem no Maps</a></div></section>
-<section class="card"><div class="grid"><div><div class="subtle">Paradas no roteiro</div><div class="kpi" id="qtd"></div></div>
-<div><div class="subtle">Concluidas neste dispositivo</div><div class="kpi" id="feitas"></div></div>
-<div><div class="subtle">Pendentes</div><div class="kpi" id="pend"></div></div></div></section>
-<section class="card"><h2>🛣️ Montar minha propria rota</h2><p class="subtle">Mova as obras para cima/baixo, marque as feitas e escolha as proximas. O Maps aceita rotas editaveis por etapas. Se ja estiver em campo, escolha a localizacao atual.</p>
-<label><input type="checkbox" id="localAtual"> Usar minha localizacao atual em vez da sede municipal para a proxima etapa</label>
-<div class="controls"><button class="b green" id="rotaProximas">🚗 Abrir proximas 4 obras no Maps</button><button class="b sec" id="atualizarEtapas">🔁 Atualizar links das etapas</button><button class="b gray" id="reset">Restaurar ordem e status</button></div>
-<div id="etapas"></div><p class="subtle">Cada etapa aceita ate quatro obras no link, preservando a ordem que voce definiu. Em uma etapa seguinte, a origem sugerida e a ultima obra da etapa anterior. Para partir de onde estiver, marque a opcao acima.</p></section>
-<section class="card"><h2>📋 Minhas obras (ordem editavel)</h2><div id="lista"></div></section>
-<section class="card"><h2>ℹ️ Importante</h2><p class="subtle">Este painel nao altera a planilha original ou o KML. A marcacao de concluidas e a ordem personalizada sao guardadas apenas neste navegador, quando o navegador permitir. Google Maps precisa de internet para carregar as rotas e pode recalcular os tempos e percursos. Para ver todos os pontos juntos e importar em um mapa personalizado, use o CSV fornecido para Google My Maps.</p></section>
-</main><script type="application/json" id="dados">__DADOS_JSON__</script><script>
+<section class="card"><div class="row"><div><strong>📶 Situação do dispositivo:</strong> <span id="conexao">Verificando</span></div><span class="tag" id="modoTag">PLANEJAMENTO OFFLINE</span></div>
+<p class="note">A lista e o planejamento funcionam sem sinal quando este HTML ja estiver salvo e puder ser aberto num navegador compativel. Os botões do Google Maps dependem do aplicativo e da disponibilidade dos mapas; para navegação offline use o GPX no Organic Maps/OsmAnd, com mapas baixados antes.</p>
+<div class="mode"><button type="button" id="modoOffline" class="btn active">📴 Planejamento offline</button><button type="button" id="modoOnline" class="btn soft">🌐 Google Maps online</button></div>
+<p id="alertaArmazenamento" class="note alert">Se o navegador nao permitir gravacao local, exporte o backup JSON ao fim do expediente.</p></section>
+<section class="card"><div class="kpis"><div class="kpi"><span class="small">Paradas</span><b id="qtd">__QTD__</b></div><div class="kpi"><span class="small">Concluidas</span><b id="feitas">0</b></div><div class="kpi"><span class="small">Pendentes</span><b id="pend">__QTD__</b></div></div>
+<p id="primeira" class="note">Primeira obra na ordem original: __NOTA_HTML__</p></section>
+<section class="card"><h2>📴 Trabalhar sem internet</h2>
+<p class="note">Depois de mudar a ordem ou concluir obras, exporte um GPX atualizado. Importe no <strong>Organic Maps</strong> ou <strong>OsmAnd</strong> para ver as paradas e navegar pelas estradas com os mapas da regiao previamente baixados. GPX contem <strong>pontos na ordem escolhida, nao uma estrada desenhada</strong>.</p>
+<div class="actions"><button id="exportGPX" class="btn green" type="button">🧭 GPX das pendentes</button><button id="exportKML" class="btn soft" type="button">🗺️ KML atualizado</button><button id="exportCSV" class="btn soft" type="button">📊 CSV progresso</button></div>
+<h3>💾 Salvar ou recuperar alterações</h3><div class="actions"><button id="exportJSON" class="btn" type="button">⬇ Salvar backup JSON</button><label for="importJSON" class="btn gray">⬆ Restaurar backup JSON</label><input id="importJSON" accept=".json,application/json" type="file" style="display:none"></div>
+<p class="note">O arquivo JSON permite restaurar ordem e concluídas, inclusive em outro celular, desde que seja <strong>a mesma equipe e versao da rota</strong>. Sem sincronizacao automática com o escritorio.</p></section>
+<section class="card" id="blocoOnline"><h2>🌐 Navegação no Google Maps</h2>
+<p class="note">Cada link envia no máximo 4 obras, preservando a sequência de visita. As demais aparecem nas etapas seguintes. Para partir do GPS atual, habilite a opção abaixo.</p>
+<label><input type="checkbox" id="localAtual"> Usar minha localização atual no primeiro trecho</label>
+<div class="actions"><a class="btn green" id="linkPrimeira" href="__PRIMEIRA__">📍 Ir a primeira obra</a><a class="btn soft" id="rotaProximas" href="__ETAPA__">🚗 Abrir proximas 4 obras</a><a class="btn soft" href="__GPS__">GPS atual - link direto</a></div>
+<div id="etapas"></div></section>
+<section class="card"><h2>📋 Organizar atendimentos</h2><div class="filters"><input id="busca" type="search" placeholder="Buscar por nota, municipio ou endereco"><select id="filtro"><option value="todas">Todas as obras</option><option value="pendentes">Somente pendentes</option><option value="prioritarias">Prioritarias pendentes</option><option value="feitas">Concluidas</option></select></div>
+<div class="actions"><button id="reset" class="btn danger" type="button">Restaurar ordem e status</button></div><div id="lista"></div><div class="actions"><button id="mais" class="btn soft hidden" type="button">Mostrar mais obras</button></div></section>
+<section class="card"><h2>📌 Lista de emergencia (sem JavaScript)</h2><p class="note">Caso o iPhone abra uma visualizacao que bloqueia JavaScript, as obras abaixo continuam visiveis e podem ser consultadas offline. Para alterar o planejamento no iPhone, hospede a pasta "Offline_Instalavel" em HTTPS e abra pelo Safari.</p>
+<details id="listaEstatica"><summary>Mostrar todas as notas e coordenadas</summary><ol class="staticlist">__LISTA_ESTATICA__</ol></details></section>
+<section class="card"><h2>ℹ️ Preparacao para campo</h2><p class="note">1. Baixe os mapas do MA no Organic Maps/OsmAnd quando houver Wi-Fi.<br>2. Importe o GPX desta equipe no aplicativo de mapas.<br>3. Abra este HTML para reordenar e dar baixa nas obras.<br>4. Se mudar a lista, exporte novamente o GPX e importe a nova versão no aplicativo.<br>5. Para entregar o progresso ao escritorio, exporte CSV e backup JSON.</p><p id="toast" role="status" aria-live="polite"></p></section>
+</main><script id="dados" type="application/json">__DADOS__</script><script>
 (()=>{'use strict';
 const data=JSON.parse(document.getElementById('dados').textContent);
 const original=data.obras.map((p,i)=>({...p,id:i,feito:false}));
-const key='nip_maps_v3_'+data.equipe+'_'+data.origem.municipio+'_'+data.versao;
-let obras=original.map(p=>({...p}));
-try{const saved=JSON.parse(localStorage.getItem(key)||'null');if(saved&&Array.isArray(saved.order)&&saved.order.length===original.length){
-const dict=new Map(obras.map(p=>[p.id,p]));const arr=saved.order.map(id=>dict.get(id));
-if(arr.every(Boolean)&&new Set(saved.order).size===original.length){obras=arr; obras.forEach(p=>p.feito=!!saved.feitas?.includes(p.id));}
-}}catch(e){}
+const k='nip_maps_v4_'+data.equipe+'_'+data.origem.municipio+'_'+data.versao;
+const oldKey='nip_maps_v3_'+data.equipe+'_'+data.origem.municipio+'_'+data.versao;
 const el=id=>document.getElementById(id);
+let obras=original.map(p=>({...p})),modo='offline',visiveis=100,storeOK=false;
 const coord=p=>Number(p.lat).toFixed(7)+','+Number(p.lon).toFixed(7);
-const mapPin=p=>'https://www.google.com/maps/search/?'+new URLSearchParams({api:'1',query:coord(p)});
-const urlDirecoes=(from,arr,useGps=false)=>{
-if(!arr.length)return null;
-const q={api:'1',travelmode:'driving',destination:coord(arr[arr.length-1])};
-if(!useGps)q.origin=coord(from);
-if(arr.length>1)q.waypoints=arr.slice(0,-1).map(coord).join('|');
-return 'https://www.google.com/maps/dir/?'+new URLSearchParams(q).toString();
-};
-const botao=(label,klass,click)=>{const x=document.createElement('button');x.textContent=label;x.className='b '+klass;x.onclick=click;return x;};
-const link=(label,href,klass='sec')=>{const a=document.createElement('a');a.textContent=label;a.className='b '+klass;a.href=href;a.target='_blank';a.rel='noopener noreferrer';return a;};
-function persist(){try{localStorage.setItem(key,JSON.stringify({order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)}));}catch(e){}}
-function move(index,d){const j=index+d;if(j<0||j>=obras.length)return;[obras[index],obras[j]]=[obras[j],obras[index]];persist();render();}
-function visitar(id){const p=obras.find(p=>p.id===id);if(p)p.feito=!p.feito;persist();render();}
+const safeName=String(data.equipe).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'_').slice(0,48);
+function toast(s){el('toast').textContent=s;}
+function validState(s){if(!s||!Array.isArray(s.order)||s.order.length!==original.length)return false;
+const ids=new Set(original.map(p=>p.id));return new Set(s.order).size===original.length&&s.order.every(x=>ids.has(x))&&Array.isArray(s.feitas)&&s.feitas.every(x=>ids.has(x));}
+function applyState(s){if(!validState(s))return false;const dict=new Map(original.map(p=>[p.id,{...p}]));obras=s.order.map(id=>dict.get(id));const feitas=new Set(s.feitas);obras.forEach(p=>p.feito=feitas.has(p.id));return true;}
+try{const v=localStorage.getItem(k)||localStorage.getItem(oldKey);if(v)applyState(JSON.parse(v));localStorage.setItem(k,JSON.stringify({order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)}));storeOK=true;}catch(e){storeOK=false;}
+function persist(){if(storeOK){try{localStorage.setItem(k,JSON.stringify({order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)}));}catch(e){storeOK=false;}}el('alertaArmazenamento').textContent=storeOK?'✅ Alteracoes gravadas neste navegador. Exporte backup JSON para guardar uma copia e transferir entre dispositivos.':'⚠️ Este navegador nao permite salvar progresso automaticamente. Use Salvar backup JSON antes de fechar!';}
 function pendentes(){return obras.filter(p=>!p.feito);}
-function routes(){let remaining=pendentes(), from=data.origem, out=[];
-for(let i=0;i<remaining.length;i+=4){const subset=remaining.slice(i,i+4);out.push({from,subset,etapa:out.length+1});from=subset[subset.length-1];}return out;}
-function render(){
-el('titulo').textContent=data.equipe;
-el('origem-topo').textContent='Municipio de partida: '+data.origem.municipio+' / MA';
-el('qtd').textContent=obras.length;
-el('feitas').textContent=obras.filter(p=>p.feito).length;
-el('pend').textContent=pendentes().length;
-const primeira=pendentes()[0];
-if(primeira){el('primeira').textContent='Obra sugerida: '+obras[0].nota+' • '+(obras[0].prioridade?'PRIORITARIA':'Padrao')+' | Proxima pendente: '+primeira.nota;
-el('linkPrimeira').href=urlDirecoes(data.origem,[primeira],el('localAtual').checked);el('linkPrimeira').style.display='inline-block';
-}else{el('primeira').textContent='Todas as obras foram marcadas como concluidas.';el('linkPrimeira').style.display='none';}
-el('linkOrigem').href=mapPin(data.origem);
-const lista=el('lista');lista.replaceChildren();
-obras.forEach((p,i)=>{const item=document.createElement('article');item.className='item'+(p.prioridade?' priority':'')+(p.feito?' done':'');
-const head=document.createElement('div');head.className='head';
-const info=document.createElement('div');const titulo=document.createElement('strong');titulo.textContent=(i+1)+'. NOTA '+p.nota;info.append(titulo);
-const note=document.createElement('div');note.className='note';note.textContent=[p.municipio,p.localidade,p.endereco].filter(Boolean).join(' / ');info.append(note);head.append(info);
-const badge=document.createElement('span');badge.className='pill'+(p.prioridade?' red':'');badge.textContent=p.feito?'✅ Concluida':(p.prioridade?'🚨 Prioritaria':'Pendente');head.append(badge);item.append(head);
-const buttons=document.createElement('div');buttons.className='controls';
-const up=botao('⬆ Subir','sec',()=>move(i,-1));up.disabled=i===0;buttons.append(up);
-const down=botao('⬇ Descer','sec',()=>move(i,1));down.disabled=i===obras.length-1;buttons.append(down);
-buttons.append(botao(p.feito?'↩ Reabrir':'✓ Concluida',p.feito?'sec':'green',()=>visitar(p.id)));
-buttons.append(link('📍 Ver obra',mapPin(p)));
-buttons.append(link('🚗 Navegar ate obra',urlDirecoes(data.origem,[p],el('localAtual').checked),'sec'));
-item.append(buttons);lista.append(item);});
-renderEtapas();
-}
-function renderEtapas(){const box=el('etapas');box.replaceChildren();const todas=routes();if(!todas.length){box.textContent='Nenhuma obra pendente.';return;}
-const title=document.createElement('h2');title.textContent='Etapas sugeridas ('+todas.length+')';box.append(title);
-const gps=el('localAtual').checked;
-todas.forEach((et,i)=>{const row=document.createElement('div');row.className='item';
-const line=document.createElement('div');line.textContent='Etapa '+et.etapa+' • '+et.subset.length+' obra(s) • '+et.subset.map(p=>p.nota).join(' → ');row.append(line);
-const ctl=document.createElement('div');ctl.className='controls';ctl.append(link('Abrir etapa '+et.etapa, urlDirecoes(et.from,et.subset,gps&&i===0),'green'));row.append(ctl);box.append(row);});
-}
-el('localAtual').onchange=render;
-el('atualizarEtapas').onclick=renderEtapas;
-el('rotaProximas').onclick=()=>{const etapas=routes();if(etapas.length)window.open(urlDirecoes(etapas[0].from,etapas[0].subset,el('localAtual').checked),'_blank','noopener,noreferrer');};
-el('reset').onclick=()=>{if(!confirm('Restaurar a ordem original da NIP e desmarcar as obras?'))return;obras=original.map(p=>({...p}));persist();render();};
-render();
+function urlDirecoes(de,lista,gps=false){if(!lista.length)return '#';const a=new URLSearchParams({api:'1',travelmode:'driving',destination:coord(lista[lista.length-1])});if(!gps)a.set('origin',coord(de));if(lista.length>1)a.set('waypoints',lista.slice(0,-1).map(coord).join('|'));return 'https://www.google.com/maps/dir/?'+a.toString();}
+function pin(p){return 'https://www.google.com/maps/search/?'+new URLSearchParams({api:'1',query:coord(p)});}
+function routeGroups(){const p=pendentes(),g=[];let de=data.origem;for(let i=0;i<p.length;i+=4){const subset=p.slice(i,i+4);g.push({de,subset});de=subset[subset.length-1];}return g;}
+function download(name,text,type){const blob=new Blob([text],{type});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.style.display='none';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),30000);toast('Arquivo solicitado: '+name+'. Se o iPhone nao baixar, use Safari via HTTPS.');}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');}
+function filename(suffix){return 'NIP_'+safeName+'_'+suffix;}
+function exportGpx(){const p=pendentes();let t=['<?xml version="1.0" encoding="UTF-8"?>','<gpx version="1.1" creator="NIP Campo Offline" xmlns="http://www.topografix.com/GPX/1/1">','<metadata><name>'+esc(data.equipe)+' - pendentes</name><desc>Sequencia de paradas; NAO e tracado rodoviario.</desc></metadata>'];
+const item=(tag,n,p,d)=>'<'+tag+' lat="'+Number(p.lat).toFixed(7)+'" lon="'+Number(p.lon).toFixed(7)+'"><name>'+esc(n)+'</name><desc>'+esc(d)+'</desc></'+tag+'>';
+t.push(item('wpt','CASINHA - '+data.origem.municipio,data.origem,'Partida municipal aproximada'));
+p.forEach((x,i)=>t.push(item('wpt',String(i+1).padStart(3,'0')+' - '+x.nota,x,x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));
+t.push('<rte><name>'+esc(data.equipe)+' - ordem planejada</name><desc>Lista de paradas sem geometria de ruas; o app offline precisa calcular percurso.</desc>');
+t.push(item('rtept','ORIGEM - '+data.origem.municipio,data.origem,'Ponto inicial municipal'));
+p.forEach((x,i)=>t.push(item('rtept',String(i+1).padStart(3,'0')+' - '+x.nota,x,x.municipio)));
+t.push('</rte></gpx>');download(filename('PENDENTES_OFFLINE.gpx'),t.join('\n'),'application/gpx+xml;charset=utf-8');}
+function exportKml(){const p=pendentes();let t=['<?xml version="1.0" encoding="UTF-8"?>','<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(data.equipe)+' - pendentes</name>'];const mark=(name,x,descr)=>'<Placemark><name>'+esc(name)+'</name><description>'+esc(descr)+'</description><Point><coordinates>'+Number(x.lon).toFixed(7)+','+Number(x.lat).toFixed(7)+',0</coordinates></Point></Placemark>';
+t.push(mark('CASINHA - '+data.origem.municipio,data.origem,'Referencia municipal'));
+p.forEach((x,i)=>t.push(mark((i+1)+' - '+x.nota,x,x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));t.push('</Document></kml>');download(filename('PENDENTES_OFFLINE.kml'),t.join('\n'),'application/vnd.google-earth.kml+xml;charset=utf-8');}
+function csvVal(x){let s=String(x??'');if(/^[=+@\t\r]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}
+function exportCsv(){const rows=[['Equipe','Ordem atual','Nota CCS','Status','Prioridade','Municipio','Localidade','Endereco','Latitude','Longitude','Qtd Obras']];obras.forEach((p,i)=>rows.push([data.equipe,i+1,p.nota,p.feito?'CONCLUIDA':'PENDENTE',p.prioridade?'SIM':'NAO',p.municipio,p.localidade,p.endereco,p.lat,p.lon,p.qtd_obras]));download(filename('PROGRESSO.csv'),'\ufeff'+rows.map(r=>r.map(csvVal).join(';')).join('\r\n'),'text/csv;charset=utf-8');}
+function state(){return {schema:'nip-offline-v1',equipe:data.equipe,versao:data.versao,geradoEm:new Date().toISOString(),order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)};}
+function exportJson(){download(filename('BACKUP.json'),JSON.stringify(state(),null,2),'application/json;charset=utf-8');}
+function mover(index,delta){const j=index+delta;if(j<0||j>=obras.length)return;[obras[index],obras[j]]=[obras[j],obras[index]];persist();render();}
+function toggle(id){const p=obras.find(p=>p.id===id);if(p){p.feito=!p.feito;persist();render();}}
+function button(text,cb,cl='soft'){const b=document.createElement('button');b.type='button';b.className='btn '+cl;b.textContent=text;b.addEventListener('click',cb);return b;}
+function link(text,url,cl='soft'){const a=document.createElement('a');a.className='btn '+cl;a.textContent=text;a.href=url;return a;}
+function filtradas(){const q=el('busca').value.trim().toLocaleLowerCase('pt-BR'),f=el('filtro').value;return obras.map((p,i)=>({p,i})).filter(({p})=>((f==='todas')||(f==='pendentes'&&!p.feito)||(f==='prioritarias'&&!p.feito&&p.prioridade)||(f==='feitas'&&p.feito))&&(!q||[p.nota,p.municipio,p.localidade,p.endereco].join(' ').toLocaleLowerCase('pt-BR').includes(q)));}
+function renderList(){const box=el('lista');box.replaceChildren();const arr=filtradas();arr.slice(0,visiveis).forEach(({p,i})=>{const item=document.createElement('article');item.className='item'+(p.prioridade?' priority':'')+(p.feito?' done':'');const head=document.createElement('div');head.className='row';const label=document.createElement('strong');label.textContent=(i+1)+'. NOTA '+p.nota;head.append(label);const badge=document.createElement('span');badge.className='tag '+(p.feito?'green':p.prioridade?'red':'');badge.textContent=p.feito?'✓ Concluida':p.prioridade?'⚠ Prioritaria':'Pendente';head.append(badge);item.append(head);
+const desc=document.createElement('p');desc.className='muted';desc.textContent=[p.municipio,p.localidade,p.endereco].filter(Boolean).join(' / ');item.append(desc);const gps=document.createElement('div');gps.className='coords';gps.textContent=coord(p);item.append(gps);const ctrl=document.createElement('div');ctrl.className='actions';const up=button('⬆ Subir',()=>mover(i,-1));up.disabled=i===0;ctrl.append(up);const down=button('⬇ Descer',()=>mover(i,1));down.disabled=i===obras.length-1;ctrl.append(down);ctrl.append(button(p.feito?'↩ Reabrir':'✓ Concluida',()=>toggle(p.id),p.feito?'soft':'green'));if(modo==='online'){ctrl.append(link('📍 Google Maps',urlDirecoes(data.origem,[p],el('localAtual').checked)));}item.append(ctrl);box.append(item);});
+el('mais').classList.toggle('hidden',arr.length<=visiveis);if(!arr.length){box.textContent='Nenhuma obra com este filtro.';}}
+function renderRoutes(){const b=el('etapas');b.replaceChildren();const groups=routeGroups();groups.forEach((g,i)=>{const p=document.createElement('div');p.className='item';const text=document.createElement('div');text.textContent='Etapa '+(i+1)+' | '+g.subset.length+' parada(s) | '+g.subset.map(x=>x.nota).join(' → ');p.append(text);p.append(link('Abrir etapa '+(i+1),urlDirecoes(g.de,g.subset,el('localAtual').checked&&i===0),'green'));b.append(p);});
+el('rotaProximas').href=groups.length?urlDirecoes(groups[0].de,groups[0].subset,el('localAtual').checked):'#';el('rotaProximas').style.display=groups.length?'inline-block':'none';}
+function render(){el('qtd').textContent=obras.length;el('feitas').textContent=obras.filter(p=>p.feito).length;el('pend').textContent=pendentes().length;const first=pendentes()[0];el('primeira').textContent=first?'Proxima obra: '+first.nota+' | '+first.municipio+(first.prioridade?' | PRIORITARIA':''):'Todas as obras concluidas!';if(first){el('linkPrimeira').href=urlDirecoes(data.origem,[first],el('localAtual').checked);el('linkPrimeira').style.display='';}else el('linkPrimeira').style.display='none';renderRoutes();renderList();persist();}
+function setMode(m){modo=m;el('modoOffline').classList.toggle('active',m==='offline');el('modoOnline').classList.toggle('active',m==='online');el('blocoOnline').classList.toggle('hidden',m!=='online');el('modoTag').textContent=m==='offline'?'PLANEJAMENTO OFFLINE':'GOOGLE MAPS ONLINE';renderList();}
+function statusConexao(){el('conexao').textContent=navigator.onLine?'Conexao possivelmente disponivel':'Sem conexao detectada';}
+el('exportGPX').onclick=exportGpx;el('exportKML').onclick=exportKml;el('exportCSV').onclick=exportCsv;el('exportJSON').onclick=exportJson;
+el('importJSON').addEventListener('change',async ev=>{const f=ev.target.files[0];if(!f)return;try{if(f.size>5*1024*1024)throw Error('Backup maior que 5 MB');const s=JSON.parse(await f.text());if(s.schema!=='nip-offline-v1'||s.equipe!==data.equipe||s.versao!==data.versao||!validState(s))throw Error('Backup invalido ou de outra equipe/versao');if(!confirm('Substituir ordem e concluidas pelo backup selecionado?'))return;applyState(s);render();toast('Backup restaurado com sucesso');}catch(e){alert('Falha ao restaurar: '+e.message);}finally{ev.target.value='';}});
+el('reset').onclick=()=>{if(confirm('Restaurar a ordem original e desmarcar todas as concluidas?')){obras=original.map(p=>({...p}));visiveis=100;render();}};
+el('busca').oninput=()=>{visiveis=100;renderList();};el('filtro').onchange=()=>{visiveis=100;renderList();};el('mais').onclick=()=>{visiveis+=100;renderList();};el('localAtual').onchange=renderRoutes;
+el('modoOffline').onclick=()=>setMode('offline');el('modoOnline').onclick=()=>setMode('online');
+window.addEventListener('online',statusConexao);window.addEventListener('offline',statusConexao);statusConexao();el('listaEstatica').classList.add('hidden');setMode('offline');render();
+__PWA_JS__
 })();</script></body></html>"""
-    return template.replace('__DADOS_JSON__', dados_json)
+    return (template.replace('__DADOS__', dados_json)
+            .replace('__PWA_HEAD__', pwa_head)
+            .replace('__PWA_JS__', pwa_script)
+            .replace('__EQUIPE_HTML__', html.escape(str(equipe)))
+            .replace('__ORIGEM_HTML__', html.escape(origem['municipio']))
+            .replace('__QTD__', str(len(pontos)))
+            .replace('__NOTA_HTML__', html.escape(pontos[0]['nota'] if pontos else '-'))
+            .replace('__LISTA_ESTATICA__', fallback_html)
+            .replace('__PRIMEIRA__', html.escape(fallback_primeira, quote=True))
+            .replace('__GPS__', html.escape(fallback_gps, quote=True))
+            .replace('__ETAPA__', html.escape(fallback_etapa, quote=True)))
+
+
+
+def link_apple_maps_obra(origem, destino, local_atual=False):
+    """Apple Maps route to a single work location, without an external service."""
+    params = {'daddr': coordenada_maps(destino), 'dirflg': 'd'}
+    if not local_atual:
+        params['saddr'] = coordenada_maps(origem)
+    return 'https://maps.apple.com/?' + urlencode(params)
+
+
+def gerar_painel_iphone_estatico(df_equipe, equipe):
+    """No-JS fallback: plain HTTPS hrefs that can be followed or copied on iOS.
+
+    iOS Files/WhatsApp HTML previews can omit scripts. Static markup is
+    intentionally present in the document before any JavaScript runs.
+    """
+    ori = origem_google_maps(df_equipe)
+    pontos = pontos_equipe_google_maps(df_equipe)
+    safe = lambda x: html.escape(str(x), quote=True)
+    css = ("body{font-family:-apple-system,system-ui,sans-serif;margin:0;"
+           "background:#f2f6fb;color:#18314f}header{background:#0d256c;"
+           "color:white;padding:22px 14px}main{max-width:720px;margin:auto;"
+           "padding:14px}.card{background:white;border:1px solid #d6e2ee;"
+           "border-radius:10px;margin:12px 0;padding:15px}.b{display:inline-block;"
+           "background:#1b8049;color:white;text-decoration:none;border-radius:8px;"
+           "padding:12px;margin:5px 5px 5px 0;overflow-wrap:anywhere;font-weight:650}"
+           ".b.alt{background:#0d256c}.note{color:#4b6078;font-size:14px}"
+           "h1{font-size:24px}h2{font-size:18px;margin:0 0 9px}")
+    b = ['<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width,initial-scale=1">',
+         '<title>Rotas iPhone - NIP</title><style>'+css+'</style></head><body>',
+         '<header><h1>Rotas iPhone / iOS</h1><strong>'+safe(equipe)+'</strong>',
+         '<p>Origem: '+safe(ori['municipio'])+' - MA</p></header><main>',
+         '<p class="note">Links diretos: nao dependem de botoes JavaScript. '
+         'Se o visor do app Arquivos nao abrir o link, copie o endereco do '
+         'arquivo LINKS_Maps desta equipe e cole no Safari.</p>']
+    if pontos:
+        primeira = pontos[0]
+        b.extend(['<section class="card"><h2>1. Comece por esta obra</h2>',
+                  '<strong>Nota '+safe(primeira['nota'])+'</strong>',
+                  '<p class="note">'+safe(primeira['municipio'])+'</p>',
+                  '<a class="b" href="'+safe(link_google_maps_primeira_obra(ori,primeira))+'">Google Maps - desde municipio</a>',
+                  '<a class="b" href="'+safe(link_google_maps_primeira_obra(ori,primeira,local_atual=True))+'">Google Maps - usar GPS atual</a>',
+                  '<a class="b alt" href="'+safe(link_apple_maps_obra(ori,primeira))+'">Apple Maps - primeira obra</a>',
+                  '<p class="note">Se o toque nao funcionar, copie este link para o Safari: '+safe(link_google_maps_primeira_obra(ori, primeira))+'</p>',
+                  '</section>'])
+        etapas = gerar_etapas_google_maps(ori, pontos)
+        b.append('<section class="card"><h2>2. Abrir etapas no Google Maps</h2>')
+        for e in etapas:
+            b.extend(['<p><strong>Etapa '+str(e['etapa'])+'</strong> - notas '+safe(e['primeira_nota'])+' ate '+safe(e['ultima_nota'])+'</p>',
+                      '<a class="b" href="'+safe(e['url'])+'">Abrir etapa '+str(e['etapa'])+'</a>',
+                      '<a class="b alt" href="'+safe(e['url_local_atual'])+'">Etapa '+str(e['etapa'])+' a partir do GPS</a>',
+                      '<p class="note">Link: '+safe(e['url'])+'</p>'])
+        b.append('</section>')
+        b.append('<section class="card"><h2>3. Navegar obra por obra</h2>')
+        atual = ori
+        for i, pt in enumerate(pontos, start=1):
+            b.extend(['<p><strong>'+str(i)+'. Nota '+safe(pt['nota'])+'</strong> '
+                      + ('(PRIORITARIA)' if pt['prioridade'] else '')+'</p>',
+                      '<a class="b" href="'+safe(link_google_maps_primeira_obra(atual,pt))+'">Google Maps</a>',
+                      '<a class="b alt" href="'+safe(link_apple_maps_obra(atual,pt))+'">Apple Maps</a>',
+                      '<a class="b alt" href="'+safe(link_google_maps_primeira_obra(atual,pt,local_atual=True))+'">Do meu GPS</a>'])
+            atual = pt
+        b.append('</section>')
+    else:
+        b.append('<p>Nenhuma obra disponivel para esta equipe.</p>')
+    b.append('<p class="note">A origem e a sede municipal de referencia, '
+             'nao o endereco residencial. Para modificar a sequencia no iPhone, '
+             'abra o planejador interativo em uma pagina HTTPS no Safari. '
+             'Os links deste arquivo seguem a ordem original da NIP.</p>')
+    b.append('</main></body></html>')
+    return '\n'.join(b)
+
+
+def gerar_leia_me_iphone():
+    return ("ROTAS NO IPHONE / iOS - NIP\n\n"
+            "1. Extraia o ZIP no app Arquivos do iPhone.\n"
+            "2. Abra o arquivo Equipes/Roteiro_iPhone_*.html da sua equipe.\n"
+            "3. Toque em Google Maps - desde municipio, ou Google Maps - usar GPS atual.\n"
+            "4. Se a visualizacao do iPhone nao permitir abrir o link, abra\n"
+            "   Equipes/LINKS_Maps_*.txt e COPIE o link https:// para o Safari.\n"
+            "5. Apple Maps e uma alternativa para percursos individuais.\n"
+            "6. Para mudar e salvar a ordem pelo painel interativo, use uma\n"
+            "   versao hospedada em HTTPS no Safari (a visualizacao rapida do\n"
+            "   app Arquivos pode nao executar JavaScript).\n"
+            "7. A origem municipal e uma referencia, nao um endereco de casa.\n"
+            "8. Para navegar, o celular precisa de internet ou mapas offline\n"
+            "   previamente disponiveis no app de navegacao.\n")
 
 
 def csv_google_mymaps_em_partes(texto_csv, max_dados=1999):
@@ -372,7 +506,8 @@ def gerar_indice_google_maps(equipes):
         arq=html.escape(equipe['arquivo'], quote=True)
         local=html.escape(equipe['municipio'])
         nota=html.escape(equipe['primeira'])
-        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} - MA | 1ª obra: {nota}</p><a href="{arq}">Abrir planejamento da equipe</a></article>')
+        arq_ios=html.escape(equipe.get('arquivo_ios',equipe['arquivo']), quote=True)
+        blocos.append(f'<article class="item"><strong>{nome}</strong><p>🏠 {local} - MA | 1ª obra: {nota}</p><a href="{arq_ios}">iPhone: abrir rotas diretas</a> &nbsp; <a href="{arq}">Planejador interativo (Android / Safari HTTPS)</a></article>')
     return ("""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Google Maps - NIP</title><style>body{font-family:system-ui;background:#f3f6fd;margin:0;color:#123}header{background:#0d256c;color:white;padding:22px}main{max-width:900px;margin:auto;padding:15px}.item{background:white;border-radius:9px;padding:16px;margin:12px 0;box-shadow:0 2px 8px #1231}.item a{background:#238b46;color:white;display:inline-block;padding:11px;border-radius:7px;text-decoration:none;font-weight:bold}p{color:#567}</style></head><body><header><h1>📍 Planejamento Google Maps - NIP</h1><p style="color:white">Selecione a equipe para organizar o roteiro no celular</p></header><main>"""
             + ''.join(blocos) + """<p>O arquivo HTML de cada equipe permite reordenar e marcar visitas. Para importar os pontos num mapa, use os arquivos CSV em Google My Maps.</p></main></body></html>""")
 
@@ -381,6 +516,9 @@ def gerar_leia_me_google_maps():
     return ("""ROTAS GOOGLE MAPS - NIP / LISTA CONTINUA
 
 1. Abra INICIAR_AQUI.html no navegador do computador ou do celular.
+   NO IPHONE use Equipes/Roteiro_iPhone_*.html, com links estaticos.
+   Se o app Arquivos nao abrir links, copie os URLs de LINKS_Maps_*.txt
+   e cole diretamente no Safari. Leia LEIA_ME_IPHONE.txt.
 2. Selecione a equipe; no HTML individual, a primeira obra sugerida ja aparece.
 3. Use Subir/Descer para alterar a ordem, Concluida para controlar o realizado.
 4. Clique em Abrir proximas 4 obras no Maps, ou abra cada etapa sugerida.
@@ -407,6 +545,128 @@ IMPORTANTE:
   e abra o HTML no navegador; os arquivos TXT contem links alternativos.
 """)
 
+
+
+def gerar_gpx_offline_paradas(df_equipe, equipe):
+    """GPX apenas de waypoints e route points (nao e desenho de estrada).
+
+    Organic Maps e OsmAnd podem importar; o aplicativo recalcula as estradas
+    com seus proprios mapas. Nao gerar trkpt ficticio ligando obras em reta.
+    """
+    from xml.sax.saxutils import escape as xml_escape
+    origem = origem_google_maps(df_equipe)
+    pontos = pontos_equipe_google_maps(df_equipe)
+    x = lambda v: xml_escape(str(v))
+    def item(tag, nome, obj, info):
+        return (f'<{tag} lat="{float(obj["lat"]):.7f}" lon="{float(obj["lon"]):.7f}">'
+                f'<name>{x(nome)}</name><desc>{x(info)}</desc></{tag}>')
+    partes = ['<?xml version="1.0" encoding="UTF-8"?>',
+              '<gpx version="1.1" creator="NIP Campo Offline" xmlns="http://www.topografix.com/GPX/1/1">',
+              f'<metadata><name>{x(equipe)}</name><desc>Paradas em ordem, sem rota rodoviaria.</desc></metadata>',
+              item('wpt', f'CASINHA - {origem["municipio"]}', origem, 'Origem: sede municipal aproximada')]
+    for n, ponto in enumerate(pontos, 1):
+        partes.append(item('wpt', f'{n:03d} - {ponto["nota"]}', ponto,
+                            ponto['municipio'] + (' | PRIORIDADE' if ponto['prioridade'] else '')))
+    partes.append(f'<rte><name>{x(equipe)} - paradas planejadas</name>'
+                  '<desc>Sequencia logica. O app offline calcula o trajeto pelas ruas.</desc>')
+    partes.append(item('rtept', f'ORIGEM - {origem["municipio"]}', origem, 'Origem municipal'))
+    for n, ponto in enumerate(pontos, 1):
+        partes.append(item('rtept', f'{n:03d} - {ponto["nota"]}', ponto, ponto['municipio']))
+    partes.append('</rte></gpx>')
+    return '\n'.join(partes)
+
+
+def gerar_pwa_offline(equipe, versao, nome_arquivo_html, conteudo_html):
+    """Devolve arquivos de uma PWA autocontida, para publicacao HTTPS opcional.
+
+    O ZIP local funciona para consulta; instalar e guardar via service worker so
+    funciona no navegador apos publicar esta pasta em HTTPS (ou localhost).
+    """
+    from PIL import Image
+    nome = texto_seguro_maps(equipe)
+    grupo = hashlib.sha256(nome.encode('utf-8')).hexdigest()[:8]
+    prefixo = f'nip-campo-offline-{grupo}-'
+    chave = hashlib.sha256((nome + versao).encode('utf-8')).hexdigest()[:16]
+    manifest = {
+        'name': f'NIP Campo - {nome}', 'short_name': 'NIP Campo',
+        'description': f'Planejamento offline da equipe {nome}',
+        'start_url': './index.html', 'scope': './', 'display': 'standalone',
+        'background_color': '#f3f6fa', 'theme_color': '#0d256c',
+        'icons': [{'src': './icon-192.png', 'sizes': '192x192', 'type': 'image/png'},
+                  {'src': './icon-512.png', 'sizes': '512x512', 'type': 'image/png'}]
+    }
+    sw = f"""const CACHE='{prefixo}{chave}';
+const PREFIX='{prefixo}';
+const ASSETS=['./','./index.html','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
+self.addEventListener('activate',e=>e.waitUntil(Promise.all([caches.keys().then(a=>Promise.all(a.filter(n=>n.startsWith(PREFIX)&&n!==CACHE).map(n=>caches.delete(n))))),self.clients.claim()])));
+self.addEventListener('fetch',e=>{{if(e.request.method!=='GET')return;const u=new URL(e.request.url);if(u.origin!==self.location.origin)return;
+e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request)));}});
+"""
+    img = Image.open(io.BytesIO(imagem_casa_bytes())).convert('RGBA')
+    icons = {}
+    for sz in [192, 512]:
+        surface = Image.new('RGBA', (sz, sz), '#0d256c')
+        casa = img.resize((int(sz*.84), int(sz*.84)), Image.Resampling.LANCZOS)
+        surface.alpha_composite(casa, ((sz-casa.width)//2, (sz-casa.height)//2))
+        buff = io.BytesIO(); surface.convert('RGB').save(buff, format='PNG'); icons[f'icon-{sz}.png'] = buff.getvalue()
+    return {'index.html': conteudo_html.encode('utf-8'),
+            'manifest.webmanifest': json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8'),
+            'sw.js': sw.encode('utf-8'), **icons}
+
+
+def gerar_guia_modo_offline():
+    return ("""NIP CAMPO - PLANEJAMENTO ONLINE E OFFLINE (ANDROID / IPHONE)
+
+MODO OFFLINE (sem internet):
+1. No escritorio: gere o ZIP Planejamento Offline ou Google Maps.
+2. Baixe e EXTRAIA o ZIP no celular enquanto houver conexao.
+3. Para consulta, abra Equipes/Planejador_*.html em um navegador que execute JavaScript.
+4. No iPhone, a pre-visualizacao do app Arquivos pode BLOQUEAR JavaScript.
+   Para edicao confiavel no iPhone, publique a pasta Offline_Instalavel/<equipe>
+   em um servidor HTTPS. Abra index.html no Safari, use Adicionar a Tela de Inicio.
+   A PWA usa cache de seus arquivos basicos; abra-a uma vez online antes de sair.
+5. No Android, o arquivo HTML pode funcionar no Chrome/Firefox dependendo da
+   permissao de abrir arquivo local e permitir downloads. Se houver bloqueio,
+   tambem use a pasta HTTPS/PWA instalavel.
+6. A lista, prioridades, ordem, conclusao e exportacao dos arquivos podem
+   funcionar offline se o navegador executar JavaScript.
+7. Exporte BACKUP.json para guardar a ordem e as concluidas, e CSV para o escritorio.
+   Um backup so pode ser restaurado na mesma equipe e mesma versao da rota.
+
+NAVEGACAO OFFLINE POR ESTRADAS:
+1. Instale Organic Maps ou OsmAnd enquanto tiver internet.
+2. Dentro desses aplicativos, baixe os MAPAS das regioes do Maranhão em que
+   havera deslocamento. Confira cobertura dos acessos/estradas previamente.
+3. Em Equipes, importe Pontos_Offline_*.gpx no app de navegacao.
+   Android: escolha abrir/importar pelo Organic Maps ou OsmAnd.
+   iOS: abra Arquivos > Compartilhar > Importar com Organic Maps/OsmAnd.
+4. O arquivo GPX contem coordenadas e SEQUENCIA de paradas, nao um trajeto
+   calculado pelas ruas. O app offline cria a rota usando sua malha viaria.
+5. Se mudar a ordem / baixar obras no HTML, clique em GPX das pendentes
+   e importe a nova lista no app. Nao ha sincronizacao automatica.
+
+MODO ONLINE (GOOGLE MAPS):
+- Dentro do Planejador selecione Google Maps online.
+- Abra a primeira obra ou etapas com ate quatro obras por link.
+- Sao multiplas etapas, sem limite fixo de obras no planejamento.
+- Dependendo do aplicativo e da conectividade, o link pode nao abrir offline.
+
+PWA/INSTALACAO:
+- O pacote NAO publica o app na internet automaticamente.
+- ATENCAO: as notas e coordenadas sao dados operacionais; se publicar em
+  HTTPS, use hospedagem privada com controle de acesso por equipe, nunca um
+  site publico sem autenticacao.
+- HTTPS e necessario para ativar cache/service worker da PWA no iPhone/Android.
+- Os dados do HTML nao incluem mapa-base/estradas nem motor rodoviario embutido.
+- Para navegacao totalmente sem rede, use aplicativo GPS offline com mapas
+  previamente baixados. O GPS do telefone em si nao exige dados moveis.
+
+Fontes oficiais (para instrucoes de importacao):
+https://organicmaps.app/faq/bookmarks/how-to-import/
+https://osmand.net/docs/user/personal/tracks/manage-tracks/
+https://developers.google.com/maps/documentation/urls/get-started
+""")
 
 
 def normalize_cols(columns):
@@ -1371,7 +1631,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -1425,6 +1685,11 @@ with st.sidebar:
                            file_name=f"ListaContinua_GoogleMaps - {d_fmt}.zip",
                            use_container_width=True,
                            help="Links de navegacao, HTML editavel por equipe e CSV para Google My Maps.")
+        st.download_button("📴 Baixar Planejamento Offline (ZIP)",
+                           data=st.session_state.get('bytes_zip_offline_lista', b""),
+                           file_name=f"ListaContinua_Offline - {d_fmt}.zip",
+                           use_container_width=True,
+                           help="HTML offline por equipe, GPX para Organic Maps/OsmAnd, links e pacote PWA HTTPS para iPhone/Android.")
         st.caption("🏠 A casinha indica a sede do municipio de moradia/hospedagem. "
                    "Abra o KMZ no Google Earth para visualizar o icone sem arquivos separados. "
                    "Nos KMLs, mantenha CASINHA_ORIGEM.png na mesma pasta.")
@@ -1924,14 +2189,15 @@ if status_exec == "PACKAGING":
     df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
 
     d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx, bu_txt, bu_maps = (io.BytesIO() for _ in range(5))
+    bu_xl, bu_kml, bu_gpx, bu_txt, bu_maps, bu_offline = (io.BytesIO() for _ in range(6))
     
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, \
              zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, \
              zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg, \
              zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt, \
-             zipfile.ZipFile(bu_maps, 'w', zipfile.ZIP_DEFLATED) as zm:
+             zipfile.ZipFile(bu_maps, 'w', zipfile.ZIP_DEFLATED) as zm, \
+             zipfile.ZipFile(bu_offline, 'w', zipfile.ZIP_DEFLATED) as zo:
             
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
             obras_por_dia_est = st.session_state.vrp_state_lista.get('config', {}).get('obras_por_dia_est', 4.0)
@@ -2097,9 +2363,30 @@ if status_exec == "PACKAGING":
                     id_equipe_maps = hashlib.sha256(str(base).encode('utf-8')).hexdigest()[:8]
                     chave_arquivo = f'{b_safe}_{id_equipe_maps}'
                     nome_html = f'Equipes/Planejador_{chave_arquivo}.html'
+                    nome_html_ios = f'Equipes/Roteiro_iPhone_{chave_arquivo}.html'
                     nome_csv = f'Equipes/Pontos_MyMaps_{chave_arquivo}.csv'
                     nome_links = f'Equipes/LINKS_Maps_{chave_arquivo}.txt'
-                    zm.writestr(nome_html, gerar_painel_google_maps(dfk_base, str(base)).encode('utf-8'))
+                    html_campo = gerar_painel_google_maps(dfk_base, str(base))
+                    html_ios = gerar_painel_iphone_estatico(dfk_base, str(base))
+                    gpx_offline = gerar_gpx_offline_paradas(dfk_base, str(base))
+                    nome_gpx_offline = f'Equipes/Pontos_Offline_{chave_arquivo}.gpx'
+                    zm.writestr(nome_html, html_campo.encode('utf-8'))
+                    zm.writestr(nome_gpx_offline, gpx_offline.encode('utf-8'))
+                    zo.writestr(nome_html, html_campo.encode('utf-8'))
+                    zo.writestr(nome_gpx_offline, gpx_offline.encode('utf-8'))
+                    zo.writestr(nome_html_ios, html_ios.encode('utf-8'))
+                    # Opcional: publicacao HTTPS para modo instalavel e cache no iOS.
+                    pontos_versao = hashlib.sha256(json.dumps(
+                        {'origem': origem_google_maps(dfk_base),
+                         'obras': pontos_equipe_google_maps(dfk_base)},
+                        ensure_ascii=False, sort_keys=True
+                    ).encode('utf-8')).hexdigest()[:16]
+                    html_pwa = gerar_painel_google_maps(dfk_base, str(base), pwa=True)
+                    pasta_pwa = f'Offline_Instalavel/{chave_arquivo}/'
+                    for relativo, conteudo in gerar_pwa_offline(str(base), pontos_versao, nome_html, html_pwa).items():
+                        zo.writestr(pasta_pwa + relativo, conteudo)
+
+                    zm.writestr(nome_html_ios, html_ios.encode('utf-8'))
                     csv_equipe = gerar_csv_google_mymaps(dfk_base, str(base))
                     for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_equipe), start=1):
                         nome_parte = nome_csv if parte_idx == 1 else nome_csv.replace('.csv', f'_PARTE_{parte_idx:03d}.csv')
@@ -2110,6 +2397,7 @@ if status_exec == "PACKAGING":
                     pontos_m = pontos_equipe_google_maps(dfk_base)
                     entradas_maps.append({
                         'equipe': str(base), 'arquivo': nome_html,
+                        'arquivo_ios': nome_html_ios,
                         'municipio': orig_m['municipio'],
                         'primeira': pontos_m[0]['nota'] if pontos_m else '-',
                     })
@@ -2121,7 +2409,11 @@ if status_exec == "PACKAGING":
 
             if entradas_maps:
                 zm.writestr('INICIAR_AQUI.html', gerar_indice_google_maps(entradas_maps).encode('utf-8'))
+                zo.writestr('INICIAR_AQUI.html', gerar_indice_google_maps(entradas_maps).encode('utf-8'))
+                zo.writestr('LEIA_ME_OFFLINE.txt', gerar_guia_modo_offline().encode('utf-8'))
+                zm.writestr('LEIA_ME_OFFLINE.txt', gerar_guia_modo_offline().encode('utf-8'))
                 zm.writestr('LEIA_ME.txt', gerar_leia_me_google_maps().encode('utf-8'))
+                zm.writestr('LEIA_ME_IPHONE.txt', gerar_leia_me_iphone().encode('utf-8'))
                 csv_geral = io.StringIO(newline='')
                 chaves_geral = ['Nome', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
                                 'Nota CCS', 'Municipio', 'Localidade', 'Endereco',
@@ -2139,6 +2431,7 @@ if status_exec == "PACKAGING":
         st.session_state.bytes_zip_gpx_lista = bu_gpx.getvalue()
         st.session_state.bytes_zip_txt_lista = bu_txt.getvalue()
         st.session_state.bytes_zip_maps_lista = bu_maps.getvalue()
+        st.session_state.bytes_zip_offline_lista = bu_offline.getvalue()
         st.session_state.maps_primeiras_lista = mapas_primeiras
         st.session_state.roteamento_concluido_lista = True; st.session_state.vrp_status_lista = "IDLE"; tentar_rerun()
     except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status_lista = "IDLE"
