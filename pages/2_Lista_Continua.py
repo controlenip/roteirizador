@@ -1208,6 +1208,90 @@ def calcular_previa_origens(df_obras, origens_por_equipe, municipios, velocidade
         })
     return pd.DataFrame(resultados)
 
+def mostrar_origens_uma_por_linha(equipes, municipios):
+    """Renderiza UMA linha fixa por levantador, sem seletor de equipe.
+
+    Cada linha tem o nome (coluna P / LEVANTADOR) e um selectbox separado,
+    com chave estável gerada pelo nome. As seleções sobrevivem aos reruns do
+    Streamlit e não interferem nas escolhas dos outros levantadores.
+
+    Retorna: (origens_por_equipe, lista_de_equipes_sem_origem).
+    """
+    equipes = sorted({str(e).strip() for e in equipes if str(e).strip()})
+    opcoes = ['-- Selecione --'] + list(municipios.keys())
+    estado = st.session_state
+    existentes = dict(estado.get('origem_por_equipe_lista') or {})
+
+    # Migrar escolhas de municípios antigos sem /UF (antes só havia MA).
+    municipio_ma = {
+        normalizar_texto_municipio(m.rsplit(' / ', 1)[0]): m
+        for m in municipios if m.endswith(' / MA')
+    }
+    origens = {}
+    for equipe in equipes:
+        antigo = existentes.get(equipe)
+        if antigo in municipios:
+            origens[equipe] = antigo
+        elif antigo:
+            s = str(antigo).strip()
+            for sufixo in (' / MA', ' - MA', ' (MA)'):
+                if s.upper().endswith(sufixo):
+                    s = s[:-len(sufixo)].strip()
+                    break
+            municipio_convertido = municipio_ma.get(normalizar_texto_municipio(s))
+            if municipio_convertido:
+                origens[equipe] = municipio_convertido
+
+    st.markdown(f"**👥 {len(equipes)} levantador(es) identificados — um seletor para cada pessoa**")
+    with st.container(border=True):
+        cab_nome, cab_mun = st.columns([1.45, 1.05], gap='medium')
+        with cab_nome:
+            st.markdown('**LEVANTADOR (COLUNA P)**')
+        with cab_mun:
+            st.markdown('**MUNICÍPIO DE PARTIDA (MA / PI / RS)**')
+
+        for numero, equipe in enumerate(equipes, start=1):
+            chave = 'origem_individual_lista_' + hashlib.sha1(
+                equipe.encode('utf-8')
+            ).hexdigest()[:16]
+            # A chave é individual e não depende da posição ou da quantidade
+            # de equipes. Se reordenar a planilha, a escolha permanece correta.
+            valor_estado = estado.get(chave)
+            if valor_estado not in opcoes:
+                estado[chave] = origens.get(equipe, '-- Selecione --')
+
+            col_nome, col_municipio = st.columns([1.45, 1.05], gap='medium')
+            with col_nome:
+                st.markdown(f'**{numero}. {html.escape(equipe)}**')
+            with col_municipio:
+                escolhido = st.selectbox(
+                    f'Município de partida — {equipe}',
+                    options=opcoes,
+                    key=chave,
+                    label_visibility='collapsed',
+                    help=f'Município de onde {equipe} iniciará seu deslocamento.'
+                )
+            if escolhido in municipios:
+                origens[equipe] = escolhido
+            else:
+                origens.pop(equipe, None)
+
+    estado['origem_por_equipe_lista'] = origens
+    faltantes = [e for e in equipes if e not in origens]
+    st.progress(
+        len(origens) / max(1, len(equipes)),
+        text=f'Municípios definidos: {len(origens)} de {len(equipes)} levantadores'
+    )
+    if faltantes:
+        st.warning(
+            f'Faltam definir {len(faltantes)} município(s) de partida. '
+            'Selecione os municípios nas linhas acima para iniciar a roteirização.'
+        )
+    else:
+        st.success(f'✅ Origem definida para todos os {len(equipes)} levantadores.')
+    return origens, faltantes
+
+
 def fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False):
     if df_tasks.empty or 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns: return df_tasks, 0
     df_valid = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
@@ -2094,6 +2178,10 @@ elif status_exec == "IDLE":
     if st.session_state.get('assinatura_planilha_origens_lista') != assinatura_arquivos:
         st.session_state['assinatura_planilha_origens_lista'] = assinatura_arquivos
         st.session_state['origem_por_equipe_lista'] = {}
+        # Limpa os seletores da planilha anterior para nao misturar municipios.
+        for chave_antiga in list(st.session_state):
+            if chave_antiga.startswith('origem_individual_lista_'):
+                st.session_state.pop(chave_antiga, None)
         st.session_state.pop('equipe_origem_selecionada_lista', None)
         st.session_state.pop('municipio_origem_selecionado_lista', None)
 
@@ -2204,10 +2292,12 @@ elif status_exec == "IDLE":
 
     df_ta = df_tasks.copy()
 
-    st.markdown("### 🚐 Município de partida de cada equipe")
-    st.caption("1. Selecione a equipe lida da coluna P (LEVANTADOR). "
-               "2. Escolha o município de início entre MA (217), PI (224) e RS (497): 938 municípios. "
-               "A escolha é salva automaticamente para esta planilha.")
+    st.markdown("### 🚐 Município de partida de cada levantador")
+    st.caption(
+        "**LISTA INDIVIDUAL — VERSÃO 08/11/2026.** "
+        "Todos os levantadores elegíveis identificados na coluna P aparecem um abaixo do outro, "
+        "cada um com um município independente. MA: 217 • PI: 224 • RS: 497."
+    )
     try:
         municipios_ma_pi = carregar_municipios_ma_pi_rs()
     except RuntimeError as exc:
@@ -2215,69 +2305,9 @@ elif status_exec == "IDLE":
         st.stop()
 
     equipes_disponiveis = sorted(df_ta['BASE_ATRIBUIDA'].dropna().unique().tolist())
-    origens_municipais = st.session_state.setdefault('origem_por_equipe_lista', {})
-    # Migrar antigas escolhas salvas sem UF (eram sempre do Maranhao).
-    municipios_antigos_ma = {
-        normalizar_texto_municipio(m.rsplit(' / ', 1)[0]): m
-        for m in municipios_ma_pi if m.endswith(' / MA')
-    }
-    origens_convertidas = {}
-    for equipe, municipio_antigo in origens_municipais.items():
-        if equipe not in equipes_disponiveis:
-            continue
-        if municipio_antigo in municipios_ma_pi:
-            origens_convertidas[equipe] = municipio_antigo
-        else:
-            antigo = str(municipio_antigo).strip()
-            for sufixo in (' / MA', ' - MA', ' (MA)'):
-                if antigo.upper().endswith(sufixo):
-                    antigo = antigo[:-len(sufixo)].strip()
-                    break
-            convertido = municipios_antigos_ma.get(normalizar_texto_municipio(antigo))
-            if convertido:
-                origens_convertidas[equipe] = convertido
-    origens_municipais = origens_convertidas
-    st.session_state['origem_por_equipe_lista'] = origens_municipais
-
-    def ao_trocar_equipe_origem():
-        equipe_atual = st.session_state['equipe_origem_selecionada_lista']
-        st.session_state['municipio_origem_selecionado_lista'] = (
-            st.session_state['origem_por_equipe_lista'].get(equipe_atual, '-- Selecione --')
-        )
-
-    def ao_selecionar_municipio_origem():
-        equipe_atual = st.session_state['equipe_origem_selecionada_lista']
-        escolhido = st.session_state['municipio_origem_selecionado_lista']
-        if escolhido in municipios_ma_pi:
-            st.session_state['origem_por_equipe_lista'][equipe_atual] = escolhido
-        else:
-            st.session_state['origem_por_equipe_lista'].pop(equipe_atual, None)
-
-    equipe_preselecionada = st.session_state.get('equipe_origem_selecionada_lista')
-    if equipe_preselecionada not in equipes_disponiveis:
-        st.session_state['equipe_origem_selecionada_lista'] = equipes_disponiveis[0]
-        st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipes_disponiveis[0], '-- Selecione --')
-
-    col_eq, col_mu = st.columns(2)
-    with col_eq:
-        equipe_sel = st.selectbox('1. Selecione a equipe (coluna P):',
-                                 equipes_disponiveis,
-                                 key='equipe_origem_selecionada_lista',
-                                 on_change=ao_trocar_equipe_origem)
-    with col_mu:
-        opcoes_municipios = ['-- Selecione --'] + list(municipios_ma_pi.keys())
-        municipio_atual = st.session_state.get('municipio_origem_selecionado_lista')
-        if municipio_atual not in opcoes_municipios:
-            st.session_state['municipio_origem_selecionado_lista'] = origens_municipais.get(equipe_sel, '-- Selecione --')
-        st.selectbox('2. Município de início do deslocamento (MA/PI/RS):',
-                     opcoes_municipios, key='municipio_origem_selecionado_lista',
-                     on_change=ao_selecionar_municipio_origem)
-
-    faltando_origem = [e for e in equipes_disponiveis if e not in origens_municipais]
-    if faltando_origem:
-        st.warning(f"Defina o município de partida para {len(faltando_origem)} equipe(s): " + ', '.join(faltando_origem))
-    else:
-        st.success(f"✅ Municípios definidos para todas as {len(equipes_disponiveis)} equipes.")
+    origens_municipais, faltando_origem = mostrar_origens_uma_por_linha(
+        equipes_disponiveis, municipios_ma_pi
+    )
 
     if origens_municipais:
         conferencia = calcular_previa_origens(df_ta, origens_municipais, municipios_ma_pi, velocidade_media)
