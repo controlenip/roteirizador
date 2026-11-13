@@ -30,14 +30,20 @@ from sklearn.cluster import DBSCAN
 from openpyxl.styles import PatternFill, Font, Alignment
 
 # Ordem solicitada para os detalhes das obras nos cards do KML.
+# Campos solicitados para os cartoes KML e a tabela de obras (15 campos).
+# A ordem corresponde a BASE_LISTA_CONTINUA_LEVANTAMENTO(6).xlsx,
+# independentemente da posicao fisica das colunas na planilha.
 CAMPOS_KML_SOLICITADOS = [
-    'TIPO NOTA', 'ID SISCO', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALAÇÃO',
-    'NOME', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE',
-    'LATITUDE', 'LONGITUDE', 'FASE'
+    'TIPO NOTA', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALAÇÃO', 'NOME',
+    'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LATITUDE',
+    'LONGITUDE', 'INFORMAÇÕES', 'CONTATO', 'PRIORIDADE', 'FASE'
 ]
-# Preserva os campos anteriores como escolhas adicionais no seletor.
+
+# Demais campos podem ser adicionados manualmente, sem poluir a exibicao padrao.
 CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS + [
-    'NOTA', 'STATUS', 'TIPO DEMANDA', 'BAIRRO', 'COLABORADOR', 'MATRICULA'
+    'ID SISCO', 'INFORMAÇÕES EXTRAS', 'STATUS', 'STATUS SAP',
+    'STATUS SISCO', 'STATUS LIST', 'DATA DESPACHO', 'PAT',
+    'NOTA', 'TIPO DEMANDA', 'BAIRRO', 'COLABORADOR', 'MATRICULA'
 ]
 
 # O icone fornecido pelo usuario fica incorporado ao .py.
@@ -1000,6 +1006,35 @@ def adaptar_planilha_nip(df):
     else:
         df.attrs['coordenadas_invertidas_corrigidas'] = 0
 
+    # O arquivo de 13/11/2026 tem INFORMACOES na coluna M e
+    # INFORMACOES EXTRAS na N. A normalizacao remove acentos; recuperar
+    # o campo visivel com acento e concatenar eventuais complementos.
+    # Preservar ambas as colunas originais para auditoria/exportacoes futuras.
+    def _informacao_util(valor):
+        if pd.isna(valor):
+            return ''
+        texto = str(int(valor)) if isinstance(valor, (float, np.floating)) and float(valor).is_integer() else str(valor).strip()
+        if texto.upper() in ('', '0', '0.0', 'NAN', 'NONE', 'NULL', '-'):
+            return ''
+        return texto
+
+    col_info = 'INFORMACOES' if 'INFORMACOES' in df.columns else ('INFORMAÇÕES' if 'INFORMAÇÕES' in df.columns else None)
+    col_extra = 'INFORMACOES EXTRAS' if 'INFORMACOES EXTRAS' in df.columns else ('INFORMAÇÕES EXTRAS' if 'INFORMAÇÕES EXTRAS' in df.columns else None)
+    infos = df[col_info].map(_informacao_util) if col_info else pd.Series('', index=df.index)
+    extras = df[col_extra].map(_informacao_util) if col_extra else pd.Series('', index=df.index)
+    df['INFORMAÇÕES EXTRAS'] = extras
+    df['INFORMAÇÕES'] = [
+        (principal + '\nCOMPLEMENTO: ' + adicional) if principal and adicional and principal != adicional
+        else principal or adicional
+        for principal, adicional in zip(infos, extras)
+    ]
+
+    # Nomes e posicoes fisicas sao independentes: nesta nova base
+    # AREA DE ATUACAO fica em P e LEVANTADOR fica em Q.
+    # Por isso a equipe e lida pelo CABECALHO LEVANTADOR, nunca pela P.
+    if 'CONTATO' not in df.columns:
+        df['CONTATO'] = ''
+
     # Mantem os dados operacionais originais para os cards e exportadores.
     for c in CAMPOS_VISIVEIS_NIP:
         if c not in df.columns:
@@ -1199,7 +1234,7 @@ def calcular_previa_origens(df_obras, origens_por_equipe, municipios, velocidade
         km_estimados = km_diretos * 1.30
         minutos = km_estimados / max(float(velocidade_kmh), 1) * 60
         resultados.append({
-            'EQUIPE (COLUNA P)': equipe,
+            'LEVANTADOR': equipe,
             'MUNICIPIO DE PARTIDA': municipio,
             '1a NOTA': primeira.get('PROTOCOLO', '-'),
             'PRIORITARIA': 'Sim' if eh_prioridade(primeira.get('PRIORIDADE')) else 'Nao',
@@ -1208,10 +1243,19 @@ def calcular_previa_origens(df_obras, origens_por_equipe, municipios, velocidade
         })
     return pd.DataFrame(resultados)
 
-def mostrar_origens_uma_por_linha(equipes, municipios):
+def identificar_coluna_levantador(cabecalhos):
+    """Localiza a letra fisica do LEVANTADOR, sem confundir com AREA DE ATUACAO."""
+    from openpyxl.utils import get_column_letter
+    normalizadas = normalize_cols(cabecalhos)
+    if 'LEVANTADOR' in normalizadas:
+        return get_column_letter(normalizadas.index('LEVANTADOR') + 1)
+    return None
+
+
+def mostrar_origens_uma_por_linha(equipes, municipios, letra_levantador=None):
     """Renderiza UMA linha fixa por levantador, sem seletor de equipe.
 
-    Cada linha tem o nome (coluna P / LEVANTADOR) e um selectbox separado,
+    Cada linha tem o nome do campo LEVANTADOR e um selectbox separado,
     com chave estável gerada pelo nome. As seleções sobrevivem aos reruns do
     Streamlit e não interferem nas escolhas dos outros levantadores.
 
@@ -1246,7 +1290,7 @@ def mostrar_origens_uma_por_linha(equipes, municipios):
     with st.container(border=True):
         cab_nome, cab_mun = st.columns([1.45, 1.05], gap='medium')
         with cab_nome:
-            st.markdown('**LEVANTADOR (COLUNA P)**')
+            st.markdown(f'**LEVANTADOR' + (f' (COLUNA {letra_levantador})' if letra_levantador else '') + '**')
         with cab_mun:
             st.markdown('**MUNICÍPIO DE PARTIDA (MA / PI / RS)**')
 
@@ -1444,9 +1488,10 @@ def gerar_excel_resumo_lista(df_resumo):
 def limpar_colunas_lista(df_alvo, cols_originais=None):
     df_alvo = df_alvo.loc[:, ~df_alvo.columns.duplicated()].copy()
     
-    if 'PROTOCOLO' in df_alvo.columns:
-        if 'NOTA' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['NOTA'])
-        df_alvo = df_alvo.rename(columns={'PROTOCOLO': 'NOTA'})
+    # A planilha solicitada usa PROTOCOLO para a nota CCS.
+    # Manter o cabecalho PROTOCOLO nas exportacoes, sem converter em NOTA.
+    if 'PROTOCOLO' in df_alvo.columns and 'NOTA' in df_alvo.columns:
+        df_alvo = df_alvo.drop(columns=['NOTA'])
         
     if 'BASE_ATRIBUIDA' in df_alvo.columns:
         if 'FISCAL' in df_alvo.columns: df_alvo = df_alvo.drop(columns=['FISCAL'])
@@ -1457,11 +1502,12 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
                   'ORIGEM_MUNICIPIO', 'PRIORIDADE', 'TIPO_DESLOCAMENTO',
                   'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN',
                   'TEMPO_VIAGEM_MINUTOS', 'DISTANCIA_PONTO_ANTERIOR_KM']
-    if 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
+    if 'PROTOCOLO' in df_alvo.columns: final_cols.append('PROTOCOLO')
+    elif 'NOTA' in df_alvo.columns: final_cols.append('NOTA')
     
     if cols_originais is not None:
         for c in cols_originais:
-            nome_coluna = 'NOTA' if c == 'PROTOCOLO' else c
+            nome_coluna = c
             nome_coluna = 'FISCAL' if c == 'BASE_ATRIBUIDA' else nome_coluna
             
             if nome_coluna in df_alvo.columns and nome_coluna not in final_cols and nome_coluna not in ['LEVANTADOR', 'NOME DO LEVANTADOR', 'LEVANTADOR_RESPONSAVEL']:
@@ -1520,15 +1566,9 @@ def gerar_txt_lista(df):
         municipio = str(r.get('MUNICIPIO', '')).strip()
         if municipio.lower() in ['nan', 'none']: municipio = '-'
         
-        # --- INFORMAÇÕES EXTRAS DA COLUNA AA ---
-        info_extra = r.get('INFORMAÇÕES')
-        if pd.isna(info_extra): 
-            info_extra = r.get('INFORMACOES')
-            
-        if pd.isna(info_extra) or str(info_extra).strip().lower() in ['nan', 'none', '']:
-            info_extra = ''
-        else:
-            info_extra = str(info_extra).strip()
+        # Informacoes (M/N) e contato (O) da base atual; manter no TXT.
+        info_extra = texto_seguro_maps(r.get('INFORMAÇÕES'))
+        contato = texto_seguro_maps(r.get('CONTATO'))
         
         tipo_nota = str(r.get('TIPO NOTA', '')).strip()
         if tipo_nota.lower() in ['nan', 'none']: tipo_nota = ''
@@ -1552,7 +1592,8 @@ def gerar_txt_lista(df):
                 bloco.append(f"DISTANCIA ATE A PRIMEIRA OBRA: {r.get('DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', '-')} km")
                 bloco.append(f"TEMPO DE DESLOCAMENTO INICIAL: {formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}")
                 bloco.append(f"METODO: {r.get('TIPO_DESLOCAMENTO', '-')}")
-        bloco.append(f"INFORMAÇOES EXTRAS: {info_extra}")
+        bloco.append(f"INFORMAÇÕES: {info_extra or '-'}")
+        bloco.append(f"CONTATO: {contato or '-'}")
         bloco.append(f"TIPO NOTA: {tipo_nota}")
         
         if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
@@ -1676,12 +1717,12 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     bg_color, text_color = "#d9534f", "#ffffff"
                     header_txt = "🚨 OBRA PRIORITÁRIA"
                     icon = "icon-red"
-                    nome_ponto = f"[PRIORIDADE] [{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))} (ID SISCO {texto_seguro_maps(r.get('ID SISCO'))})"
+                    nome_ponto = f"[PRIORIDADE] [{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))}"
                 else:
                     bg_color, text_color = "#0D256C", "#ffffff"
                     header_txt = "📍 Atendimento Padrão"
                     icon = "icon-blue"
-                    nome_ponto = f"[{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))} (ID SISCO {texto_seguro_maps(r.get('ID SISCO'))})"
+                    nome_ponto = f"[{r.get('ORDEM', '')}] Nota {r.get('PROTOCOLO', '')} - {texto_seguro_maps(r.get('NOME'))}"
 
                 desc = f'''<![CDATA[
                 <div style="font-family:sans-serif; width:280px; border-radius:8px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.15);">
@@ -1718,8 +1759,6 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
 
                 desc += f'''
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">PROTOCOLO:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Cliente:</td><td style="padding:3px 6px; color:#333;">{html.escape(texto_seguro_maps(r.get('NOME')))}</td></tr>
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">ID SISCO:</td><td style="padding:3px 6px; color:#333;">{html.escape(texto_seguro_maps(r.get('ID SISCO')))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{html.escape(str(ordem_txt))}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{dist_ant}</td></tr>
                     <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
@@ -1802,7 +1841,7 @@ injetar_logo()
 def formatar_valor_coluna(c, v):
     if pd.isna(v) or v in ['', '-']: return '-'
     # Identificadores de instalacao/contrato nao sao quantidades ou medidas.
-    if c.upper() in ['INSTALAÇÃO', 'INSTALACAO', 'CONTA CONTRATO', 'ID SISCO']:
+    if c.upper() in ['INSTALAÇÃO', 'INSTALACAO', 'CONTA CONTRATO', 'ID SISCO', 'PROTOCOLO', 'CONTATO']:
         if isinstance(v, (float, np.floating)) and float(v).is_integer():
             return html.escape(str(int(v)))
         return html.escape(str(v).strip())
@@ -2080,7 +2119,7 @@ if is_done and not st.session_state.df_routed_lista.empty:
             'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM', 'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN',
             'TIPO_DESLOCAMENTO'
         ]].rename(columns={
-            'BASE_ATRIBUIDA': 'EQUIPE (COLUNA P)', 'ORIGEM_MUNICIPIO': 'PARTIDA',
+            'BASE_ATRIBUIDA': 'LEVANTADOR', 'ORIGEM_MUNICIPIO': 'PARTIDA',
             'PROTOCOLO': 'PRIMEIRA NOTA', 'PRIORIDADE': 'PRIORITARIA',
             'DISTANCIA_ORIGEM_PRIMEIRA_OBRA_KM': 'DISTANCIA INICIAL (KM)',
             'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN': 'TEMPO INICIAL (MIN)',
@@ -2157,16 +2196,17 @@ if is_done and not st.session_state.df_routed_lista.empty:
                     unsafe_allow_html=True
                 )
     st.markdown("### 📊 Dados Tabulares")
-    dados_tabela = list(dict.fromkeys([
-        'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'ORDEM', 'PRIORIDADE',
+    st.caption('Os 15 campos solicitados da base aparecem primeiro; dados da equipe e do deslocamento ficam ao final.')
+    dados_tabela = list(dict.fromkeys(CAMPOS_KML_SOLICITADOS + [
+        'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'ORDEM',
         'DISTANCIA_PONTO_ANTERIOR_KM', 'TEMPO_VIAGEM_MINUTOS',
         'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 'TIPO_DESLOCAMENTO'
-    ] + CAMPOS_VISIVEIS_NIP))
+    ]))
     st.dataframe(st.session_state.df_routed_lista.reindex(columns=dados_tabela), use_container_width=True, hide_index=True)
 
 elif status_exec == "IDLE":
     st.markdown("### 📁 Demandas (Obras e Equipes)")
-    st.info("💡 Apenas faça o upload da sua planilha de Obras. O sistema identificará o responsável pela coluna P (LEVANTADOR).")
+    st.info("💡 Faça o upload da planilha. A equipe será identificada pelo cabeçalho LEVANTADOR (independente da posição da coluna).")
     task_files = st.file_uploader("Suba a planilha com a Lista Contínua", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
     
     if not task_files: st.stop()
@@ -2187,8 +2227,12 @@ elif status_exec == "IDLE":
 
     dfs = []
     qtd_coords_corrigidas = 0
+    letras_levantador = []
     for f in task_files:
-        dft = ler_planilha_cached(f.getvalue()) if not f.name.endswith('.csv') else pd.read_csv(f)
+        dft = ler_planilha_cached(f.getvalue()) if not f.name.lower().endswith('.csv') else pd.read_csv(f)
+        letra = identificar_coluna_levantador(dft.columns)
+        if letra:
+            letras_levantador.append(letra)
         dft.columns = normalize_cols(dft.columns)
         dft = adaptar_planilha_nip(dft)
         qtd_coords_corrigidas += dft.attrs.get('coordenadas_invertidas_corrigidas', 0)
@@ -2197,6 +2241,11 @@ elif status_exec == "IDLE":
             if cc in dft.columns: dft['PROTOCOLO'] = dft[cc]; break
         dfs.append(dft)
     
+    st.session_state['letra_levantador_lista'] = (
+        letras_levantador[0] if letras_levantador and len(set(letras_levantador)) == 1 else None
+    )
+    if st.session_state['letra_levantador_lista']:
+        st.caption(f"Equipe identificada no cabeçalho **LEVANTADOR** (coluna {st.session_state['letra_levantador_lista']} da planilha carregada).")
     if qtd_coords_corrigidas:
         st.info(f"📍 {qtd_coords_corrigidas} obra(s) com LATITUDE/LONGITUDE invertidas na planilha tiveram as coordenadas corrigidas automaticamente para a roteirização e os arquivos exportados.")
     df_tasks = pd.concat(dfs, ignore_index=True)
@@ -2294,9 +2343,9 @@ elif status_exec == "IDLE":
 
     st.markdown("### 🚐 Município de partida de cada levantador")
     st.caption(
-        "**LISTA INDIVIDUAL — VERSÃO 08/11/2026.** "
-        "Todos os levantadores elegíveis identificados na coluna P aparecem um abaixo do outro, "
-        "cada um com um município independente. MA: 217 • PI: 224 • RS: 497."
+        "**LISTA INDIVIDUAL — FORMATO NOVO DA BASE NOTAS (13/11/2026).** "
+        "Todos os nomes do campo LEVANTADOR aparecem um abaixo do outro, "
+        "cada um com município independente. MA: 217 • PI: 224 • RS: 497."
     )
     try:
         municipios_ma_pi = carregar_municipios_ma_pi_rs()
@@ -2306,7 +2355,8 @@ elif status_exec == "IDLE":
 
     equipes_disponiveis = sorted(df_ta['BASE_ATRIBUIDA'].dropna().unique().tolist())
     origens_municipais, faltando_origem = mostrar_origens_uma_por_linha(
-        equipes_disponiveis, municipios_ma_pi
+        equipes_disponiveis, municipios_ma_pi,
+        letra_levantador=st.session_state.get('letra_levantador_lista')
     )
 
     if origens_municipais:
@@ -2327,7 +2377,7 @@ elif status_exec == "IDLE":
         tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
         cd = CAMPOS_VISIVEIS_NIP.copy()
         cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis no Card do KML:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_KML_SOLICITADOS, help="Escolha os campos dos detalhes de cada obra no mapa KML. Os 13 campos solicitados estão pré-selecionados.")
+        colunas_exibir = st.multiselect("Colunas Visíveis no Card do KML:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_KML_SOLICITADOS, help="Escolha os campos do cartão KML. Os 15 campos solicitados estão selecionados por padrão.")
         colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True,
