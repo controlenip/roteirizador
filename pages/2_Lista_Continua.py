@@ -1608,6 +1608,215 @@ def gerar_txt_lista(df):
     return "".join(linhas_txt)
 
 
+# Limite por ELEMENTO do MapMaker Android. O erro de importacao informado
+# (926682 > 524288) ocorre quando uma unica LineString e serializada como JSON.
+# Nao reduzir nem descartar vertices da estrada: dividir em trechos pequenos,
+# sobrepondo o ultimo vertice de um trecho ao primeiro do seguinte.
+MAX_PONTOS_LINHA_KML_MOBILE = 180
+
+
+def dividir_linha_kml_em_trechos(coordenadas, limite=MAX_PONTOS_LINHA_KML_MOBILE):
+    """Separa uma LineString longa em placemarks independentes e conectados.
+
+    A geometria de cada trecho permanece exatamente como recebida; cada trecho
+    possui no maximo `limite` pontos. O limite baixo evita o teto de 512 KiB
+    por objeto JSON no MapMaker, mesmo com a sobrecarga da importacao.
+    """
+    limite = int(limite)
+    if limite < 2:
+        raise ValueError('A linha KML exige pelo menos 2 pontos por trecho.')
+    coordenadas = list(coordenadas)
+    if len(coordenadas) < 2:
+        return []
+    return [
+        coordenadas[inicio:inicio + limite]
+        for inicio in range(0, len(coordenadas) - 1, limite - 1)
+    ]
+
+
+# O KML e fracionado pelo tamanho do XML NAO compactado. Dividir somente
+# linhas longas nao protege aplicativos que possuem limite por ARQUIVO.
+# 300 KiB deixa margem em relacao ao limite de 512 KiB reportado no Android.
+# O KMZ usa os mesmos fragmentos de KML, evitando pacotes comprimidos que
+# parecem pequenos, mas ficam enormes quando o aplicativo os descompacta.
+LIMITE_KML_PARTE_BYTES = 300 * 1024
+
+
+def dividir_kml_portavel_em_partes(kml_original, limite_bytes=LIMITE_KML_PARTE_BYTES):
+    """Divide KML preservando TODOS os Placemark, CDATA, estilos e hierarquia.
+
+    Retorna uma lista de KMLs UTF-8. Cada parte e um XML independente,
+    com os estilos necessarios, e tem no maximo limite_bytes no disco.
+    Os Placemark (inclusive pontos das obras, origens e trechos de estrada)
+    sao distribuidos SEM perda nem duplicacao. Preserva a ordem original.
+    """
+    from xml.dom import minidom
+    from xml.etree import ElementTree as ET
+
+    dados = kml_original.encode('utf-8') if isinstance(kml_original, str) else bytes(kml_original)
+    limite_bytes = int(limite_bytes)
+    if limite_bytes < 1024:
+        raise ValueError('Limite KML por parte muito baixo.')
+    raiz_et = ET.fromstring(dados)  # Detecta KML/XML incorreto antes do particionamento.
+    if raiz_et.tag != '{http://www.opengis.net/kml/2.2}kml':
+        raise ValueError('Arquivo de origem nao e KML 2.2.')
+    if len(dados) <= limite_bytes:
+        return [dados]
+
+    origem = minidom.parseString(dados)
+    raiz = origem.documentElement
+    documentos = [c for c in raiz.childNodes
+                  if c.nodeType == c.ELEMENT_NODE and c.localName == 'Document']
+    if len(documentos) != 1:
+        raise ValueError('KML exige um unico Document para particionar.')
+    documento_original = documentos[0]
+    estilos_e_meta = [c for c in documento_original.childNodes
+                      if c.nodeType == c.ELEMENT_NODE and c.localName not in ('Folder', 'Placemark')]
+
+    # A lista de features retém o caminho dos Folders de cada Placemark.
+    # Isto permite reconstruir o agrupamento por equipe em cada arquivo.
+    features = []
+    def percorrer(no, caminho=()):
+        for filho in no.childNodes:
+            if filho.nodeType != filho.ELEMENT_NODE:
+                continue
+            if filho.localName == 'Folder':
+                percorrer(filho, caminho + (filho,))
+            elif filho.localName == 'Placemark':
+                features.append((caminho, filho))
+            elif filho.localName not in ('name', 'description', 'visibility', 'open', 'styleUrl', 'LookAt', 'Camera', 'TimeSpan') and no is not documento_original:
+                raise ValueError('Elemento KML inesperado no Folder: ' + str(filho.localName))
+    percorrer(documento_original)
+    if not features:
+        raise ValueError('KML nao tem pontos ou linhas para particionar.')
+
+    def nova_parte():
+        doc = minidom.Document()
+        raiz_nova = doc.importNode(raiz, deep=False)
+        doc.appendChild(raiz_nova)
+        container = doc.importNode(documento_original, deep=False)
+        raiz_nova.appendChild(container)
+        for tag in estilos_e_meta:
+            container.appendChild(doc.importNode(tag, deep=True))
+        return {'doc': doc, 'container': container, 'folders': {},
+                'bytes': len(doc.toxml(encoding='utf-8')), 'n': 0}
+
+    def localizar_pasta(parte, caminho):
+        atual = parte['container']
+        key = ()
+        for folder in caminho:
+            key += (id(folder),)
+            if key not in parte['folders']:
+                novo = parte['doc'].importNode(folder, deep=False)
+                # Copiar o nome e demais atributos de cada pasta, nao os Placemark.
+                for filho in folder.childNodes:
+                    if filho.nodeType == filho.ELEMENT_NODE and filho.localName not in ('Folder', 'Placemark'):
+                        novo.appendChild(parte['doc'].importNode(filho, deep=True))
+                custo = len(novo.toxml(encoding='utf-8'))
+                atual.appendChild(novo)
+                parte['folders'][key] = novo
+                parte['bytes'] += custo
+            atual = parte['folders'][key]
+        return atual
+
+    partes = []
+    atual = nova_parte()
+    for caminho, feature in features:
+        custo_feature = len(feature.toxml(encoding='utf-8'))
+        # Custo dos folders que ainda nao existem neste arquivo.
+        custo_pastas = 0
+        key = ()
+        for folder in caminho:
+            key += (id(folder),)
+            if key not in atual['folders']:
+                new_folder = atual['doc'].importNode(folder, deep=False)
+                for filho in folder.childNodes:
+                    if filho.nodeType == filho.ELEMENT_NODE and filho.localName not in ('Folder', 'Placemark'):
+                        new_folder.appendChild(atual['doc'].importNode(filho, deep=True))
+                custo_pastas += len(new_folder.toxml(encoding='utf-8'))
+        if atual['n'] and atual['bytes'] + custo_pastas + custo_feature + 128 > limite_bytes:
+            partes.append(atual)
+            atual = nova_parte()
+        pai = localizar_pasta(atual, caminho)
+        pai.appendChild(atual['doc'].importNode(feature, deep=True))
+        atual['bytes'] += custo_feature
+        atual['n'] += 1
+        if atual['bytes'] > limite_bytes:
+            raise ValueError(
+                'Um unico elemento do KML ultrapassa o limite de tamanho escolhido. '
+                'Reduza as observacoes desse superponto ou use MapMaker (somente pontos).'
+            )
+    if atual['n']:
+        partes.append(atual)
+
+    saida = []
+    total = len(partes)
+    for indice, parte in enumerate(partes, 1):
+        # Identificacao visual da parte no Google Earth, sem mexer nos Placemark.
+        for child in parte['container'].childNodes:
+            if child.nodeType == child.ELEMENT_NODE and child.localName == 'name':
+                base = ''.join(n.data for n in child.childNodes if n.nodeType == n.TEXT_NODE)
+                for node in list(child.childNodes): child.removeChild(node)
+                child.appendChild(parte['doc'].createTextNode(f'{base} - PARTE {indice:03d}/{total:03d}'))
+                break
+        payload = parte['doc'].toxml(encoding='utf-8')
+        if len(payload) > limite_bytes:
+            raise ValueError('Uma parte ficou acima do limite de bytes configurado.')
+        ET.fromstring(payload)
+        saida.append(payload)
+    if sum(len(p) for p in saida) == 0:
+        raise ValueError('Nenhuma parte KML gerada.')
+    if sum(len(ET.fromstring(p).findall('.//{http://www.opengis.net/kml/2.2}Placemark')) for p in saida) != len(features):
+        raise ValueError('A conferencia de Placemark encontrou perda ou duplicacao.')
+    return saida
+
+
+def criar_mapas_kml_kmz_em_partes(kml, nome_base, kmz_com_casinha=False,
+                                  limite_bytes=LIMITE_KML_PARTE_BYTES):
+    """Gera nomes numerados, KMLs e KMZs completos para download/importacao.
+
+    Para arquivo pequeno, mantem o nome antigo, sem PARTE. Se for grande,
+    devolve _PARTE_001_DE_XXX, _PARTE_002_DE_XXX etc. Nunca gera um ZIP
+    externo renomeado como KMZ: cada KMZ tem doc.kml na raiz.
+    """
+    partes = dividir_kml_portavel_em_partes(kml, limite_bytes=limite_bytes)
+    total = len(partes)
+    saida = []
+    for indice, payload in enumerate(partes, 1):
+        sufixo = f'_PARTE_{indice:03d}_DE_{total:03d}' if total > 1 else ''
+        base = nome_base + sufixo
+        kmz = (gerar_kmz_lista(payload.decode('utf-8')) if kmz_com_casinha
+               else gerar_kmz_simples_compativel(payload))
+        with zipfile.ZipFile(io.BytesIO(kmz), 'r') as archive:
+            if archive.testzip() is not None or 'doc.kml' not in archive.namelist():
+                raise ValueError('Falha de validacao do KMZ da parte ' + str(indice))
+            if archive.read('doc.kml') != (payload.replace(
+                    f'<href>{ICONE_CASA_PUBLICO_URL}</href>'.encode('utf-8'),
+                    f'<href>{ICONE_CASA_ARQUIVO}</href>'.encode('utf-8')) if kmz_com_casinha
+                    else payload):
+                raise ValueError('Conteudo KML incorreto no KMZ gerado.')
+        saida.append({'numero': indice, 'total': total, 'kml_nome': base + '.kml',
+                      'kmz_nome': base + '.kmz', 'kml': payload, 'kmz': kmz})
+    return saida
+
+
+def zipar_partes_kml(partes, formato):
+    """ZIP externo de transporte para extrair antes de importar cada parte."""
+    if formato not in ('kml', 'kmz'):
+        raise ValueError('Formato invalido.')
+    memoria = io.BytesIO()
+    with zipfile.ZipFile(memoria, 'w', zipfile.ZIP_DEFLATED) as arquivo:
+        for item in partes:
+            arquivo.writestr(item[formato + '_nome'], item[formato])
+        arquivo.writestr('LEIA_ME_PARTES.txt',
+            ('Extraia o ZIP e importe os arquivos KML/KMZ, um por vez, no aplicativo.\n'
+             'As partes sao numeradas; importe todas para visualizar a rota inteira.\n'
+             'O ZIP externo nao e um KMZ e nao deve ser aberto diretamente no Google Earth.\n'
+             'Todos os pontos e trechos da rota foram preservados; um trecho pode\n'
+             'continuar no arquivo seguinte. Os campos dos cartoes seguem a selecao.\n').encode('utf-8'))
+    return memoria.getvalue()
+
+
 def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_formatadora):
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', f'<name>{html.escape(nome_arquivo)}</name>']
     
@@ -1627,16 +1836,16 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
         '</LabelStyle></Style>'
     )
 
-    kml.append('''<Style id="style-blue-n"><IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
-<Style id="style-blue-h"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
+    kml.append('''<Style id="style-blue-n"><IconStyle><scale>1.1</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
+<Style id="style-blue-h"><IconStyle><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
 <StyleMap id="icon-blue"><Pair><key>normal</key><styleUrl>#style-blue-n</styleUrl></Pair><Pair><key>highlight</key><styleUrl>#style-blue-h</styleUrl></Pair></StyleMap>''')
 
-    kml.append('''<Style id="style-red-n"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
-<Style id="style-red-h"><IconStyle><scale>1.5</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
+    kml.append('''<Style id="style-red-n"><IconStyle><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
+<Style id="style-red-h"><IconStyle><scale>1.5</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
 <StyleMap id="icon-red"><Pair><key>normal</key><styleUrl>#style-red-n</styleUrl></Pair><Pair><key>highlight</key><styleUrl>#style-red-h</styleUrl></Pair></StyleMap>''')
 
-    kml.append('''<Style id="style-yellow-n"><IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
-<Style id="style-yellow-h"><IconStyle><scale>1.5</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
+    kml.append('''<Style id="style-yellow-n"><IconStyle><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle><LabelStyle><scale>0</scale><color>00ffffff</color></LabelStyle></Style>
+<Style id="style-yellow-h"><IconStyle><scale>1.5</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/ylw-blank.png</href></Icon></IconStyle><LabelStyle><scale>1.0</scale><color>ffffffff</color></LabelStyle></Style>
 <StyleMap id="icon-yellow"><Pair><key>normal</key><styleUrl>#style-yellow-n</styleUrl></Pair><Pair><key>highlight</key><styleUrl>#style-yellow-h</styleUrl></Pair></StyleMap>''')
 
     cores_kml = ['ff4b19e6', 'ffd4bc00', 'ffb5513f', 'ff889600', 'ff0098ff', 'ffb0279c', 'ff39dccd', 'ff148000', 'ffeb004b', 'ff1f618d', 'ffd35400', 'ff16a085', 'ff8e44ad', 'ff27ae60', 'ffe67e22']
@@ -1697,10 +1906,27 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                     lat, lon = r.get('LATITUDE'), r.get('LONGITUDE')
                     if pd.notna(lat) and pd.notna(lon): coords_linha.append(f"{lon},{lat},0")
             
-            if coords_linha:
-                str_coords = '\n'.join(coords_linha)
-                pasta.append('<Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
-                pasta.append(f'<Placemark><name>Traçado Rota</name><styleUrl>#rota-centro-{b_safe}</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n' + str_coords + '\n</coordinates></LineString></Placemark>')
+            # Um unico "Contorno Rota" pode ultrapassar 512 KiB ao ser
+            # convertido em JSON pelo MapMaker (erro MAPP0Idata.toJSONString).
+            # Fracionar tanto o contorno quanto o tracado em objetos pequenos.
+            # Os extremos compartilhados mantem o caminho visual continuo.
+            trechos_rota = dividir_linha_kml_em_trechos(coords_linha)
+            for indice_trecho, trecho in enumerate(trechos_rota, 1):
+                str_coords = '\n'.join(trecho)
+                sufixo = (f' - trecho {indice_trecho}/{len(trechos_rota)}'
+                          if len(trechos_rota) > 1 else '')
+                pasta.append(
+                    '<Placemark><name>Contorno Rota' + sufixo + '</name>'
+                    '<styleUrl>#linha-rota-contorno</styleUrl>'
+                    '<LineString><tessellate>1</tessellate><coordinates>\n'
+                    + str_coords + '\n</coordinates></LineString></Placemark>'
+                )
+                pasta.append(
+                    '<Placemark><name>Traçado Rota' + sufixo + '</name>'
+                    f'<styleUrl>#rota-centro-{b_safe}</styleUrl>'
+                    '<LineString><tessellate>1</tessellate><coordinates>\n'
+                    + str_coords + '\n</coordinates></LineString></Placemark>'
+                )
 
             for _, r in df_p.iterrows():
                 if r.get('PROTOCOLO') in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
@@ -1756,6 +1982,7 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                         f"<td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
                     )
 
+                desc = desc.replace("]]>", "]]]]><![CDATA[>")
                 desc += "</table></div></div>]]>"
 
                 pasta.append(f'<Placemark><name>{html.escape(nome_ponto)}</name><styleUrl>#{icon}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
@@ -1765,7 +1992,134 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
         kml.extend(pasta)
         
     kml.extend(['</Document>', '</kml>'])
-    return "\n".join(kml)
+    texto = "\n".join(kml)
+    texto = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', texto)
+    return texto
+
+
+def validar_kml_portavel(kml_bytes):
+    """Check KML XML, coordinates, and at least one mappable Point."""
+    from xml.etree import ElementTree as ET
+    if isinstance(kml_bytes, str):
+        kml_bytes = kml_bytes.encode('utf-8')
+    root = ET.fromstring(kml_bytes)
+    ns = '{http://www.opengis.net/kml/2.2}'
+    if root.tag != ns + 'kml':
+        raise ValueError('O arquivo nao contem a raiz KML padrao.')
+    pontos = root.findall('.//' + ns + 'Point/' + ns + 'coordinates')
+    if not pontos:
+        raise ValueError('O KML nao possui pontos geograficos validos.')
+    validos = 0
+    for coordenadas in root.findall('.//' + ns + 'coordinates'):
+        for tripla in (coordenadas.text or '').split():
+            partes = tripla.split(',')
+            if len(partes) < 2:
+                raise ValueError('Uma coordenada KML nao tem longitude e latitude.')
+            lon, lat = float(partes[0]), float(partes[1])
+            if not (math.isfinite(lat) and math.isfinite(lon) and
+                    -90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError('Coordenada KML fora da faixa geografica.')
+            validos += 1
+    return len(pontos), validos
+
+
+def gerar_kml_simples_compativel(df_kml, nome_arquivo, colunas_exibir, incluir_linha=True):
+    """Strict, minimal KML for apps that reject complex KML balloon templates.
+
+    Includes origin markers, work points, and a simple straight-line itinerary.
+    Work descriptions use ONLY fields selected in the app.
+    This is a fallback preview route; road geometry stays in the original KML.
+    """
+    from xml.etree import ElementTree as ET
+    from xml.sax.saxutils import escape as xml_escape
+    xmlns = 'http://www.opengis.net/kml/2.2'
+    ET.register_namespace('', xmlns)
+    tag = lambda t: '{' + xmlns + '}' + t
+    root = ET.Element(tag('kml'))
+    doc = ET.SubElement(root, tag('Document'))
+    ET.SubElement(doc, tag('name')).text = str(nome_arquivo)
+    selected = [c for c in CAMPOS_KML_SOLICITADOS if c in colunas_exibir]
+
+    def clean_value(v):
+        if v is None: return ''
+        try:
+            if pd.isna(v): return ''
+        except (TypeError, ValueError): pass
+        if isinstance(v, (float, np.floating)) and math.isfinite(float(v)) and float(v).is_integer():
+            return str(int(v))
+        return str(v).strip()
+
+    def add_point(parent, titulo, lat, lon, descr):
+        try:
+            lat = float(str(lat).replace(',', '.'))
+            lon = float(str(lon).replace(',', '.'))
+        except (TypeError, ValueError):
+            return False
+        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+            return False
+        pnt = ET.SubElement(parent, tag('Placemark'))
+        ET.SubElement(pnt, tag('name')).text = str(titulo)
+        ET.SubElement(pnt, tag('description')).text = str(descr)
+        geom = ET.SubElement(pnt, tag('Point'))
+        ET.SubElement(geom, tag('coordinates')).text = f'{lon:.8f},{lat:.8f},0'
+        return True
+
+    if df_kml.empty:
+        raise ValueError('Nao ha obras roteirizadas para exportar.')
+    valid_points = 0
+    for team, group in df_kml.groupby('BASE_ATRIBUIDA',sort=False):
+        folder = ET.SubElement(doc, tag('Folder'))
+        ET.SubElement(folder, tag('name')).text = 'Equipe: ' + str(team)
+        group = group.sort_values('ORDEM', kind='stable')
+        first = group.iloc[0]
+        add_point(folder, 'ORIGEM - ' + clean_value(first.get('ORIGEM_MUNICIPIO')),
+                  first.get('LAT_ORIGEM'),first.get('LON_ORIGEM'),
+                  'Referencia: sede do municipio de partida')
+        line = []
+        for _,r in group.iterrows():
+            if str(r.get('PROTOCOLO','')) in ('RETORNO_BASE','PAUSA_ALMOCO'):
+                continue
+            try:
+                lat=float(r.get('LATITUDE'));lon=float(r.get('LONGITUDE'))
+                if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+                    continue
+            except (TypeError,ValueError):continue
+            originals = r.get('_ORIGINAL_ROWS')
+            records = originals if isinstance(originals,list) and originals else [r]
+            description = '\n\n'.join(
+                '\n'.join(f'{column}: {clean_value(record.get(column))}' for column in selected)
+                for record in records
+            )
+            note=clean_value(r.get('PROTOCOLO'))
+            name=clean_value(r.get('NOME'))
+            order=clean_value(r.get('ORDEM'))
+            if add_point(folder,f'{order} - Nota {note} - {name}',lat,lon,description):
+                valid_points+=1
+                line.append(f'{lon:.8f},{lat:.8f},0')
+        if incluir_linha:
+            for indice, trecho in enumerate(dividir_linha_kml_em_trechos(line), 1):
+                route=ET.SubElement(folder,tag('Placemark'))
+                ET.SubElement(route,tag('name')).text=(
+                    f'Sequencia das visitas - trecho {indice} (linha indicativa)')
+                ls=ET.SubElement(route,tag('LineString'))
+                ET.SubElement(ls,tag('tessellate')).text='1'
+                ET.SubElement(ls,tag('coordinates')).text=' '.join(trecho)
+    if not valid_points:
+        raise ValueError('Nenhum ponto valido para o KML compativel.')
+    xml=ET.tostring(root,encoding='utf-8',xml_declaration=True)
+    xml=re.sub(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]',b'',xml)
+    validar_kml_portavel(xml)
+    return xml
+
+
+def gerar_kmz_simples_compativel(kml_bytes):
+    """Create proper KMZ with a doc.kml file in the archive root."""
+    if isinstance(kml_bytes, str): kml_bytes = kml_bytes.encode('utf-8')
+    validar_kml_portavel(kml_bytes)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('doc.kml',kml_bytes)
+    return output.getvalue()
 
 
 def gerar_gpx_simples(df_kml, nome_rota):
@@ -1969,7 +2323,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['partes_exportacao_lista', 'bytes_kml_total_lista', 'bytes_kmz_total_lista', 'bytes_kml_simples_lista', 'bytes_kmz_simples_lista', 'bytes_kml_mapmaker_lista', 'bytes_kmz_mapmaker_lista', 'bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -2030,7 +2384,60 @@ with st.sidebar:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
         st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas - {d_fmt}.zip", use_container_width=True)
         st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🏠 Baixar Mapas (KML e KMZ)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
+        st.caption('Para Google Earth / MapMaker importe um arquivo .kml ou .kmz, nao o ZIP externo.')
+        diretos = [
+            ('KML total - Google Earth', 'bytes_kml_total_lista', 'kml'),
+            ('KMZ total - Google Earth', 'bytes_kmz_total_lista', 'kmz'),
+            ('KML simples - compatibilidade', 'bytes_kml_simples_lista', 'kml'),
+            ('KMZ simples - compatibilidade', 'bytes_kmz_simples_lista', 'kmz'),
+            ('KML MapMaker - somente pontos (mais leve)', 'bytes_kml_mapmaker_lista', 'kml'),
+            ('KMZ MapMaker - somente pontos (mais leve)', 'bytes_kmz_mapmaker_lista', 'kmz'),
+        ]
+        for titulo, chave, ext in diretos:
+            conteudo = st.session_state.get(chave)
+            if conteudo:
+                st.download_button(titulo, data=conteudo,
+                    file_name=f"ListaContinua_{'MAPMAKER' if 'mapmaker' in chave else ('SIMPLES' if 'simples' in chave else 'TOTAL')}_{d_fmt}.{ext}",
+                    mime=('application/vnd.google-earth.kmz' if ext=='kmz' else 'application/vnd.google-earth.kml+xml'),
+                    use_container_width=True, key='download_'+chave)
+        variantes_geradas = st.session_state.get('partes_exportacao_lista', {})
+        variantes_descricoes = {
+            'TOTAL': 'Rota total - Google Earth (com traçado)',
+            'SIMPLES': 'Rota simples - compatibilidade',
+            'MAPMAKER': 'MapMaker - somente pontos de obras',
+        }
+        varias_partes = {v: itens for v, itens in variantes_geradas.items() if len(itens) > 1}
+        for variante, itens in varias_partes.items():
+            st.info(f"{variantes_descricoes[variante]}: {len(itens)} partes geradas automaticamente "
+                    f"(limite de {LIMITE_KML_PARTE_BYTES // 1024} KB por KML).")
+            for ext in ('kml', 'kmz'):
+                st.download_button(
+                    f"📦 Baixar {ext.upper()} {variantes_descricoes[variante]} - {len(itens)} partes (ZIP)",
+                    data=zipar_partes_kml(itens, ext),
+                    file_name=f"ListaContinua_{variante}_{ext.upper()}_PARTES_{d_fmt}.zip",
+                    mime='application/zip', use_container_width=True,
+                    key=f'download_zip_partes_{variante}_{ext}')
+        if varias_partes:
+            with st.expander('📂 Baixar cada parte isoladamente (KML ou KMZ)'):
+                escolha = st.selectbox('Tipo de mapa', list(varias_partes),
+                    format_func=lambda v: variantes_descricoes[v], key='lista_escolha_tipo_parte')
+                formato_parte = st.radio('Formato', ('kml', 'kmz'), horizontal=True,
+                    key='lista_escolha_formato_parte')
+                itens = varias_partes[escolha]
+                indice_parte = st.selectbox('Parte a baixar', range(len(itens)),
+                    format_func=lambda i: f"Parte {i+1:03d} de {len(itens):03d}",
+                    key='lista_escolha_numero_parte')
+                item = itens[indice_parte]
+                st.download_button(f"⬇️ Baixar {item[formato_parte + '_nome']}",
+                    data=item[formato_parte], file_name=item[formato_parte + '_nome'],
+                    mime=('application/vnd.google-earth.kmz' if formato_parte == 'kmz'
+                          else 'application/vnd.google-earth.kml+xml'),
+                    key='lista_download_parte_individual', use_container_width=True)
+            st.caption('Importe todas as partes separadamente. O ZIP externo serve apenas '
+                       'para transporta-las: extraia antes de abrir no Google Earth ou MapMaker.')
+        st.caption('MapMaker Android: prefira KML MapMaker - somente pontos. '
+                   'As linhas viarias tambem sao fracionadas em trechos de ate 180 vertices.')
+        st.download_button("\U0001f3e0 Baixar Mapas por equipe (ZIP - extrair antes de importar)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
         st.download_button("📍 Baixar Rotas Google Maps (ZIP)",
                            data=st.session_state.get('bytes_zip_maps_lista', b""),
@@ -2650,8 +3057,44 @@ if status_exec == "PACKAGING":
                 dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                 
                 ks_tot = gerar_kml_lista(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
-                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kml", ks_tot.encode('utf-8'))
-                zk.writestr(f"ROTA_TOTAL - {d_fmt}.kmz", gerar_kmz_lista(ks_tot))
+                kml_simples_bytes = gerar_kml_simples_compativel(dfk_total, 'ROTA TOTAL - COMPATIVEL', col_exibir)
+                kml_mapmaker_bytes = gerar_kml_simples_compativel(
+                    dfk_total, 'ROTA TOTAL - MAPMAKER (SOMENTE PONTOS)',
+                    col_exibir, incluir_linha=False)
+                # O tamanho leva em conta o KML descompactado. Assim, mesmo
+                # um KMZ pequeno pode gerar varias partes para o MapMaker.
+                variantes_partes = {
+                    'TOTAL': criar_mapas_kml_kmz_em_partes(
+                        ks_tot, f'ROTA_TOTAL_{d_fmt}', kmz_com_casinha=True),
+                    'SIMPLES': criar_mapas_kml_kmz_em_partes(
+                        kml_simples_bytes, f'ROTA_TOTAL_SIMPLES_{d_fmt}'),
+                    'MAPMAKER': criar_mapas_kml_kmz_em_partes(
+                        kml_mapmaker_bytes, f'ROTA_TOTAL_MAPMAKER_PONTOS_{d_fmt}'),
+                }
+                st.session_state.partes_exportacao_lista = variantes_partes
+                for variante, partes_variante in variantes_partes.items():
+                    for item in partes_variante:
+                        zk.writestr(item['kml_nome'], item['kml'])
+                        zk.writestr(item['kmz_nome'], item['kmz'])
+                zk.writestr('COMO_ABRIR_NO_GOOGLE_EARTH.txt',
+                    ('Extraia o ZIP antes de importar.\n'
+                     'Arquivos grandes foram divididos automaticamente em PARTE_001_DE_XXX etc.\n'
+                     'Importe todas as partes na ordem para visualizar a rota inteira.\n'
+                     'No Google Earth abra cada .kml/.kmz, nao o ZIP externo.\n'
+                     'No MapMaker Android, prefira ROTA_TOTAL_MAPMAKER_PONTOS.\n'
+                     'A versao total conserva os trechos das linhas e os cartoes selecionados.\n').encode('utf-8'))
+                st.session_state.bytes_kml_total_lista = (
+                    variantes_partes['TOTAL'][0]['kml'] if len(variantes_partes['TOTAL']) == 1 else None)
+                st.session_state.bytes_kmz_total_lista = (
+                    variantes_partes['TOTAL'][0]['kmz'] if len(variantes_partes['TOTAL']) == 1 else None)
+                st.session_state.bytes_kml_simples_lista = (
+                    variantes_partes['SIMPLES'][0]['kml'] if len(variantes_partes['SIMPLES']) == 1 else None)
+                st.session_state.bytes_kmz_simples_lista = (
+                    variantes_partes['SIMPLES'][0]['kmz'] if len(variantes_partes['SIMPLES']) == 1 else None)
+                st.session_state.bytes_kml_mapmaker_lista = (
+                    variantes_partes['MAPMAKER'][0]['kml'] if len(variantes_partes['MAPMAKER']) == 1 else None)
+                st.session_state.bytes_kmz_mapmaker_lista = (
+                    variantes_partes['MAPMAKER'][0]['kmz'] if len(variantes_partes['MAPMAKER']) == 1 else None)
                 zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
 
             entradas_maps = []
@@ -2680,8 +3123,19 @@ if status_exec == "PACKAGING":
                     dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                     
                     ks = gerar_kml_lista(dfk_base, f"Rota {b_safe}", col_exibir, [base], formatar_valor_coluna)
-                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kml", ks.encode('utf-8'))
-                    zk.writestr(f"KML_{d_fmt}/Rota_{b_safe}.kmz", gerar_kmz_lista(ks))
+                    ks_simples = gerar_kml_simples_compativel(dfk_base, f"Rota {b_safe} - COMPATIVEL", col_exibir)
+                    ks_mapmaker = gerar_kml_simples_compativel(
+                        dfk_base, f"Rota {b_safe} - MAPMAKER PONTOS",
+                        col_exibir, incluir_linha=False)
+                    for prefixo, kml_payload, com_casinha in (
+                        (f'Rota_{b_safe}', ks, True),
+                        (f'Rota_{b_safe}_SIMPLES', ks_simples, False),
+                        (f'Rota_{b_safe}_MAPMAKER', ks_mapmaker, False)):
+                        partes_individuais = criar_mapas_kml_kmz_em_partes(
+                            kml_payload, prefixo, kmz_com_casinha=com_casinha)
+                        for parte in partes_individuais:
+                            zk.writestr(f"KML_{d_fmt}/{parte['kml_nome']}", parte['kml'])
+                            zk.writestr(f"KML_{d_fmt}/{parte['kmz_nome']}", parte['kmz'])
                     zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
                     # Exportacao Google Maps independente por equipe.
