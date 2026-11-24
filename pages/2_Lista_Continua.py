@@ -39,12 +39,9 @@ CAMPOS_KML_SOLICITADOS = [
     'LONGITUDE', 'INFORMAÇÕES', 'CONTATO', 'PRIORIDADE', 'FASE'
 ]
 
-# Demais campos podem ser adicionados manualmente, sem poluir a exibicao padrao.
-CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS + [
-    'ID SISCO', 'INFORMAÇÕES EXTRAS', 'STATUS', 'STATUS SAP',
-    'STATUS SISCO', 'STATUS LIST', 'DATA DESPACHO', 'PAT',
-    'NOTA', 'TIPO DEMANDA', 'BAIRRO', 'COLABORADOR', 'MATRICULA'
-]
+# Apenas os campos escolhidos pelo usuario podem aparecer nas exportacoes de obras.
+# INFORMAÇÕES EXTRAS nao faz parte do seletor e nao e incorporada a INFORMACOES.
+CAMPOS_VISIVEIS_NIP = CAMPOS_KML_SOLICITADOS.copy()
 
 # O icone fornecido pelo usuario fica incorporado ao .py.
 # Os mapas exportados incluem a imagem e nao dependem de arquivo externo.
@@ -116,7 +113,7 @@ def numero_obra_explicito_maps(linha):
     return ''
 
 
-def pontos_equipe_google_maps(df_equipe):
+def pontos_equipe_google_maps(df_equipe, colunas_kml=None):
     """Cada parada conserva cliente, protocolo e referencias de CADA obra.
 
     No modelo fornecido: PROTOCOLO e nota CCS, NOME e cliente, ID SISCO
@@ -148,11 +145,15 @@ def pontos_equipe_google_maps(df_equipe):
             id_sisco = texto_seguro_maps(registro.get('ID SISCO', registro.get('ID ISCO', '')))
             numero_obra = numero_obra_explicito_maps(registro)
             detalhes.append({'nota': nota, 'cliente': cliente,
-                             'id_sisco': id_sisco, 'numero_obra': numero_obra})
+                             'id_sisco': id_sisco, 'numero_obra': numero_obra,
+                             'campos_kml': {c: texto_seguro_maps(registro.get(c, ''))
+                                           for c in (colunas_kml or [])}})
         if not detalhes:
             detalhes = [{'nota': protocolo, 'cliente': texto_seguro_maps(linha.get('NOME')),
                          'id_sisco': texto_seguro_maps(linha.get('ID SISCO')),
-                         'numero_obra': numero_obra_explicito_maps(linha)}]
+                         'numero_obra': numero_obra_explicito_maps(linha),
+                         'campos_kml': {c: texto_seguro_maps(linha.get(c, ''))
+                                        for c in (colunas_kml or [])}}]
 
         def distintos(campo):
             return list(dict.fromkeys(x[campo] for x in detalhes if x[campo]))
@@ -322,7 +323,7 @@ def gerar_txt_links_google_maps(df_equipe, equipe):
     return '\n'.join(linhas) + '\n'
 
 
-def gerar_painel_google_maps(df_equipe, equipe, pwa=False):
+def gerar_painel_google_maps(df_equipe, equipe, pwa=False, colunas_exibir=None):
     """Planejador autossuficiente: lista, prioridades, edicao, backup e GPX offline.
 
     Todos os dados e scripts sao incorporados; nenhum CDN/servidor e exigido para
@@ -331,11 +332,13 @@ def gerar_painel_google_maps(df_equipe, equipe, pwa=False):
     A navegacao rodoviaria offline cabe ao aplicativo de mapas previamente instalado.
     """
     origem = origem_google_maps(df_equipe)
-    pontos = pontos_equipe_google_maps(df_equipe)
+    campos_kml = [c for c in CAMPOS_KML_SOLICITADOS if c in (colunas_exibir or CAMPOS_KML_SOLICITADOS)]
+    pontos = pontos_equipe_google_maps(df_equipe, campos_kml)
     identidade_antiga = [{k: p[k] for k in ('ordem', 'nota', 'municipio', 'localidade',
                         'endereco', 'prioridade', 'lat', 'lon', 'qtd_obras')} for p in pontos]
     assinatura = hashlib.sha256(json.dumps(identidade_antiga, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:16]
-    dados = {'equipe': str(equipe), 'origem': origem, 'obras': pontos, 'versao': assinatura}
+    dados = {'equipe': str(equipe), 'origem': origem, 'obras': pontos, 'versao': assinatura,
+             'colunas_kml': campos_kml}
     primeira = pontos[0] if pontos else origem
     fallback_primeira = link_google_maps_primeira_obra(origem, primeira)
     fallback_gps = link_google_maps_primeira_obra(origem, primeira, local_atual=True)
@@ -436,8 +439,9 @@ t.push(item('rtept','ORIGEM - '+data.origem.municipio,data.origem,'Ponto inicial
 p.forEach((x,i)=>t.push(item('rtept',String(i+1).padStart(3,'0')+' - '+x.nota+' - '+x.cliente,x,'ID SISCO: '+x.id_sisco+' | Obra: '+x.numero_obra+' | '+x.municipio)));
 t.push('</rte></gpx>');download(filename('PENDENTES_OFFLINE.gpx'),t.join('\n'),'application/gpx+xml;charset=utf-8');}
 function exportKml(){const p=pendentes();let t=['<?xml version="1.0" encoding="UTF-8"?>','<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(data.equipe)+' - pendentes</name>'];const mark=(name,x,descr)=>'<Placemark><name>'+esc(name)+'</name><description>'+esc(descr)+'</description><Point><coordinates>'+Number(x.lon).toFixed(7)+','+Number(x.lat).toFixed(7)+',0</coordinates></Point></Placemark>';
+const card=x=>(x.detalhes||[]).map((d,i)=>(x.detalhes.length>1?'OBRA '+(i+1)+'\n':'')+(data.colunas_kml||[]).map(c=>c+': '+(d.campos_kml?.[c]??'')).join('\n')).join('\n\n');
 t.push(mark('CASINHA - '+data.origem.municipio,data.origem,'Referencia municipal'));
-p.forEach((x,i)=>t.push(mark((i+1)+' - '+x.nota+' - '+x.cliente,x,'Cliente: '+x.cliente+' | ID SISCO: '+x.id_sisco+' | Obra: '+x.numero_obra+' | '+x.municipio+' | '+(x.prioridade?'PRIORITARIA':'NORMAL'))));t.push('</Document></kml>');download(filename('PENDENTES_OFFLINE.kml'),t.join('\n'),'application/vnd.google-earth.kml+xml;charset=utf-8');}
+p.forEach((x,i)=>t.push(mark((i+1)+' - '+x.nota+' - '+x.cliente,x,card(x))));t.push('</Document></kml>');download(filename('PENDENTES_OFFLINE.kml'),t.join('\n'),'application/vnd.google-earth.kml+xml;charset=utf-8');}
 function csvVal(x){let s=String(x??'');if(/^[=+@\t\r]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}
 function exportCsv(){const rows=[['Equipe','Ordem atual','Nota CCS','Cliente','ID SISCO','Numero da Obra','Status','Prioridade','Municipio','Localidade','Endereco','Latitude','Longitude','Qtd Obras']];obras.forEach((p,i)=>rows.push([data.equipe,i+1,p.nota,p.cliente,p.id_sisco,p.numero_obra,p.feito?'CONCLUIDA':'PENDENTE',p.prioridade?'SIM':'NAO',p.municipio,p.localidade,p.endereco,p.lat,p.lon,p.qtd_obras]));download(filename('PROGRESSO.csv'),'\ufeff'+rows.map(r=>r.map(csvVal).join(';')).join('\r\n'),'text/csv;charset=utf-8');}
 function state(){return {schema:'nip-offline-v1',equipe:data.equipe,versao:data.versao,geradoEm:new Date().toISOString(),order:obras.map(p=>p.id),feitas:obras.filter(p=>p.feito).map(p=>p.id)};}
@@ -1006,10 +1010,9 @@ def adaptar_planilha_nip(df):
     else:
         df.attrs['coordenadas_invertidas_corrigidas'] = 0
 
-    # O arquivo de 13/11/2026 tem INFORMACOES na coluna M e
-    # INFORMACOES EXTRAS na N. A normalizacao remove acentos; recuperar
-    # o campo visivel com acento e concatenar eventuais complementos.
-    # Preservar ambas as colunas originais para auditoria/exportacoes futuras.
+    # INFORMACOES (coluna M) e INFORMACOES EXTRAS (coluna N) sao
+    # campos diferentes: nao concatenar nem adicionar o conteudo extra
+    # ao campo INFORMACOES selecionado para exportacao.
     def _informacao_util(valor):
         if pd.isna(valor):
             return ''
@@ -1019,15 +1022,7 @@ def adaptar_planilha_nip(df):
         return texto
 
     col_info = 'INFORMACOES' if 'INFORMACOES' in df.columns else ('INFORMAÇÕES' if 'INFORMAÇÕES' in df.columns else None)
-    col_extra = 'INFORMACOES EXTRAS' if 'INFORMACOES EXTRAS' in df.columns else ('INFORMAÇÕES EXTRAS' if 'INFORMAÇÕES EXTRAS' in df.columns else None)
-    infos = df[col_info].map(_informacao_util) if col_info else pd.Series('', index=df.index)
-    extras = df[col_extra].map(_informacao_util) if col_extra else pd.Series('', index=df.index)
-    df['INFORMAÇÕES EXTRAS'] = extras
-    df['INFORMAÇÕES'] = [
-        (principal + '\nCOMPLEMENTO: ' + adicional) if principal and adicional and principal != adicional
-        else principal or adicional
-        for principal, adicional in zip(infos, extras)
-    ]
+    df['INFORMAÇÕES'] = df[col_info].map(_informacao_util) if col_info else ''
 
     # Nomes e posicoes fisicas sao independentes: nesta nova base
     # AREA DE ATUACAO fica em P e LEVANTADOR fica em Q.
@@ -1440,8 +1435,16 @@ def formatar_planilha_openpyxl(writer, sheet_name, df_orig):
 
 
 def gerar_excel_lista(df, colunas_originais=None):
+    """Exporta apenas as colunas selecionadas no painel, na ordem definida.
+
+    Colunas operacionais (ordem, equipe, deslocamento, superponto, etc.)
+    continuam disponiveis no motor, mas nao entram na planilha de obras.
+    """
     output = io.BytesIO()
-    df_saida = df.loc[:, ~df.columns.duplicated()].copy()
+    permitidas = CAMPOS_KML_SOLICITADOS if colunas_originais is None else [
+        c for c in CAMPOS_KML_SOLICITADOS if c in colunas_originais
+    ]
+    df_saida = df.loc[:, ~df.columns.duplicated()].reindex(columns=permitidas).copy()
     
     for col_name in ['PROTOCOLO', 'NOTA']:
         if col_name in df_saida.columns:
@@ -1731,65 +1734,28 @@ def gerar_kml_lista(df_kml, nome_arquivo, colunas_exibir, bases_ativas, funcao_f
                         <table style="width:100%; border-collapse:collapse;">
                 '''
                 
-                ordem_txt = f"{r.get('ORDEM', '')}"
-                if r.get('DIA_SEMANA'):
-                    dia_sm = str(r.get('DIA_SEMANA')).title()
-                    ordem_txt += f" ({dia_sm})"
-
-                dist_ant = f"{r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0.0)} KM"
-                dist_prox = f"{r.get('DISTANCIA_PROXIMO_PONTO_KM', 0.0)} KM"
-
-                if is_sp:
-                    # Identifica cada nota e o respectivo cliente no superponto.
-                    entradas_super = []
-                    for i, orig in enumerate(r['_ORIGINAL_ROWS'], start=1):
-                        protocolo = orig.get('PROTOCOLO', orig.get('NOTA', ''))
-                        cliente = orig.get('NOME', orig.get('NOME DO CLIENTE', orig.get('CLIENTE', '')))
-                        cliente_txt = str(cliente).strip() if pd.notna(cliente) else ''
-                        if cliente_txt.upper() in ('NAN', 'NONE', 'NULL'): cliente_txt = ''
-                        entradas_super.append(
-                            f"<li style='margin-bottom:5px;'><b>[{i}]</b> "
-                            f"{html.escape(str(protocolo))}"
-                            + (f"<br><span style='color:#22526b'>Cliente: {html.escape(cliente_txt)}</span>" if cliente_txt else '')
-                            + "</li>"
-                        )
-                    prot_html = "<div style='max-height:160px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join(entradas_super) + "</ul></div>"
-                else:
-                    prot_html = html.escape(str(r.get('PROTOCOLO', r.get('NOTA', ''))))
-
-                desc += f'''
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;">PROTOCOLO:</td><td style="padding:3px 6px; color:#333;">{prot_html}</td></tr>
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Ordem:</td><td style="padding:3px 6px; color:#333;">{html.escape(str(ordem_txt))}</td></tr>
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Ant.:</td><td style="padding:3px 6px; color:#333;">{dist_ant}</td></tr>
-                    <tr><td style="padding:3px 6px; font-weight:bold; color:#555;">Distância Próx.:</td><td style="padding:3px 6px; color:#333;">{dist_prox}</td></tr>
-                '''
-
+                # Linhas do cartao da obra: rigorosamente as colunas escolhidas
+                # em Configuracao de Saida, na ordem em que aparecem no seletor.
+                # Nada de ORDEM, distancias, origem ou INFORMACOES EXTRAS.
                 for c in colunas_exibir:
-                    # O protocolo ja aparece no topo junto a seu cliente nos superpontos.
-                    if c.upper() in ['PROTOCOLO', 'NOTA', 'DIA_SEMANA', 'DIA_MES']: continue
-                    
-                    if c.upper() == 'SUPER_PONTO':
-                        val_html = f"SIM ({qty} Obras)" if is_sp else "NÃO"
-                        desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(c)}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
+                    if c not in CAMPOS_KML_SOLICITADOS:
                         continue
-
-                    if is_sp and c.upper() not in ['LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'ZONA', 'REGIONAL']:
+                    if is_sp and c.upper() not in ['LATITUDE', 'LONGITUDE', 'MUNICIPIO', 'LOCALIDADE', 'REGIONAL']:
                         vals = [orig.get(c, '') for orig in r.get('_ORIGINAL_ROWS', [])]
-                        val_html = "<div style='max-height:95px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'><ul style='margin:0; padding-left:0px; list-style-type:none; font-size:11px; color:#333;'>" + "".join([f"<li style='margin-bottom:3px;'><b>[{i+1}]</b> {funcao_formatadora(c, v)}</li>" for i, v in enumerate(vals)]) + "</ul></div>"
+                        val_html = (
+                            "<div style='max-height:120px; overflow-y:auto; border:1px solid #ccc; padding:6px; background:#fff; border-radius:4px;'>"
+                            "<ol style='margin:0; padding-left:20px; font-size:11px; color:#333;'>"
+                            + ''.join(f'<li>{funcao_formatadora(c, v)}</li>' for v in vals)
+                            + '</ol></div>'
+                        )
                     else:
                         val_html = funcao_formatadora(c, r.get(c, ''))
-                        
-                    desc += f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>{html.escape(c)}:</td><td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
-
-                if r.get('ORDEM') == 1:
                     desc += (
-                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Origem da equipe:</td>"
-                        f"<td>{html.escape(str(r.get('ORIGEM_MUNICIPIO', '-')))}</td></tr>"
-                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Tempo inicial:</td>"
-                        f"<td>{formatar_tempo_deslocamento(r.get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0))}</td></tr>"
-                        f"<tr><td style='padding:3px 6px; font-weight:bold;'>Cálculo:</td>"
-                        f"<td>{html.escape(str(r.get('TIPO_DESLOCAMENTO', '-')))}</td></tr>"
+                        f"<tr><td style='padding:3px 6px; font-weight:bold; color:#555; vertical-align:top; width:35%;'>"
+                        f"{html.escape(c)}:</td>"
+                        f"<td style='padding:3px 6px; color:#333;'>{val_html}</td></tr>"
                     )
+
                 desc += "</table></div></div>]]>"
 
                 pasta.append(f'<Placemark><name>{html.escape(nome_ponto)}</name><styleUrl>#{icon}</styleUrl><description>{desc}</description><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>')
@@ -2196,12 +2162,8 @@ if is_done and not st.session_state.df_routed_lista.empty:
                     unsafe_allow_html=True
                 )
     st.markdown("### 📊 Dados Tabulares")
-    st.caption('Os 15 campos solicitados da base aparecem primeiro; dados da equipe e do deslocamento ficam ao final.')
-    dados_tabela = list(dict.fromkeys(CAMPOS_KML_SOLICITADOS + [
-        'BASE_ATRIBUIDA', 'ORIGEM_MUNICIPIO', 'ORDEM',
-        'DISTANCIA_PONTO_ANTERIOR_KM', 'TEMPO_VIAGEM_MINUTOS',
-        'TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 'TIPO_DESLOCAMENTO'
-    ]))
+    st.caption('Campos da tabela conforme a selecao de Configuracao de Saida.')
+    dados_tabela = [c for c in CAMPOS_KML_SOLICITADOS if c in st.session_state.get('colunas_exibir_lista', CAMPOS_KML_SOLICITADOS)]
     st.dataframe(st.session_state.df_routed_lista.reindex(columns=dados_tabela), use_container_width=True, hide_index=True)
 
 elif status_exec == "IDLE":
@@ -2374,14 +2336,16 @@ elif status_exec == "IDLE":
     sb_html.markdown(render_sidebar_card(total_alocadas, qtd_eq), unsafe_allow_html=True)
 
     with st.expander("🛠️ Configuração de Saída", expanded=True):
-        tc = [c for c in df_ta.columns if not c.startswith('_') and c != 'MUN_LIMPO']
-        cd = CAMPOS_VISIVEIS_NIP.copy()
-        cp = [c for c in cd if c in tc]
-        colunas_exibir = st.multiselect("Colunas Visíveis no Card do KML:", CAMPOS_VISIVEIS_NIP, default=CAMPOS_KML_SOLICITADOS, help="Escolha os campos do cartão KML. Os 15 campos solicitados estão selecionados por padrão.")
-        colunas_exibir.sort(key=lambda x: cd.index(x) if x in cd else 999)
+        colunas_exibir = st.multiselect(
+            "Colunas visíveis no KML, KMZ e Excel:",
+            options=CAMPOS_KML_SOLICITADOS,
+            default=CAMPOS_KML_SOLICITADOS,
+            help="Somente os campos marcados aparecem nos cartões KML/KMZ e nas planilhas Excel de obras. INFORMAÇÕES EXTRAS não é acrescentado.",
+        )
+        colunas_exibir = [c for c in CAMPOS_KML_SOLICITADOS if c in colunas_exibir]
 
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True,
-                 disabled=bool(faltando_origem)):
+                 disabled=bool(faltando_origem) or not colunas_exibir):
         st.session_state.update({'colunas_exibir_lista': colunas_exibir})
         st.session_state.vrp_state_lista = {
             'config': {
@@ -2553,6 +2517,7 @@ if status_exec == "PACKAGING":
     d_fmt = datetime.now().strftime("%d.%m.%Y")
     bu_xl, bu_kml, bu_gpx, bu_txt, bu_maps, bu_offline = (io.BytesIO() for _ in range(6))
     
+    col_exibir = [c for c in CAMPOS_KML_SOLICITADOS if c in st.session_state.get('colunas_exibir_lista', CAMPOS_KML_SOLICITADOS)]
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, \
              zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, \
@@ -2622,11 +2587,15 @@ if status_exec == "PACKAGING":
             
             dfc = st.session_state.get('df_correcao_lista', pd.DataFrame())
             if not dfc.empty:
-                dfcc = dfc.copy(); dfcc.rename(columns={'LEVANTADOR': 'FISCAL', 'PROTOCOLO': 'NOTA'}, inplace=True)
+                dfcc = dfc.copy()
+                if 'PROTOCOLO' not in dfcc.columns and 'NOTA' in dfcc.columns:
+                    dfcc['PROTOCOLO'] = dfcc['NOTA']
+                # Manter PROTOCOLO original para o exportador de 15 campos.
+                dfcc.rename(columns={'LEVANTADOR': 'FISCAL'}, inplace=True)
                 dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
                 for cc in dfcc.columns:
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
-                out_e = io.BytesIO(); dfcc.to_excel(out_e, index=False); zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", out_e.getvalue())
+                zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", gerar_excel_lista(dfcc, col_exibir))
             
             linhas_gerais = []
             for _, r in df_routed.iterrows():
@@ -2657,18 +2626,14 @@ if status_exec == "PACKAGING":
                 if 'POSTE' in c.upper():
                     df_excel_full[c] = pd.to_numeric(df_excel_full[c], errors='coerce').apply(lambda x: str(int(x)) if pd.notna(x) else '')
 
-            col_exibir = st.session_state.colunas_exibir_lista.copy()
-            # O nome do cliente integra todas as exportacoes.
-            if 'NOME' not in col_exibir: col_exibir.append('NOME')
-            if 'DIA_SEMANA' not in col_exibir: col_exibir.insert(0, 'DIA_SEMANA')
-            if 'DIA_MES' not in col_exibir: col_exibir.insert(1, 'DIA_MES')
-            if 'SUPER_PONTO' not in col_exibir: col_exibir.insert(2, 'SUPER_PONTO')
+            # A mesma selecao col_exibir, definida antes do empacotamento,
+            # e reutilizada em todas as exportacoes de obras.
 
             dfg_total = limpar_colunas_lista(df_excel_full.drop(columns=['MUN_LIMPO', 'COR_ICONE', 'COORD_KEY', 'ALERTA_TOPOLOGIA', 'ROTA_GEOMETRIA', 'PERIODO', '_HORA_INICIO_DT', '_HORA_FIM_DT', 'HORA_INICIO', 'HORA_FIM', 'TEMPO_VIAGEM_MINUTOS', '_ORIGINAL_ROWS'], errors='ignore'), col_exibir)
             dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
             for cc in dfg_total.columns:
                 if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, st.session_state.colunas_originais_lista))
+            zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, col_exibir))
             
             # --- TXT TOTAL ---
             txt_total = gerar_txt_lista(df_excel_full)
@@ -2701,7 +2666,7 @@ if status_exec == "PACKAGING":
                     dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
                     for cc in dfg.columns:
                         if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-                    zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_lista(dfg, st.session_state.colunas_originais_lista))
+                    zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_lista(dfg, col_exibir))
                     
                     # --- TXT INDIVIDUAL ---
                     txt_ind = gerar_txt_lista(df_base_excel)
@@ -2728,7 +2693,7 @@ if status_exec == "PACKAGING":
                     nome_html_ios = f'Equipes/Roteiro_iPhone_{chave_arquivo}.html'
                     nome_csv = f'Equipes/Pontos_MyMaps_{chave_arquivo}.csv'
                     nome_links = f'Equipes/LINKS_Maps_{chave_arquivo}.txt'
-                    html_campo = gerar_painel_google_maps(dfk_base, str(base))
+                    html_campo = gerar_painel_google_maps(dfk_base, str(base), colunas_exibir=col_exibir)
                     html_ios = gerar_painel_iphone_estatico(dfk_base, str(base))
                     gpx_offline = gerar_gpx_offline_paradas(dfk_base, str(base))
                     nome_gpx_offline = f'Equipes/Pontos_Offline_{chave_arquivo}.gpx'
@@ -2743,7 +2708,7 @@ if status_exec == "PACKAGING":
                          'obras': pontos_equipe_google_maps(dfk_base)},
                         ensure_ascii=False, sort_keys=True
                     ).encode('utf-8')).hexdigest()[:16]
-                    html_pwa = gerar_painel_google_maps(dfk_base, str(base), pwa=True)
+                    html_pwa = gerar_painel_google_maps(dfk_base, str(base), pwa=True, colunas_exibir=col_exibir)
                     pasta_pwa = f'Offline_Instalavel/{chave_arquivo}/'
                     for relativo, conteudo in gerar_pwa_offline(str(base), pontos_versao, nome_html, html_pwa).items():
                         zo.writestr(pasta_pwa + relativo, conteudo)
