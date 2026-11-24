@@ -1395,7 +1395,7 @@ def fundir_super_pontos(df_tasks, raio_metros=5, agrupar_por_levantador=False):
     return df_final, len(df_tasks) - len(df_final)
 
 
-def formatar_planilha_openpyxl(writer, sheet_name, df_orig):
+def formatar_planilha_openpyxl(writer, sheet_name, df_orig, linhas_superponto=None):
     """Aplica o padrão NIP (Azul Escuro) no arquivo Excel gerado."""
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
@@ -1416,11 +1416,15 @@ def formatar_planilha_openpyxl(writer, sheet_name, df_orig):
     col_sp_idx = df_orig.columns.get_loc('SUPER_PONTO') + 1 if 'SUPER_PONTO' in df_orig.columns else None
     
     for r_idx, row in enumerate(worksheet.iter_rows(min_row=2), start=2):
-        is_prio = col_prio_idx and str(row[col_prio_idx - 1].value).strip().upper() == 'SIM'
-        is_sp = col_sp_idx and str(row[col_sp_idx - 1].value).strip().upper().startswith('SIM')
+        is_prio = bool(col_prio_idx and str(row[col_prio_idx - 1].value).strip().upper() == 'SIM')
+        # Mantem SUPER_PONTO como metadado interno: nao acrescenta uma 16a coluna.
+        is_sp = (bool(linhas_superponto[r_idx - 2]) if linhas_superponto is not None
+                 else bool(col_sp_idx and str(row[col_sp_idx - 1].value).strip().upper().startswith('SIM')))
         for cell in row:
-            if is_sp: cell.fill = fill_superponto
-            if is_prio: cell.font = font_prioridade
+            if is_sp:
+                cell.fill = fill_superponto
+            if is_prio:
+                cell.font = font_prioridade
     
     for col in worksheet.columns:
         max_length = 0
@@ -1444,8 +1448,15 @@ def gerar_excel_lista(df, colunas_originais=None):
     permitidas = CAMPOS_KML_SOLICITADOS if colunas_originais is None else [
         c for c in CAMPOS_KML_SOLICITADOS if c in colunas_originais
     ]
-    df_saida = df.loc[:, ~df.columns.duplicated()].reindex(columns=permitidas).copy()
-    
+    df_fonte = df.loc[:, ~df.columns.duplicated()].copy()
+    if 'SUPER_PONTO' in df_fonte.columns:
+        superpontos = df_fonte['SUPER_PONTO'].astype(str).str.strip().str.upper().str.startswith('SIM')
+    elif '_ORIGINAL_ROWS' in df_fonte.columns:
+        superpontos = df_fonte['_ORIGINAL_ROWS'].map(lambda linhas: isinstance(linhas, list) and len(linhas) > 1)
+    else:
+        superpontos = pd.Series(False, index=df_fonte.index)
+    df_saida = df_fonte.reindex(columns=permitidas).copy()
+
     for col_name in ['PROTOCOLO', 'NOTA']:
         if col_name in df_saida.columns:
             df_saida = df_saida[~df_saida[col_name].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
@@ -1455,7 +1466,9 @@ def gerar_excel_lista(df, colunas_originais=None):
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_saida.to_excel(writer, index=False, sheet_name='Obras Roteirizadas')
-        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas', df_saida)
+        mascara_linhas = superpontos.reindex(df_saida.index).fillna(False).astype(bool).tolist()
+        formatar_planilha_openpyxl(writer, 'Obras Roteirizadas', df_saida,
+                                   linhas_superponto=mascara_linhas)
         
     return output.getvalue()
 
@@ -1563,7 +1576,7 @@ def montar_pacotes_individuais(equipes_geradas, data_referencia):
                 'Este ZIP contem SOMENTE arquivos da equipe indicada.',
                 'As planilhas e relatorios grandes sao divididos em partes de ate 300 KiB.',
                 'Extraia o ZIP antes de abrir/importar KML ou KMZ.',
-                'Para MapMaker Android, prefira o KML da pasta Mapas com MAPMAKER no nome.',
+                'Na pasta Mapas estao apenas KML/KMZ com as partes necessarias.',
                 '', 'ARQUIVOS:',
             ] + sorted(arquivos)
             arquivos['LEIA_ME_EQUIPE.txt'] = ('\n'.join(instrucoes) + '\n').encode('utf-8')
@@ -1575,7 +1588,7 @@ def montar_pacotes_individuais(equipes_geradas, data_referencia):
             with zipfile.ZipFile(io.BytesIO(pacote_bytes)) as verificacao:
                 if verificacao.testzip() is not None:
                     raise ValueError(f'Falha de integridade no ZIP individual: {equipe}')
-                if any(not n.startswith(('Excel/', 'TXT/', 'Mapas/', 'GPS/', 'Google_Maps/', 'LEIA_ME_EQUIPE.txt'))
+                if any(not n.startswith(('Excel/', 'TXT/', 'Mapas/', 'LEIA_ME_EQUIPE.txt'))
                        for n in verificacao.namelist()):
                     raise ValueError('Arquivo fora das pastas previstas do ZIP individual.')
             mestre.writestr(arquivo_zip, pacote_bytes, compress_type=zipfile.ZIP_STORED)
@@ -2604,7 +2617,7 @@ with st.sidebar:
         pacotes_equipes = st.session_state.get('pacotes_equipes_lista', {})
         if pacotes_equipes:
             st.markdown('#### 📦 Arquivos individuais por levantador')
-            st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML/KMZ e GPX; '
+            st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML e KMZ; '
                        'se algum arquivo exceder 300 KiB, as partes ficam no ZIP daquela equipe. '
                        'Os pacotes nao misturam obras de equipes diferentes.')
             if len(pacotes_equipes) > 1:
@@ -2662,74 +2675,28 @@ with st.sidebar:
                     mime=('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                           if tipo_doc == 'EXCEL TOTAL' else 'text/plain; charset=utf-8'),
                     key='lista_download_parte_documento', use_container_width=True)
-        st.caption('Para Google Earth / MapMaker importe um arquivo .kml ou .kmz, nao o ZIP externo.')
-        diretos = [
-            ('KML total - Google Earth', 'bytes_kml_total_lista', 'kml'),
-            ('KMZ total - Google Earth', 'bytes_kmz_total_lista', 'kmz'),
-            ('KML simples - compatibilidade', 'bytes_kml_simples_lista', 'kml'),
-            ('KMZ simples - compatibilidade', 'bytes_kmz_simples_lista', 'kmz'),
-            ('KML MapMaker - somente pontos (mais leve)', 'bytes_kml_mapmaker_lista', 'kml'),
-            ('KMZ MapMaker - somente pontos (mais leve)', 'bytes_kmz_mapmaker_lista', 'kmz'),
-        ]
-        for titulo, chave, ext in diretos:
-            conteudo = st.session_state.get(chave)
-            if conteudo:
-                st.download_button(titulo, data=conteudo,
-                    file_name=f"ListaContinua_{'MAPMAKER' if 'mapmaker' in chave else ('SIMPLES' if 'simples' in chave else 'TOTAL')}_{d_fmt}.{ext}",
-                    mime=('application/vnd.google-earth.kmz' if ext=='kmz' else 'application/vnd.google-earth.kml+xml'),
-                    use_container_width=True, key='download_'+chave)
-        variantes_geradas = st.session_state.get('partes_exportacao_lista', {})
-        variantes_descricoes = {
-            'TOTAL': 'Rota total - Google Earth (com traçado)',
-            'SIMPLES': 'Rota simples - compatibilidade',
-            'MAPMAKER': 'MapMaker - somente pontos de obras',
-        }
-        varias_partes = {v: itens for v, itens in variantes_geradas.items() if len(itens) > 1}
-        for variante, itens in varias_partes.items():
-            st.info(f"{variantes_descricoes[variante]}: {len(itens)} partes geradas automaticamente "
-                    f"(limite de {LIMITE_KML_PARTE_BYTES // 1024} KB por KML).")
-            for ext in ('kml', 'kmz'):
-                st.download_button(
-                    f"📦 Baixar {ext.upper()} {variantes_descricoes[variante]} - {len(itens)} partes (ZIP)",
-                    data=zipar_partes_kml(itens, ext),
-                    file_name=f"ListaContinua_{variante}_{ext.upper()}_PARTES_{d_fmt}.zip",
-                    mime='application/zip', use_container_width=True,
-                    key=f'download_zip_partes_{variante}_{ext}')
-        if varias_partes:
-            with st.expander('📂 Baixar cada parte isoladamente (KML ou KMZ)'):
-                escolha = st.selectbox('Tipo de mapa', list(varias_partes),
-                    format_func=lambda v: variantes_descricoes[v], key='lista_escolha_tipo_parte')
-                formato_parte = st.radio('Formato', ('kml', 'kmz'), horizontal=True,
-                    key='lista_escolha_formato_parte')
-                itens = varias_partes[escolha]
-                indice_parte = st.selectbox('Parte a baixar', range(len(itens)),
-                    format_func=lambda i: f"Parte {i+1:03d} de {len(itens):03d}",
-                    key='lista_escolha_numero_parte')
-                item = itens[indice_parte]
-                st.download_button(f"⬇️ Baixar {item[formato_parte + '_nome']}",
-                    data=item[formato_parte], file_name=item[formato_parte + '_nome'],
-                    mime=('application/vnd.google-earth.kmz' if formato_parte == 'kmz'
-                          else 'application/vnd.google-earth.kml+xml'),
-                    key='lista_download_parte_individual', use_container_width=True)
-            st.caption('Importe todas as partes separadamente. O ZIP externo serve apenas '
-                       'para transporta-las: extraia antes de abrir no Google Earth ou MapMaker.')
-        st.caption('MapMaker Android: prefira KML MapMaker - somente pontos. '
-                   'As linhas viarias tambem sao fracionadas em trechos de ate 180 vertices.')
-        st.download_button("\U0001f3e0 Baixar Mapas GERAIS (ZIP - extrair antes de importar)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas_GERAIS - {d_fmt}.zip", use_container_width=True)
-        st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
-        st.download_button("📍 Baixar Rotas Google Maps (ZIP)",
-                           data=st.session_state.get('bytes_zip_maps_lista', b""),
-                           file_name=f"ListaContinua_GoogleMaps - {d_fmt}.zip",
-                           use_container_width=True,
-                           help="Links de navegacao, HTML editavel por equipe e CSV para Google My Maps.")
-        st.download_button("📴 Baixar Planejamento Offline (ZIP)",
-                           data=st.session_state.get('bytes_zip_offline_lista', b""),
-                           file_name=f"ListaContinua_Offline - {d_fmt}.zip",
-                           use_container_width=True,
-                           help="HTML offline por equipe, GPX para Organic Maps/OsmAnd, links e pacote PWA HTTPS para iPhone/Android.")
-        st.caption("🏠 A casinha indica a sede do municipio escolhido, nao o endereco exato. "
-                   "Para Google Earth Web, abra o KML (casinha padrao, com internet). "
-                   "Para Google Earth Pro, prefira o KMZ (casinha personalizada incorporada e disponivel offline).")
+        # Apenas os DOIS formatos solicitados. Arquivo pequeno: download direto;
+        # arquivo grande: ZIP contendo apenas as partes do respectivo formato.
+        partes_mapa = st.session_state.get('partes_exportacao_lista', {}).get('TOTAL', [])
+        if partes_mapa:
+            for formato in ('kml', 'kmz'):
+                if len(partes_mapa) == 1:
+                    conteudo = partes_mapa[0][formato]
+                    nome_download = partes_mapa[0][formato + '_nome']
+                    mime = ('application/vnd.google-earth.kmz' if formato == 'kmz'
+                            else 'application/vnd.google-earth.kml+xml')
+                else:
+                    conteudo = zipar_partes_kml(partes_mapa, formato)
+                    nome_download = f'ListaContinua_{formato.upper()}_PARTES_{d_fmt}.zip'
+                    mime = 'application/zip'
+                rotulo = f'🗺️ Baixar {formato.upper()}'
+                if len(partes_mapa) > 1:
+                    rotulo += f' ({len(partes_mapa)} partes)'
+                st.download_button(rotulo, data=conteudo, file_name=nome_download,
+                                   mime=mime, use_container_width=True,
+                                   key=f'lista_download_unico_{formato}')
+        else:
+            st.warning('Nenhum KML/KMZ gerado nesta rota.')
         if st.button("🧹 Nova Roteirização", type="primary", use_container_width=True): limpar_roteirizador()
 
 if is_done and not st.session_state.df_routed_lista.empty:
@@ -2833,19 +2800,6 @@ if is_done and not st.session_state.df_routed_lista.empty:
         fg.add_to(mapa)
     folium.LayerControl().add_to(mapa); st_folium(mapa, use_container_width=True, height=550)
 
-    st.markdown("### 📍 Google Maps - começar o levantamento")
-    links_inicio_maps = st.session_state.get('maps_primeiras_lista', {})
-    if links_inicio_maps:
-        with st.expander("🚗 Abrir a primeira obra de cada equipe", expanded=False):
-            st.caption("A origem é a sede do município escolhido. O Google Maps calculará o caminho rodoviário quando aberto.")
-            for equipe_m, dados_m in sorted(links_inicio_maps.items()):
-                url_m = html.escape(dados_m['url'], quote=True)
-                equipe_nome = html.escape(str(equipe_m))
-                nota_nome = html.escape(str(dados_m['nota']))
-                st.markdown(
-                    f'<a href="{url_m}" target="_blank" rel="noopener noreferrer">🚗 {equipe_nome} — primeira obra {nota_nome}</a>',
-                    unsafe_allow_html=True
-                )
     st.markdown("### 📊 Dados Tabulares")
     st.caption('Campos da tabela conforme a selecao de Configuracao de Saida.')
     dados_tabela = [c for c in CAMPOS_KML_SOLICITADOS if c in st.session_state.get('colunas_exibir_lista', CAMPOS_KML_SOLICITADOS)]
@@ -3200,16 +3154,13 @@ if status_exec == "PACKAGING":
     df_routed['DISTANCIA_PROXIMO_PONTO_KM'] = df_routed.groupby(['BASE_ATRIBUIDA'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
 
     d_fmt = datetime.now().strftime("%d.%m.%Y")
-    bu_xl, bu_kml, bu_gpx, bu_txt, bu_maps, bu_offline = (io.BytesIO() for _ in range(6))
+    bu_xl, bu_kml, bu_txt = (io.BytesIO() for _ in range(3))
     
     col_exibir = [c for c in CAMPOS_KML_SOLICITADOS if c in st.session_state.get('colunas_exibir_lista', CAMPOS_KML_SOLICITADOS)]
     try:
         with zipfile.ZipFile(bu_xl, 'w', zipfile.ZIP_DEFLATED) as zx, \
              zipfile.ZipFile(bu_kml, 'w', zipfile.ZIP_DEFLATED) as zk, \
-             zipfile.ZipFile(bu_gpx, 'w', zipfile.ZIP_DEFLATED) as zg, \
-             zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt, \
-             zipfile.ZipFile(bu_maps, 'w', zipfile.ZIP_DEFLATED) as zm, \
-             zipfile.ZipFile(bu_offline, 'w', zipfile.ZIP_DEFLATED) as zo:
+             zipfile.ZipFile(bu_txt, 'w', zipfile.ZIP_DEFLATED) as zt:
             
             data_ini = st.session_state.vrp_state_lista.get('config', {}).get('data_inicio', datetime.today())
             obras_por_dia_est = st.session_state.vrp_state_lista.get('config', {}).get('obras_por_dia_est', 4.0)
@@ -3323,7 +3274,7 @@ if status_exec == "PACKAGING":
             for cc in dfg_total.columns:
                 if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
             partes_xlsx_total = escrever_excel_em_partes(
-                zx, f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", dfg_total,
+                zx, f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", df_excel_full,
                 lambda fatia: gerar_excel_lista(fatia, col_exibir))
             inventario_xlsx.extend(partes_xlsx_total)
 
@@ -3335,10 +3286,6 @@ if status_exec == "PACKAGING":
                 'EXCEL TOTAL': partes_xlsx_total, 'TXT TOTAL': partes_txt_total,
             }
             
-            # Um unico PNG por pasta, referenciado pelos arquivos KML dessa pasta.
-            zk.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
-            zk.writestr(f"KML_{d_fmt}/{ICONE_CASA_ARQUIVO}", imagem_casa_bytes())
-
             dfk_total = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])].copy()
             if not dfk_total.empty:
                 dfk_total['DIA_SEMANA'] = dia_semana_str
@@ -3346,49 +3293,16 @@ if status_exec == "PACKAGING":
                 dfk_total['SUPER_PONTO'] = dfk_total.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                 
                 ks_tot = gerar_kml_lista(dfk_total, "ROTA TOTAL", col_exibir, df_routed['BASE_ATRIBUIDA'].unique().tolist(), formatar_valor_coluna)
-                kml_simples_bytes = gerar_kml_simples_compativel(dfk_total, 'ROTA TOTAL - COMPATIVEL', col_exibir)
-                kml_mapmaker_bytes = gerar_kml_simples_compativel(
-                    dfk_total, 'ROTA TOTAL - MAPMAKER (SOMENTE PONTOS)',
-                    col_exibir, incluir_linha=False)
-                # O tamanho leva em conta o KML descompactado. Assim, mesmo
-                # um KMZ pequeno pode gerar varias partes para o MapMaker.
-                variantes_partes = {
-                    'TOTAL': criar_mapas_kml_kmz_em_partes(
-                        ks_tot, f'ROTA_TOTAL_{d_fmt}', kmz_com_casinha=True),
-                    'SIMPLES': criar_mapas_kml_kmz_em_partes(
-                        kml_simples_bytes, f'ROTA_TOTAL_SIMPLES_{d_fmt}'),
-                    'MAPMAKER': criar_mapas_kml_kmz_em_partes(
-                        kml_mapmaker_bytes, f'ROTA_TOTAL_MAPMAKER_PONTOS_{d_fmt}'),
-                }
-                st.session_state.partes_exportacao_lista = variantes_partes
-                for variante, partes_variante in variantes_partes.items():
-                    for item in partes_variante:
-                        zk.writestr(item['kml_nome'], item['kml'])
-                        zk.writestr(item['kmz_nome'], item['kmz'])
-                zk.writestr('COMO_ABRIR_NO_GOOGLE_EARTH.txt',
-                    ('Extraia o ZIP antes de importar.\n'
-                     'Arquivos grandes foram divididos automaticamente em PARTE_001_DE_XXX etc.\n'
-                     'Importe todas as partes na ordem para visualizar a rota inteira.\n'
-                     'No Google Earth abra cada .kml/.kmz, nao o ZIP externo.\n'
-                     'No MapMaker Android, prefira ROTA_TOTAL_MAPMAKER_PONTOS.\n'
-                     'A versao total conserva os trechos das linhas e os cartoes selecionados.\n').encode('utf-8'))
-                st.session_state.bytes_kml_total_lista = (
-                    variantes_partes['TOTAL'][0]['kml'] if len(variantes_partes['TOTAL']) == 1 else None)
-                st.session_state.bytes_kmz_total_lista = (
-                    variantes_partes['TOTAL'][0]['kmz'] if len(variantes_partes['TOTAL']) == 1 else None)
-                st.session_state.bytes_kml_simples_lista = (
-                    variantes_partes['SIMPLES'][0]['kml'] if len(variantes_partes['SIMPLES']) == 1 else None)
-                st.session_state.bytes_kmz_simples_lista = (
-                    variantes_partes['SIMPLES'][0]['kmz'] if len(variantes_partes['SIMPLES']) == 1 else None)
-                st.session_state.bytes_kml_mapmaker_lista = (
-                    variantes_partes['MAPMAKER'][0]['kml'] if len(variantes_partes['MAPMAKER']) == 1 else None)
-                st.session_state.bytes_kmz_mapmaker_lista = (
-                    variantes_partes['MAPMAKER'][0]['kmz'] if len(variantes_partes['MAPMAKER']) == 1 else None)
-                zg.writestr(f"GPS_TOTAL - {d_fmt}.gpx", gerar_gpx_simples(dfk_total, "ROTA TOTAL").encode('utf-8'))
+                # Exportacao unica: KML/KMZ da rota completa, com divisao automatica.
+                partes_total = criar_mapas_kml_kmz_em_partes(
+                    ks_tot, f'ROTA_TOTAL_{d_fmt}', kmz_com_casinha=True)
+                st.session_state.partes_exportacao_lista = {'TOTAL': partes_total}
+                for parte in partes_total:
+                    zk.writestr(parte['kml_nome'], parte['kml'])
+                    zk.writestr(parte['kmz_nome'], parte['kmz'])
+            else:
+                st.session_state.partes_exportacao_lista = {'TOTAL': []}
 
-            entradas_maps = []
-            mapas_primeiras = {}
-            registros_mymaps_geral = []
             coletores_equipes = {}
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
@@ -3409,7 +3323,7 @@ if status_exec == "PACKAGING":
                     # Sempre um pacote por equipe; dentro dele a divisao por
                     # tamanho gera PARTE_001, PARTE_002 etc. se necessaria.
                     dados_pacote_equipe['excel'] = escrever_excel_em_partes(
-                        coletor_equipe, f"Excel/Rota_{b_safe}.xlsx", dfg,
+                        coletor_equipe, f"Excel/Rota_{b_safe}.xlsx", df_base_excel,
                         lambda fatia: gerar_excel_lista(fatia, col_exibir))
                     dados_pacote_equipe['txt'] = escrever_txt_em_partes(
                         coletor_equipe, f"TXT/Relatorio_{b_safe}.txt", df_base_excel)
@@ -3422,93 +3336,11 @@ if status_exec == "PACKAGING":
                     dfk_base['SUPER_PONTO'] = dfk_base.apply(lambda row_k: f"SIM ({len(row_k['_ORIGINAL_ROWS'])} Obras)" if isinstance(row_k.get('_ORIGINAL_ROWS'), list) and len(row_k['_ORIGINAL_ROWS'])>1 else "NÃO", axis=1)
                     
                     ks = gerar_kml_lista(dfk_base, f"Rota {b_safe}", col_exibir, [base], formatar_valor_coluna)
-                    ks_simples = gerar_kml_simples_compativel(dfk_base, f"Rota {b_safe} - COMPATIVEL", col_exibir)
-                    ks_mapmaker = gerar_kml_simples_compativel(
-                        dfk_base, f"Rota {b_safe} - MAPMAKER PONTOS",
-                        col_exibir, incluir_linha=False)
-                    for prefixo, kml_payload, com_casinha in (
-                        (f'Rota_{b_safe}', ks, True),
-                        (f'Rota_{b_safe}_SIMPLES', ks_simples, False),
-                        (f'Rota_{b_safe}_MAPMAKER', ks_mapmaker, False)):
-                        partes_individuais = criar_mapas_kml_kmz_em_partes(
-                            kml_payload, prefixo, kmz_com_casinha=com_casinha)
-                        for parte in partes_individuais:
-                            coletor_equipe.writestr(f"Mapas/{parte['kml_nome']}", parte['kml'])
-                            coletor_equipe.writestr(f"Mapas/{parte['kmz_nome']}", parte['kmz'])
-                    coletor_equipe.writestr(f"GPS/Rota_{b_safe}.gpx",
-                        gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
-
-                    # Exportacao Google Maps independente por equipe.
-                    # HTML para ordenar as visitas; links TXT para WhatsApp;
-                    # CSV para importar os marcadores no Google My Maps.
-                    id_equipe_maps = hashlib.sha256(str(base).encode('utf-8')).hexdigest()[:8]
-                    chave_arquivo = f'{b_safe}_{id_equipe_maps}'
-                    nome_html = f'Equipes/Planejador_{chave_arquivo}.html'
-                    nome_html_ios = f'Equipes/Roteiro_iPhone_{chave_arquivo}.html'
-                    nome_csv = f'Equipes/Pontos_MyMaps_{chave_arquivo}.csv'
-                    nome_links = f'Equipes/LINKS_Maps_{chave_arquivo}.txt'
-                    html_campo = gerar_painel_google_maps(dfk_base, str(base), colunas_exibir=col_exibir)
-                    html_ios = gerar_painel_iphone_estatico(dfk_base, str(base))
-                    gpx_offline = gerar_gpx_offline_paradas(dfk_base, str(base))
-                    nome_gpx_offline = f'Equipes/Pontos_Offline_{chave_arquivo}.gpx'
-                    zm.writestr(nome_html, html_campo.encode('utf-8'))
-                    zm.writestr(nome_gpx_offline, gpx_offline.encode('utf-8'))
-                    zo.writestr(nome_html, html_campo.encode('utf-8'))
-                    zo.writestr(nome_gpx_offline, gpx_offline.encode('utf-8'))
-                    zo.writestr(nome_html_ios, html_ios.encode('utf-8'))
-                    # Opcional: publicacao HTTPS para modo instalavel e cache no iOS.
-                    pontos_versao = hashlib.sha256(json.dumps(
-                        {'origem': origem_google_maps(dfk_base),
-                         'obras': pontos_equipe_google_maps(dfk_base)},
-                        ensure_ascii=False, sort_keys=True
-                    ).encode('utf-8')).hexdigest()[:16]
-                    html_pwa = gerar_painel_google_maps(dfk_base, str(base), pwa=True, colunas_exibir=col_exibir)
-                    pasta_pwa = f'Offline_Instalavel/{chave_arquivo}/'
-                    for relativo, conteudo in gerar_pwa_offline(str(base), pontos_versao, nome_html, html_pwa).items():
-                        zo.writestr(pasta_pwa + relativo, conteudo)
-
-                    zm.writestr(nome_html_ios, html_ios.encode('utf-8'))
-                    csv_equipe = gerar_csv_google_mymaps(dfk_base, str(base))
-                    for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_equipe), start=1):
-                        nome_parte = nome_csv if parte_idx == 1 else nome_csv.replace('.csv', f'_PARTE_{parte_idx:03d}.csv')
-                        zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
-                    links_da_equipe = gerar_txt_links_google_maps(dfk_base, str(base)).encode('utf-8')
-                    zm.writestr(nome_links, links_da_equipe)
-                    coletor_equipe.writestr(f"Google_Maps/LINKS_Maps_{b_safe}.txt", links_da_equipe)
-                    registros_mymaps_geral.extend(list(csv.DictReader(io.StringIO(csv_equipe))))
-                    orig_m = origem_google_maps(dfk_base)
-                    pontos_m = pontos_equipe_google_maps(dfk_base)
-                    entradas_maps.append({
-                        'equipe': str(base), 'arquivo': nome_html,
-                        'arquivo_ios': nome_html_ios,
-                        'municipio': orig_m['municipio'],
-                        'primeira': pontos_m[0]['nota'] if pontos_m else '-',
-                    })
-                    if pontos_m:
-                        mapas_primeiras[str(base)] = {
-                            'nota': pontos_m[0]['nota'],
-                            'url': link_google_maps_primeira_obra(orig_m, pontos_m[0]),
-                        }
-
-            if entradas_maps:
-                zm.writestr('INICIAR_AQUI.html', gerar_indice_google_maps(entradas_maps).encode('utf-8'))
-                zo.writestr('INICIAR_AQUI.html', gerar_indice_google_maps(entradas_maps).encode('utf-8'))
-                zo.writestr('LEIA_ME_OFFLINE.txt', gerar_guia_modo_offline().encode('utf-8'))
-                zm.writestr('LEIA_ME_OFFLINE.txt', gerar_guia_modo_offline().encode('utf-8'))
-                zm.writestr('LEIA_ME.txt', gerar_leia_me_google_maps().encode('utf-8'))
-                zm.writestr('LEIA_ME_IPHONE.txt', gerar_leia_me_iphone().encode('utf-8'))
-                csv_geral = io.StringIO(newline='')
-                chaves_geral = ['Nome', 'Descricao', 'Equipe', 'Ordem', 'Tipo', 'Prioridade',
-                                'Nota CCS', 'Cliente', 'ID SISCO', 'Numero da Obra',
-                                'Municipio', 'Localidade', 'Endereco',
-                                'Latitude', 'Longitude', 'Qtd Obras']
-                escritor = csv.DictWriter(csv_geral, fieldnames=chaves_geral, lineterminator='\r\n')
-                escritor.writeheader()
-                escritor.writerows(registros_mymaps_geral)
-                for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_geral.getvalue()), start=1):
-                    nome_parte = ('MAPA_GERAL_GoogleMyMaps.csv' if parte_idx == 1
-                                  else f'MAPA_GERAL_GoogleMyMaps_PARTE_{parte_idx:03d}.csv')
-                    zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
+                    partes_individuais = criar_mapas_kml_kmz_em_partes(
+                        ks, f'Rota_{b_safe}', kmz_com_casinha=True)
+                    for parte in partes_individuais:
+                        coletor_equipe.writestr(f"Mapas/{parte['kml_nome']}", parte['kml'])
+                        coletor_equipe.writestr(f"Mapas/{parte['kmz_nome']}", parte['kmz'])
 
             # Cada equipe vai em um ZIP separado; a colecao geral fica limpa.
             pacotes_equipes_prontos, zip_mestre_equipes = montar_pacotes_individuais(
@@ -3523,10 +3355,6 @@ if status_exec == "PACKAGING":
 
         st.session_state.bytes_zip_xl_lista = bu_xl.getvalue()
         st.session_state.bytes_zip_kml_lista = bu_kml.getvalue()
-        st.session_state.bytes_zip_gpx_lista = bu_gpx.getvalue()
         st.session_state.bytes_zip_txt_lista = bu_txt.getvalue()
-        st.session_state.bytes_zip_maps_lista = bu_maps.getvalue()
-        st.session_state.bytes_zip_offline_lista = bu_offline.getvalue()
-        st.session_state.maps_primeiras_lista = mapas_primeiras
         st.session_state.roteamento_concluido_lista = True; st.session_state.vrp_status_lista = "IDLE"; tentar_rerun()
     except Exception as e: st.error(f"🚨 ERRO: {e}"); st.session_state.vrp_status_lista = "IDLE"
