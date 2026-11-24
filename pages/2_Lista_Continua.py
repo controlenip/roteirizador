@@ -1460,6 +1460,65 @@ def gerar_excel_lista(df, colunas_originais=None):
     return output.getvalue()
 
 
+# Teto conservador por ARQUIVO para os exportadores Excel e TXT.
+# A divisao ocorre por registro e conserva a ordem da rota.
+LIMITE_EXCEL_PARTE_BYTES = 300 * 1024
+LIMITE_TXT_PARTE_BYTES = 300 * 1024
+
+
+def dividir_dataframe_excel_em_partes(df, gerador, limite_bytes=LIMITE_EXCEL_PARTE_BYTES):
+    """Divide XLSX pelo tamanho REAL dos bytes gerados, preservando todas as linhas.
+
+    Cada fragmento e uma pasta de trabalho autonoma, com cabecalho e formatacao.
+    Os DataFrames nao sao reordenados, filtrados nem modificados nesta funcao.
+    Um registro individual maior que o teto permanece inteiro e e sinalizado
+    nos metadados: nao se pode dividir uma unica linha em dois arquivos Excel.
+    """
+    limite_bytes = int(limite_bytes)
+    if limite_bytes < 1024:
+        raise ValueError('O limite de XLSX precisa ter pelo menos 1 KiB.')
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError('Esperado um DataFrame para exportacao Excel.')
+    resultado = []
+
+    def cortar(inicio, fim, conteudo=None):
+        if conteudo is None:
+            conteudo = gerador(df.iloc[inicio:fim].copy())
+        if len(conteudo) <= limite_bytes or fim - inicio <= 1:
+            resultado.append({'conteudo': conteudo, 'registros': fim-inicio,
+                              'inicio': inicio, 'fim': fim,
+                              'excede_limite': len(conteudo) > limite_bytes})
+            return
+        meio = inicio + (fim - inicio) // 2
+        cortar(inicio, meio)
+        cortar(meio, fim)
+
+    cortar(0, len(df))
+    if sum(item['registros'] for item in resultado) != len(df):
+        raise AssertionError('Divisao Excel nao preservou todas as linhas.')
+    return resultado
+
+
+def nome_arquivo_parte_lista(nome_arquivo, indice, total):
+    """Usa o nome antigo quando pequeno e PARTE_001_DE_XXX quando dividido."""
+    if total <= 1:
+        return nome_arquivo
+    raiz, ext = os.path.splitext(nome_arquivo)
+    return f'{raiz}_PARTE_{indice:03d}_DE_{total:03d}{ext}'
+
+
+def escrever_excel_em_partes(zip_destino, nome_arquivo, df, gerador,
+                              limite_bytes=LIMITE_EXCEL_PARTE_BYTES):
+    """Grava cada XLSX valido no ZIP e devolve o inventario das partes."""
+    partes = dividir_dataframe_excel_em_partes(df, gerador, limite_bytes)
+    saida = []
+    for numero, item in enumerate(partes, 1):
+        nome = nome_arquivo_parte_lista(nome_arquivo, numero, len(partes))
+        zip_destino.writestr(nome, item['conteudo'])
+        saida.append({**item, 'nome': nome, 'numero': numero, 'total': len(partes)})
+    return saida
+
+
 def gerar_excel_resumo_lista(df_resumo):
     output = io.BytesIO()
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
@@ -1524,8 +1583,8 @@ def limpar_colunas_lista(df_alvo, cols_originais=None):
     return df_alvo[[c for c in final_cols if c in df_alvo.columns]]
 
 
-def gerar_txt_lista(df):
-    """Gera um arquivo de texto com blocos contendo detalhes de cada obra e link do Google Maps."""
+def gerar_txt_lista(df, retornar_blocos=False):
+    """Gera texto de obras; opcionalmente devolve blocos inteiros por obra."""
     linhas_txt = []
     for _, r in df.iterrows():
         nota = str(r.get('NOTA', r.get('PROTOCOLO', ''))).strip()
@@ -1602,10 +1661,97 @@ def gerar_txt_lista(df):
         if lat and lon and lat.lower() != 'nan' and lon.lower() != 'nan':
             bloco.append(f"https://www.google.com.br/maps/place/{lat},{lon}")
         
-        linhas_txt.append("\n".join(bloco))
-        linhas_txt.append("\n-------------------------------------------------------------------------------------------------------------------------\n")
-        
-    return "".join(linhas_txt)
+        # Mantem o separador em cada bloco: ao concatenar as partes, o TXT
+        # e identico ao original, inclusive acentos e quebras de linha.
+        linhas_txt.append("\n".join(bloco) + "\n-------------------------------------------------------------------------------------------------------------------------\n")
+
+    return linhas_txt if retornar_blocos else "".join(linhas_txt)
+
+
+def _fragmentar_texto_utf8_seguro(texto, limite_bytes):
+    """Ultimo recurso para UMA nota maior que o limite: sem perder caractere."""
+    fragmentos = []
+    inicio = 0
+    while inicio < len(texto):
+        # Fatia por numero de caracteres, corrigindo para bytes UTF-8.
+        fim = min(len(texto), inicio + limite_bytes)
+        trecho = texto[inicio:fim]
+        while len(trecho.encode('utf-8')) > limite_bytes:
+            fim = inicio + max(1, (fim - inicio) // 2)
+            trecho = texto[inicio:fim]
+        if not trecho:
+            raise ValueError('Nao foi possivel dividir o bloco TXT.')
+        fragmentos.append(trecho.encode('utf-8'))
+        inicio = fim
+    return fragmentos
+
+
+def dividir_txt_lista_em_partes(df, limite_bytes=LIMITE_TXT_PARTE_BYTES):
+    """Divide TXT no limite real UTF-8, preferindo limites entre notas.
+
+    Junta todas as partes com bytes identicos a gerar_txt_lista(df).encode().
+    """
+    limite_bytes = int(limite_bytes)
+    if limite_bytes < 1024:
+        raise ValueError('O limite TXT precisa ter pelo menos 1 KiB.')
+    blocos = gerar_txt_lista(df, retornar_blocos=True)
+    partes = []
+    corrente = bytearray()
+    contador = 0
+    # Nao dividir o bloco de uma mesma obra, exceto se ele por si for enorme.
+    for bloco in blocos:
+        bb = bloco.encode('utf-8')
+        if len(bb) > limite_bytes:
+            if corrente:
+                partes.append({'conteudo': bytes(corrente), 'registros': contador})
+                corrente, contador = bytearray(), 0
+            for segmento in _fragmentar_texto_utf8_seguro(bloco, limite_bytes):
+                partes.append({'conteudo': segmento, 'registros': 0})
+            continue
+        if corrente and len(corrente) + len(bb) > limite_bytes:
+            partes.append({'conteudo': bytes(corrente), 'registros': contador})
+            corrente, contador = bytearray(), 0
+        corrente.extend(bb)
+        contador += 1
+    if corrente or not partes:
+        partes.append({'conteudo': bytes(corrente), 'registros': contador})
+    if b''.join(p['conteudo'] for p in partes) != ''.join(blocos).encode('utf-8'):
+        raise AssertionError('Divisao TXT alterou o conteudo original.')
+    if any(len(p['conteudo']) > limite_bytes for p in partes):
+        raise AssertionError('Parte TXT acima do limite configurado.')
+    return partes
+
+
+def escrever_txt_em_partes(zip_destino, nome_arquivo, df,
+                            limite_bytes=LIMITE_TXT_PARTE_BYTES):
+    """Grava todos os TXT individuais e fornece inventario da divisao."""
+    partes = dividir_txt_lista_em_partes(df, limite_bytes)
+    saida = []
+    for numero, item in enumerate(partes, 1):
+        nome = nome_arquivo_parte_lista(nome_arquivo, numero, len(partes))
+        zip_destino.writestr(nome, item['conteudo'])
+        saida.append({**item, 'nome': nome, 'numero': numero, 'total': len(partes)})
+    return saida
+
+
+def manifesto_divisao_documentos(tipo, inventario, limite_bytes):
+    """Instrucao e inventario dos arquivos ja divididos dentro de um ZIP."""
+    linhas = [f'DIVISAO AUTOMATICA - {tipo}',
+              f'Limite por arquivo: {limite_bytes} bytes (300 KiB).',
+              'Quando pequeno, o arquivo conserva o nome tradicional.',
+              'Quando grande, as partes sao numeradas PARTE_001_DE_XXX.',
+              'Abra os arquivos individualmente. O ZIP externo so agrupa os downloads.',
+              'As partes conservam a ordem original das obras.',
+              'Planilhas XLSX possuem seus proprios cabecalhos em cada parte.',
+              'No TXT a divisao ocorre entre notas; notas excepcionalmente longas',
+              'podem ocupar duas ou mais partes consecutivas sem perder caracteres.', '',
+              'ARQUIVOS:', '']
+    for item in inventario:
+        aviso = (' | ATENCAO: linha Excel unica maior que o limite'
+                 if item.get('excede_limite') else '')
+        linhas.append(f"{item['nome']} | {len(item['conteudo'])} bytes"
+                     f" | {item['registros']} registro(s){aviso}")
+    return ('\n'.join(linhas) + '\n').encode('utf-8')
 
 
 # Limite por ELEMENTO do MapMaker Android. O erro de importacao informado
@@ -2323,7 +2469,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['partes_exportacao_lista', 'bytes_kml_total_lista', 'bytes_kmz_total_lista', 'bytes_kml_simples_lista', 'bytes_kmz_simples_lista', 'bytes_kml_mapmaker_lista', 'bytes_kmz_mapmaker_lista', 'bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['partes_excel_txt_lista', 'partes_exportacao_lista', 'bytes_kml_total_lista', 'bytes_kmz_total_lista', 'bytes_kml_simples_lista', 'bytes_kmz_simples_lista', 'bytes_kml_mapmaker_lista', 'bytes_kmz_mapmaker_lista', 'bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -2384,6 +2530,24 @@ with st.sidebar:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
         st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas - {d_fmt}.zip", use_container_width=True)
         st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
+        partes_documentos = st.session_state.get('partes_excel_txt_lista', {})
+        tipos_divididos = {tipo: partes for tipo, partes in partes_documentos.items() if len(partes) > 1}
+        if tipos_divididos:
+            for tipo, partes in tipos_divididos.items():
+                st.info(f'{tipo}: arquivo geral dividido em {len(partes)} partes de ate 300 KiB. '
+                        'Todas estao no respectivo ZIP acima.')
+            with st.expander('📂 Baixar uma parte isolada do Excel ou TXT'):
+                tipo_doc = st.selectbox('Formato', list(tipos_divididos), key='lista_formato_parte_documento')
+                lista_doc = tipos_divididos[tipo_doc]
+                ind_doc = st.selectbox('Parte', range(len(lista_doc)),
+                                       format_func=lambda i: lista_doc[i]['nome'],
+                                       key='lista_numero_parte_documento')
+                item_doc = lista_doc[ind_doc]
+                st.download_button(f"⬇️ Baixar {item_doc['nome'].split('/')[-1]}",
+                    data=item_doc['conteudo'], file_name=item_doc['nome'].split('/')[-1],
+                    mime=('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                          if tipo_doc == 'EXCEL TOTAL' else 'text/plain; charset=utf-8'),
+                    key='lista_download_parte_documento', use_container_width=True)
         st.caption('Para Google Earth / MapMaker importe um arquivo .kml ou .kmz, nao o ZIP externo.')
         diretos = [
             ('KML total - Google Earth', 'bytes_kml_total_lista', 'kml'),
@@ -2990,7 +3154,9 @@ if status_exec == "PACKAGING":
                     'Min Ate 1a Obra': db.iloc[0].get('TEMPO_ORIGEM_PRIMEIRA_OBRA_MIN', 0),
                     'Metodo de Deslocamento': str(db.iloc[0].get('TIPO_DESLOCAMENTO', '-'))
                 })
-            zx.writestr(f"Resumo_Operacional - {d_fmt}.xlsx", gerar_excel_resumo_lista(pd.DataFrame(res)))
+            inventario_xlsx, inventario_txt = [], []
+            inventario_xlsx.extend(escrever_excel_em_partes(
+                zx, f"Resumo_Operacional - {d_fmt}.xlsx", pd.DataFrame(res), gerar_excel_resumo_lista))
             
             dfc = st.session_state.get('df_correcao_lista', pd.DataFrame())
             if not dfc.empty:
@@ -3002,7 +3168,9 @@ if status_exec == "PACKAGING":
                 dfcc = dfcc.loc[:, ~dfcc.columns.duplicated()].copy()
                 for cc in dfcc.columns:
                     if str(dfcc[cc].dtype) == 'object': dfcc[cc] = dfcc[cc].astype(str).replace('nan', '')
-                zx.writestr(f"Obras_Correcao - {d_fmt}.xlsx", gerar_excel_lista(dfcc, col_exibir))
+                inventario_xlsx.extend(escrever_excel_em_partes(
+                    zx, f"Obras_Correcao - {d_fmt}.xlsx", dfcc,
+                    lambda fatia: gerar_excel_lista(fatia, col_exibir)))
             
             linhas_gerais = []
             for _, r in df_routed.iterrows():
@@ -3040,11 +3208,18 @@ if status_exec == "PACKAGING":
             dfg_total = dfg_total.loc[:, ~dfg_total.columns.duplicated()].copy()
             for cc in dfg_total.columns:
                 if str(dfg_total[cc].dtype) == 'object': dfg_total[cc] = dfg_total[cc].astype(str).replace('nan', '')
-            zx.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", gerar_excel_lista(dfg_total, col_exibir))
-            
-            # --- TXT TOTAL ---
-            txt_total = gerar_txt_lista(df_excel_full)
-            zt.writestr(f"Demanda_ListaContinua_Total - {d_fmt}.txt", txt_total.encode('utf-8'))
+            partes_xlsx_total = escrever_excel_em_partes(
+                zx, f"Demanda_ListaContinua_Total - {d_fmt}.xlsx", dfg_total,
+                lambda fatia: gerar_excel_lista(fatia, col_exibir))
+            inventario_xlsx.extend(partes_xlsx_total)
+
+            # --- TXT TOTAL: nao separar uma obra no meio, salvo bloco individual gigante ---
+            partes_txt_total = escrever_txt_em_partes(
+                zt, f"Demanda_ListaContinua_Total - {d_fmt}.txt", df_excel_full)
+            inventario_txt.extend(partes_txt_total)
+            st.session_state.partes_excel_txt_lista = {
+                'EXCEL TOTAL': partes_xlsx_total, 'TXT TOTAL': partes_txt_total,
+            }
             
             # Um unico PNG por pasta, referenciado pelos arquivos KML dessa pasta.
             zk.writestr(ICONE_CASA_ARQUIVO, imagem_casa_bytes())
@@ -3109,12 +3284,13 @@ if status_exec == "PACKAGING":
                     dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
                     for cc in dfg.columns:
                         if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-                    zx.writestr(f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", gerar_excel_lista(dfg, col_exibir))
-                    
+                    inventario_xlsx.extend(escrever_excel_em_partes(
+                        zx, f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", dfg,
+                        lambda fatia: gerar_excel_lista(fatia, col_exibir)))
+
                     # --- TXT INDIVIDUAL ---
-                    txt_ind = gerar_txt_lista(df_base_excel)
-                    if txt_ind:
-                        zt.writestr(f"Relatorios_TXT_{d_fmt}/Relatorio_{b_safe}.txt", txt_ind.encode('utf-8'))
+                    inventario_txt.extend(escrever_txt_em_partes(
+                        zt, f"Relatorios_TXT_{d_fmt}/Relatorio_{b_safe}.txt", df_base_excel))
                     
                 dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
                 if not dfk_base.empty:
@@ -3207,6 +3383,11 @@ if status_exec == "PACKAGING":
                     nome_parte = ('MAPA_GERAL_GoogleMyMaps.csv' if parte_idx == 1
                                   else f'MAPA_GERAL_GoogleMyMaps_PARTE_{parte_idx:03d}.csv')
                     zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
+
+            zx.writestr('LEIA_ME_DIVISAO_EXCEL.txt',
+                manifesto_divisao_documentos('EXCEL', inventario_xlsx, LIMITE_EXCEL_PARTE_BYTES))
+            zt.writestr('LEIA_ME_DIVISAO_TXT.txt',
+                manifesto_divisao_documentos('TXT', inventario_txt, LIMITE_TXT_PARTE_BYTES))
 
         st.session_state.bytes_zip_xl_lista = bu_xl.getvalue()
         st.session_state.bytes_zip_kml_lista = bu_kml.getvalue()
