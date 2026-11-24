@@ -1519,6 +1519,77 @@ def escrever_excel_em_partes(zip_destino, nome_arquivo, df, gerador,
     return saida
 
 
+
+class ColetorArquivosEquipe:
+    """Guarda arquivos gerados por uma equipe, sem grava-los nos ZIPs gerais."""
+    def __init__(self):
+        self.arquivos = {}
+
+    def writestr(self, nome, conteudo):
+        nome = str(nome).replace('\\', '/')
+        if nome in self.arquivos:
+            raise ValueError(f'Arquivo duplicado no pacote da equipe: {nome}')
+        if isinstance(conteudo, str):
+            conteudo = conteudo.encode('utf-8')
+        self.arquivos[nome] = bytes(conteudo)
+
+
+def montar_pacotes_individuais(equipes_geradas, data_referencia):
+    """Cria um ZIP por equipe, mais ZIP mestre contendo APENAS os ZIPs individuais.
+
+    Nenhum arquivo de outra equipe e colocado no mesmo ZIP individual.
+    Cada Excel/TXT conserva as partes geradas pelo limite de 300 KiB.
+    """
+    pacotes = {}
+    buffer_mestre = io.BytesIO()
+    with zipfile.ZipFile(buffer_mestre, 'w', zipfile.ZIP_DEFLATED) as mestre:
+        for equipe, item in equipes_geradas.items():
+            coletor = item['coletor']
+            if not coletor.arquivos:
+                continue
+            identificador = hashlib.sha1(str(equipe).encode('utf-8')).hexdigest()[:8]
+            nome_limpo = re.sub(r'[^A-Za-z0-9_ -]', '', str(equipe)).strip().replace(' ', '_')
+            nome_limpo = (nome_limpo[:55] or 'SEM_NOME')
+            arquivo_zip = f'NIP_EQUIPE_{nome_limpo}_{identificador}_{data_referencia}.zip'
+            excel = item.get('excel', [])
+            txt = item.get('txt', [])
+            arquivos = coletor.arquivos.copy()
+            instrucoes = [
+                f'EQUIPE: {equipe}',
+                f'REGISTROS: {item.get("registros", 0)}',
+                f'PARTES EXCEL: {len(excel)}',
+                f'PARTES TXT: {len(txt)}',
+                '',
+                'Este ZIP contem SOMENTE arquivos da equipe indicada.',
+                'As planilhas e relatorios grandes sao divididos em partes de ate 300 KiB.',
+                'Extraia o ZIP antes de abrir/importar KML ou KMZ.',
+                'Para MapMaker Android, prefira o KML da pasta Mapas com MAPMAKER no nome.',
+                '', 'ARQUIVOS:',
+            ] + sorted(arquivos)
+            arquivos['LEIA_ME_EQUIPE.txt'] = ('\n'.join(instrucoes) + '\n').encode('utf-8')
+            buffer_equipe = io.BytesIO()
+            with zipfile.ZipFile(buffer_equipe, 'w', zipfile.ZIP_DEFLATED) as destino:
+                for nome, dados in arquivos.items():
+                    destino.writestr(nome, dados)
+            pacote_bytes = buffer_equipe.getvalue()
+            with zipfile.ZipFile(io.BytesIO(pacote_bytes)) as verificacao:
+                if verificacao.testzip() is not None:
+                    raise ValueError(f'Falha de integridade no ZIP individual: {equipe}')
+                if any(not n.startswith(('Excel/', 'TXT/', 'Mapas/', 'GPS/', 'Google_Maps/', 'LEIA_ME_EQUIPE.txt'))
+                       for n in verificacao.namelist()):
+                    raise ValueError('Arquivo fora das pastas previstas do ZIP individual.')
+            mestre.writestr(arquivo_zip, pacote_bytes, compress_type=zipfile.ZIP_STORED)
+            pacotes[str(equipe)] = {
+                'nome': arquivo_zip, 'conteudo': pacote_bytes,
+                'excel': excel, 'txt': txt,
+                'qtd_arquivos': len(arquivos), 'registros': item.get('registros', 0),
+            }
+        mestre.writestr('LEIA_ME_PACOTES.txt',
+            ('Cada arquivo ZIP desta pasta corresponde a UMA equipe.\n'
+             'Extraia o ZIP mestre e depois abra apenas o ZIP da equipe desejada.\n'
+             'As partes de Excel, TXT, KML e KMZ estao dentro de cada pacote.\n').encode('utf-8'))
+    return pacotes, buffer_mestre.getvalue()
+
 def gerar_excel_resumo_lista(df_resumo):
     output = io.BytesIO()
     df_resumo = df_resumo.loc[:, ~df_resumo.columns.duplicated()].copy()
@@ -2469,7 +2540,7 @@ def tentar_rerun():
 
 def limpar_roteirizador():
     st.session_state.update({'roteamento_concluido_lista': False, 'vrp_status_lista': "IDLE", 'vrp_state_lista': {}, 'df_routed_lista': pd.DataFrame(), 'colunas_exibir_lista': [], 'colunas_originais_lista': []})
-    for k in ['partes_excel_txt_lista', 'partes_exportacao_lista', 'bytes_kml_total_lista', 'bytes_kmz_total_lista', 'bytes_kml_simples_lista', 'bytes_kmz_simples_lista', 'bytes_kml_mapmaker_lista', 'bytes_kmz_mapmaker_lista', 'bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
+    for k in ['partes_excel_txt_lista', 'pacotes_equipes_lista', 'bytes_zip_equipes_lista', 'partes_exportacao_lista', 'bytes_kml_total_lista', 'bytes_kmz_total_lista', 'bytes_kml_simples_lista', 'bytes_kmz_simples_lista', 'bytes_kml_mapmaker_lista', 'bytes_kmz_mapmaker_lista', 'bytes_zip_xl_lista', 'bytes_zip_kml_lista', 'bytes_zip_gpx_lista', 'bytes_zip_txt_lista', 'bytes_zip_maps_lista', 'bytes_zip_offline_lista', 'maps_primeiras_lista', 'start_time_run_lista', 'start_time_pkg_lista', 'df_unallocated_lista', 'df_correcao_lista']: st.session_state.pop(k, None)
     ler_planilha_cached.clear()
     tentar_rerun()
 
@@ -2528,8 +2599,51 @@ with st.sidebar:
 
     if is_done and not st.session_state.df_routed_lista.empty:
         d_fmt = datetime.now().strftime("%d.%m.%Y")
-        st.download_button("🌐 Baixar Planilhas (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas - {d_fmt}.zip", use_container_width=True)
-        st.download_button("📝 Baixar Relatórios (TXT)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT - {d_fmt}.zip", use_container_width=True)
+        st.download_button("🌐 Baixar Planilhas GERAIS (ZIP)", data=st.session_state.get('bytes_zip_xl_lista', b"vazio"), file_name=f"ListaContinua_Planilhas_GERAIS - {d_fmt}.zip", use_container_width=True)
+        st.download_button("📝 Baixar TXT GERAL (ZIP)", data=st.session_state.get('bytes_zip_txt_lista', b"vazio"), file_name=f"ListaContinua_TXT_GERAL - {d_fmt}.zip", use_container_width=True)
+        pacotes_equipes = st.session_state.get('pacotes_equipes_lista', {})
+        if pacotes_equipes:
+            st.markdown('#### 📦 Arquivos individuais por levantador')
+            st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML/KMZ e GPX; '
+                       'se algum arquivo exceder 300 KiB, as partes ficam no ZIP daquela equipe. '
+                       'Os pacotes nao misturam obras de equipes diferentes.')
+            if len(pacotes_equipes) > 1:
+                st.download_button(
+                    f'📦 Baixar {len(pacotes_equipes)} ZIPs separados por equipe',
+                    data=st.session_state['bytes_zip_equipes_lista'],
+                    file_name=f'ListaContinua_PACOTES_POR_EQUIPE_{d_fmt}.zip',
+                    mime='application/zip', use_container_width=True,
+                    key='lista_download_todos_pacotes_equipes')
+            equipe_download = st.selectbox('Escolha a equipe para baixar:',
+                options=sorted(pacotes_equipes), key='lista_equipe_download_individual')
+            pacote_equipe = pacotes_equipes[equipe_download]
+            st.download_button(f'⬇️ Baixar ZIP de {equipe_download}',
+                data=pacote_equipe['conteudo'], file_name=pacote_equipe['nome'],
+                mime='application/zip', use_container_width=True,
+                key='lista_download_pacote_equipe')
+            st.caption(f"{pacote_equipe['registros']} obra(s) | "
+                       f"{len(pacote_equipe['excel'])} parte(s) Excel | "
+                       f"{len(pacote_equipe['txt'])} parte(s) TXT. "
+                       'Os arquivos menores permanecem em uma unica parte.')
+            with st.expander('📂 Baixar uma parte Excel ou TXT desta equipe'):
+                formato_equipe = st.radio('Tipo de arquivo', ['EXCEL', 'TXT'],
+                    key='lista_tipo_parte_equipe', horizontal=True)
+                arquivos_equipe = pacote_equipe['excel' if formato_equipe == 'EXCEL' else 'txt']
+                if arquivos_equipe:
+                    # Chave por equipe/formato: evita reaproveitar uma parte invalida
+                    # ao alternar para outra equipe com menos partes.
+                    parte_chave = hashlib.sha1(equipe_download.encode('utf-8')).hexdigest()[:10]
+                    parte_equipe = st.selectbox('Parte da equipe', range(len(arquivos_equipe)),
+                        format_func=lambda i: arquivos_equipe[i]['nome'].split('/')[-1],
+                        key=f'lista_parte_equipe_{parte_chave}_{formato_equipe}')
+                    arquivo_selecionado = arquivos_equipe[parte_equipe]
+                    st.download_button('⬇️ Baixar esta parte', data=arquivo_selecionado['conteudo'],
+                        file_name=arquivo_selecionado['nome'].split('/')[-1],
+                        mime=('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                              if formato_equipe == 'EXCEL' else 'text/plain; charset=utf-8'),
+                        use_container_width=True, key='lista_download_parte_equipe')
+                else:
+                    st.info('Nenhum arquivo deste tipo para a equipe selecionada.')
         partes_documentos = st.session_state.get('partes_excel_txt_lista', {})
         tipos_divididos = {tipo: partes for tipo, partes in partes_documentos.items() if len(partes) > 1}
         if tipos_divididos:
@@ -2601,7 +2715,7 @@ with st.sidebar:
                        'para transporta-las: extraia antes de abrir no Google Earth ou MapMaker.')
         st.caption('MapMaker Android: prefira KML MapMaker - somente pontos. '
                    'As linhas viarias tambem sao fracionadas em trechos de ate 180 vertices.')
-        st.download_button("\U0001f3e0 Baixar Mapas por equipe (ZIP - extrair antes de importar)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas - {d_fmt}.zip", use_container_width=True)
+        st.download_button("\U0001f3e0 Baixar Mapas GERAIS (ZIP - extrair antes de importar)", data=st.session_state.get('bytes_zip_kml_lista', b"vazio"), file_name=f"ListaContinua_Mapas_GERAIS - {d_fmt}.zip", use_container_width=True)
         st.download_button("🛰️ Baixar GPS (GPX)", data=st.session_state.get('bytes_zip_gpx_lista', b"vazio"), file_name=f"ListaContinua_GPS - {d_fmt}.zip", use_container_width=True)
         st.download_button("📍 Baixar Rotas Google Maps (ZIP)",
                            data=st.session_state.get('bytes_zip_maps_lista', b""),
@@ -3275,8 +3389,16 @@ if status_exec == "PACKAGING":
             entradas_maps = []
             mapas_primeiras = {}
             registros_mymaps_geral = []
+            coletores_equipes = {}
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 b_safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(base)).strip()
+                # Coletor isolado: nenhum XLSX, TXT ou mapa individual vai para
+                # um ZIP geral ou para o pacote de outro levantador.
+                coletor_equipe = ColetorArquivosEquipe()
+                dados_pacote_equipe = {
+                    'coletor': coletor_equipe, 'excel': [], 'txt': [], 'registros': 0,
+                }
+                coletores_equipes[str(base)] = dados_pacote_equipe
                 
                 df_base_excel = df_excel_full[df_excel_full['BASE_ATRIBUIDA'] == base]
                 if not df_base_excel.empty:
@@ -3284,13 +3406,14 @@ if status_exec == "PACKAGING":
                     dfg = dfg.loc[:, ~dfg.columns.duplicated()].copy()
                     for cc in dfg.columns:
                         if str(dfg[cc].dtype) == 'object': dfg[cc] = dfg[cc].astype(str).replace('nan', '')
-                    inventario_xlsx.extend(escrever_excel_em_partes(
-                        zx, f"Rotas_{d_fmt}/Rota_{b_safe}.xlsx", dfg,
-                        lambda fatia: gerar_excel_lista(fatia, col_exibir)))
-
-                    # --- TXT INDIVIDUAL ---
-                    inventario_txt.extend(escrever_txt_em_partes(
-                        zt, f"Relatorios_TXT_{d_fmt}/Relatorio_{b_safe}.txt", df_base_excel))
+                    # Sempre um pacote por equipe; dentro dele a divisao por
+                    # tamanho gera PARTE_001, PARTE_002 etc. se necessaria.
+                    dados_pacote_equipe['excel'] = escrever_excel_em_partes(
+                        coletor_equipe, f"Excel/Rota_{b_safe}.xlsx", dfg,
+                        lambda fatia: gerar_excel_lista(fatia, col_exibir))
+                    dados_pacote_equipe['txt'] = escrever_txt_em_partes(
+                        coletor_equipe, f"TXT/Relatorio_{b_safe}.txt", df_base_excel)
+                    dados_pacote_equipe['registros'] = len(df_base_excel)
                     
                 dfk_base = df_routed[(df_routed['BASE_ATRIBUIDA'] == base) & (~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO']))].copy()
                 if not dfk_base.empty:
@@ -3310,9 +3433,10 @@ if status_exec == "PACKAGING":
                         partes_individuais = criar_mapas_kml_kmz_em_partes(
                             kml_payload, prefixo, kmz_com_casinha=com_casinha)
                         for parte in partes_individuais:
-                            zk.writestr(f"KML_{d_fmt}/{parte['kml_nome']}", parte['kml'])
-                            zk.writestr(f"KML_{d_fmt}/{parte['kmz_nome']}", parte['kmz'])
-                    zg.writestr(f"GPX_{d_fmt}/Rota_{b_safe}.gpx", gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
+                            coletor_equipe.writestr(f"Mapas/{parte['kml_nome']}", parte['kml'])
+                            coletor_equipe.writestr(f"Mapas/{parte['kmz_nome']}", parte['kmz'])
+                    coletor_equipe.writestr(f"GPS/Rota_{b_safe}.gpx",
+                        gerar_gpx_simples(dfk_base, f"Rota {b_safe}").encode('utf-8'))
 
                     # Exportacao Google Maps independente por equipe.
                     # HTML para ordenar as visitas; links TXT para WhatsApp;
@@ -3348,7 +3472,9 @@ if status_exec == "PACKAGING":
                     for parte_idx, parte in enumerate(csv_google_mymaps_em_partes(csv_equipe), start=1):
                         nome_parte = nome_csv if parte_idx == 1 else nome_csv.replace('.csv', f'_PARTE_{parte_idx:03d}.csv')
                         zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
-                    zm.writestr(nome_links, gerar_txt_links_google_maps(dfk_base, str(base)).encode('utf-8'))
+                    links_da_equipe = gerar_txt_links_google_maps(dfk_base, str(base)).encode('utf-8')
+                    zm.writestr(nome_links, links_da_equipe)
+                    coletor_equipe.writestr(f"Google_Maps/LINKS_Maps_{b_safe}.txt", links_da_equipe)
                     registros_mymaps_geral.extend(list(csv.DictReader(io.StringIO(csv_equipe))))
                     orig_m = origem_google_maps(dfk_base)
                     pontos_m = pontos_equipe_google_maps(dfk_base)
@@ -3383,6 +3509,12 @@ if status_exec == "PACKAGING":
                     nome_parte = ('MAPA_GERAL_GoogleMyMaps.csv' if parte_idx == 1
                                   else f'MAPA_GERAL_GoogleMyMaps_PARTE_{parte_idx:03d}.csv')
                     zm.writestr(nome_parte, ('\ufeff' + parte).encode('utf-8'))
+
+            # Cada equipe vai em um ZIP separado; a colecao geral fica limpa.
+            pacotes_equipes_prontos, zip_mestre_equipes = montar_pacotes_individuais(
+                coletores_equipes, d_fmt)
+            st.session_state.pacotes_equipes_lista = pacotes_equipes_prontos
+            st.session_state.bytes_zip_equipes_lista = zip_mestre_equipes
 
             zx.writestr('LEIA_ME_DIVISAO_EXCEL.txt',
                 manifesto_divisao_documentos('EXCEL', inventario_xlsx, LIMITE_EXCEL_PARTE_BYTES))
