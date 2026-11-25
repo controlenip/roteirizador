@@ -1838,19 +1838,25 @@ def manifesto_divisao_documentos(tipo, inventario, limite_bytes):
     return ('\n'.join(linhas) + '\n').encode('utf-8')
 
 
-# Limite por ELEMENTO do MapMaker Android. O erro de importacao informado
-# (926682 > 524288) ocorre quando uma unica LineString e serializada como JSON.
-# Nao reduzir nem descartar vertices da estrada: dividir em trechos pequenos,
-# sobrepondo o ultimo vertice de um trecho ao primeiro do seguinte.
-MAX_PONTOS_LINHA_KML_MOBILE = 180
+# O erro real do MapMaker (926682 > 524288 para "Contorno Rota")
+# refere-se a UM OBJETO convertido em JSON, e NAO ao tamanho do KML inteiro.
+# Por isso, so partimos a geometria quando ela oferece risco de superar o
+# limite de 512 KiB por objeto. Nao descartar coordenadas da estrada.
+LIMITE_JSON_OBJETO_MAPMAKER_BYTES = 524288
+MARGEM_JSON_OBJETO_MAPMAKER_BYTES = 400 * 1024
+# Estimativa conservadora: JSON do aplicativo pode ser maior que o texto das
+# coordenadas KML. O teto de pontos e uma segunda seguranca.
+FATOR_EXPANSAO_JSON_MAPMAKER = 4
+MAX_PONTOS_LINHA_KML_MOBILE = 6000
 
 
 def dividir_linha_kml_em_trechos(coordenadas, limite=MAX_PONTOS_LINHA_KML_MOBILE):
-    """Separa uma LineString longa em placemarks independentes e conectados.
+    """Mantem linhas normais inteiras; separa so geometrias excessivas.
 
-    A geometria de cada trecho permanece exatamente como recebida; cada trecho
-    possui no maximo `limite` pontos. O limite baixo evita o teto de 512 KiB
-    por objeto JSON no MapMaker, mesmo com a sobrecarga da importacao.
+    O MapMaker impõe 512 KiB de JSON por objeto, conforme o erro apresentado.
+    Estimamos o custo com margem conservadora, sem pressupor que 512 KiB
+    seja um limite para o ARQUIVO KML inteiro. Trechos vizinhos compartilham
+    exatamente uma coordenada e preservam todos os vertices originais.
     """
     limite = int(limite)
     if limite < 2:
@@ -1858,18 +1864,53 @@ def dividir_linha_kml_em_trechos(coordenadas, limite=MAX_PONTOS_LINHA_KML_MOBILE
     coordenadas = list(coordenadas)
     if len(coordenadas) < 2:
         return []
-    return [
-        coordenadas[inicio:inicio + limite]
-        for inicio in range(0, len(coordenadas) - 1, limite - 1)
-    ]
+
+    def custo_estimado(valor):
+        return len(str(valor).encode('utf-8')) * FATOR_EXPANSAO_JSON_MAPMAKER + 2
+
+    # Nao altera uma linha pequena: nada de varios placemarks desnecessarios.
+    custo_total = sum(custo_estimado(p) for p in coordenadas) + 2048
+    if len(coordenadas) <= limite and custo_total <= MARGEM_JSON_OBJETO_MAPMAKER_BYTES:
+        return [coordenadas]
+
+    partes = []
+    atual = []
+    custo_atual = 2048
+    for ponto in coordenadas:
+        custo_ponto = custo_estimado(ponto)
+        precisa_cortar = (len(atual) >= 2 and
+                          (len(atual) >= limite or
+                           custo_atual + custo_ponto > MARGEM_JSON_OBJETO_MAPMAKER_BYTES))
+        if precisa_cortar:
+            partes.append(atual)
+            # Compartilhar o ultimo ponto mantem a linha continua no mapa.
+            anterior = atual[-1]
+            atual = [anterior]
+            custo_atual = 2048 + custo_estimado(anterior)
+        atual.append(ponto)
+        custo_atual += custo_ponto
+    if len(atual) >= 2:
+        partes.append(atual)
+    # Verifica conservacao exata dos vertices, exceto uniao dos trechos.
+    recuperadas = partes[0][:] if partes else []
+    for p in partes[1:]:
+        if recuperadas[-1] != p[0]:
+            raise ValueError('Descontinuidade no fracionamento de linha KML.')
+        recuperadas.extend(p[1:])
+    if recuperadas != coordenadas:
+        raise ValueError('Houve alteracao de pontos no fracionamento de linha KML.')
+    return partes
 
 
-# O KML e fracionado pelo tamanho do XML NAO compactado. Dividir somente
-# linhas longas nao protege aplicativos que possuem limite por ARQUIVO.
-# 300 KiB deixa margem em relacao ao limite de 512 KiB reportado no Android.
-# O KMZ usa os mesmos fragmentos de KML, evitando pacotes comprimidos que
-# parecem pequenos, mas ficam enormes quando o aplicativo os descompacta.
-LIMITE_KML_PARTE_BYTES = 300 * 1024
+# O erro observado no MapMaker (926682 > 524288) diz respeito a UM
+# elemento chamado Contorno Rota, e NAO ao arquivo KML inteiro.
+# A divisao interna de linhas compridas ja protege esse elemento acima.
+# Nao separar KML/KMZ comuns, mesmo quando tenham varios MB: manter um
+# arquivo por equipe. A divisao FISICA fica como salvaguarda apenas para
+# arquivos EXTRAGRANDES (20 MiB de KML descompactado). Esse valor nao e
+# um limite oficial do MapMaker, cuja compatibilidade final depende do app.
+# O KMZ segue exatamente as mesmas partes do KML de origem.
+LIMITE_KML_PARTE_BYTES = 20 * 1024 * 1024
 
 
 def dividir_kml_portavel_em_partes(kml_original, limite_bytes=LIMITE_KML_PARTE_BYTES):
@@ -2618,7 +2659,7 @@ with st.sidebar:
         if pacotes_equipes:
             st.markdown('#### 📦 Arquivos individuais por levantador')
             st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML e KMZ; '
-                       'se algum arquivo exceder 300 KiB, as partes ficam no ZIP daquela equipe. '
+                       'Excel/TXT acima de 300 KiB e apenas KML/KMZ extragrandes (acima de 20 MiB de KML) sao divididos. '
                        'Os pacotes nao misturam obras de equipes diferentes.')
             if len(pacotes_equipes) > 1:
                 st.download_button(
