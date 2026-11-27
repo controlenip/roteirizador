@@ -1575,6 +1575,8 @@ def montar_pacotes_individuais(equipes_geradas, data_referencia):
                 '',
                 'Este ZIP contem SOMENTE arquivos da equipe indicada.',
                 'As planilhas e relatorios grandes sao divididos em partes de ate 300 KiB.',
+                'A pasta GPX possui os pontos e a sequencia de visita desta equipe.',
+                'O GPX contem paradas e nao representa o desenho das estradas.',
                 'Extraia o ZIP antes de abrir/importar KML ou KMZ.',
                 'Na pasta Mapas estao apenas KML/KMZ com as partes necessarias.',
                 '', 'ARQUIVOS:',
@@ -1588,19 +1590,19 @@ def montar_pacotes_individuais(equipes_geradas, data_referencia):
             with zipfile.ZipFile(io.BytesIO(pacote_bytes)) as verificacao:
                 if verificacao.testzip() is not None:
                     raise ValueError(f'Falha de integridade no ZIP individual: {equipe}')
-                if any(not n.startswith(('Excel/', 'TXT/', 'Mapas/', 'LEIA_ME_EQUIPE.txt'))
+                if any(not n.startswith(('Excel/', 'TXT/', 'Mapas/', 'GPX/', 'LEIA_ME_EQUIPE.txt'))
                        for n in verificacao.namelist()):
                     raise ValueError('Arquivo fora das pastas previstas do ZIP individual.')
             mestre.writestr(arquivo_zip, pacote_bytes, compress_type=zipfile.ZIP_STORED)
             pacotes[str(equipe)] = {
                 'nome': arquivo_zip, 'conteudo': pacote_bytes,
-                'excel': excel, 'txt': txt,
+                'excel': excel, 'txt': txt, 'gpx': item.get('gpx', []),
                 'qtd_arquivos': len(arquivos), 'registros': item.get('registros', 0),
             }
         mestre.writestr('LEIA_ME_PACOTES.txt',
             ('Cada arquivo ZIP desta pasta corresponde a UMA equipe.\n'
              'Extraia o ZIP mestre e depois abra apenas o ZIP da equipe desejada.\n'
-             'As partes de Excel, TXT, KML e KMZ estao dentro de cada pacote.\n').encode('utf-8'))
+             'As partes de Excel, TXT, KML e KMZ, e o GPX, estao dentro de cada pacote.\n').encode('utf-8'))
     return pacotes, buffer_mestre.getvalue()
 
 def gerar_excel_resumo_lista(df_resumo):
@@ -2658,7 +2660,7 @@ with st.sidebar:
         pacotes_equipes = st.session_state.get('pacotes_equipes_lista', {})
         if pacotes_equipes:
             st.markdown('#### 📦 Arquivos individuais por levantador')
-            st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML e KMZ; '
+            st.caption('Cada equipe recebe seu proprio ZIP com Excel, TXT, KML, KMZ e GPX; '
                        'Excel/TXT acima de 300 KiB e apenas KML/KMZ extragrandes (acima de 20 MiB de KML) sao divididos. '
                        'Os pacotes nao misturam obras de equipes diferentes.')
             if len(pacotes_equipes) > 1:
@@ -2677,8 +2679,16 @@ with st.sidebar:
                 key='lista_download_pacote_equipe')
             st.caption(f"{pacote_equipe['registros']} obra(s) | "
                        f"{len(pacote_equipe['excel'])} parte(s) Excel | "
-                       f"{len(pacote_equipe['txt'])} parte(s) TXT. "
+                       f"{len(pacote_equipe['txt'])} parte(s) TXT | "
+                       f"{len(pacote_equipe.get('gpx', []))} GPX. "
                        'Os arquivos menores permanecem em uma unica parte.')
+            for arquivo_gpx in pacote_equipe.get('gpx', []):
+                st.download_button(
+                    f'🧭 Baixar GPX de {equipe_download}',
+                    data=arquivo_gpx['conteudo'],
+                    file_name=arquivo_gpx['nome'].split('/')[-1],
+                    mime='application/gpx+xml', use_container_width=True,
+                    key='lista_download_gpx_equipe')
             with st.expander('📂 Baixar uma parte Excel ou TXT desta equipe'):
                 formato_equipe = st.radio('Tipo de arquivo', ['EXCEL', 'TXT'],
                     key='lista_tipo_parte_equipe', horizontal=True)
@@ -3351,7 +3361,7 @@ if status_exec == "PACKAGING":
                 # um ZIP geral ou para o pacote de outro levantador.
                 coletor_equipe = ColetorArquivosEquipe()
                 dados_pacote_equipe = {
-                    'coletor': coletor_equipe, 'excel': [], 'txt': [], 'registros': 0,
+                    'coletor': coletor_equipe, 'excel': [], 'txt': [], 'gpx': [], 'registros': 0,
                 }
                 coletores_equipes[str(base)] = dados_pacote_equipe
                 
@@ -3382,6 +3392,18 @@ if status_exec == "PACKAGING":
                     for parte in partes_individuais:
                         coletor_equipe.writestr(f"Mapas/{parte['kml_nome']}", parte['kml'])
                         coletor_equipe.writestr(f"Mapas/{parte['kmz_nome']}", parte['kmz'])
+
+                    # GPX individual: origem + pontos ordenados (sem geometria viaria ficticia).
+                    # Nao reativa os pacotes Google Maps, GPS ou HTML offline.
+                    from xml.etree import ElementTree as ET
+                    gpx_equipe = gerar_gpx_offline_paradas(dfk_base, str(base)).encode('utf-8')
+                    xml_gpx = ET.fromstring(gpx_equipe)
+                    ns_gpx = {'g': 'http://www.topografix.com/GPX/1/1'}
+                    if len(xml_gpx.findall('g:rte/g:rtept', ns_gpx)) != len(dfk_base) + 1:
+                        raise ValueError(f'GPX da equipe {base} com numero incorreto de paradas.')
+                    nome_gpx = f'GPX/Pontos_Offline_{b_safe}.gpx'
+                    coletor_equipe.writestr(nome_gpx, gpx_equipe)
+                    dados_pacote_equipe['gpx'] = [{'nome': nome_gpx, 'conteudo': gpx_equipe}]
 
             # Cada equipe vai em um ZIP separado; a colecao geral fica limpa.
             pacotes_equipes_prontos, zip_mestre_equipes = montar_pacotes_individuais(
